@@ -8,8 +8,9 @@ from .builder import Model
 class ModelManager:
     """Manages model creation and retrieval"""
     
-    def __init__(self, http_client: HTTPClient):
+    def __init__(self, http_client: HTTPClient, interactive: bool = True):
         self.http = http_client
+        self.interactive = interactive
     
     def create(
         self,
@@ -47,7 +48,7 @@ class ModelManager:
         
         print(f"✅ Model created: {response['name']} (ID: {response['id']})")
         
-        return Model(self.http, response)
+        return Model(self.http, response, interactive=self.interactive)
     
     def get(self, model_id: str) -> 'Model':
         """
@@ -62,7 +63,7 @@ class ModelManager:
         # Call API to get model
         response = self.http.get(f'/api/v1/models/{model_id}')
         
-        return Model(self.http, response)
+        return Model(self.http, response, interactive=self.interactive)
     
     def list(
         self,
@@ -99,7 +100,7 @@ class ModelManager:
         response = self.http.get('/api/v1/models', params)
         
         # Convert to Model instances
-        models = [Model(self.http, model_data) for model_data in response.get('models', [])]
+        models = [Model(self.http, model_data, interactive=self.interactive) for model_data in response.get('models', [])]
         
         print(f"✅ Found {len(models)} models (total: {response.get('total', 0)})")
         

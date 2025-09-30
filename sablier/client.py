@@ -28,7 +28,9 @@ class SablierClient:
         self,
         api_url: str,
         api_key: str,
-        supabase_url: str = "https://ttlahhqhtmqwyeqvbmbp.supabase.co"
+        supabase_url: str = "https://ttlahhqhtmqwyeqvbmbp.supabase.co",
+        fred_api_key: Optional[str] = None,
+        interactive: bool = True
     ):
         """
         Initialize Sablier client
@@ -37,6 +39,8 @@ class SablierClient:
             api_url: Base URL of the Sablier backend API
             api_key: API key for authentication (starts with sk_)
             supabase_url: Supabase URL (default: optimized schema branch)
+            fred_api_key: Optional FRED API key for data searching and fetching
+            interactive: Enable interactive prompts for confirmations (default: True)
         """
         if not api_key:
             raise AuthenticationError("API key is required")
@@ -48,8 +52,11 @@ class SablierClient:
         # Initialize HTTP client
         self.http = HTTPClient(api_url, self.auth)
         
+        # Store FRED API key for passing to DataCollection instances
+        self.fred_api_key = fred_api_key
+        
         # Initialize managers
-        self.models = ModelManager(self.http)
+        self.models = ModelManager(self.http, interactive=interactive)
         self.scenarios = ScenarioManager(self.http)
     
     def health_check(self) -> dict:

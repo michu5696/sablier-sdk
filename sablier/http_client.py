@@ -109,6 +109,23 @@ class HTTPClient:
         response = self.session.put(url, headers=headers, json=data)
         return self._handle_response(response)
     
+    def patch(self, endpoint: str, data: Optional[dict] = None) -> dict:
+        """
+        Make a PATCH request
+        
+        Args:
+            endpoint: API endpoint
+            data: Request body data (only fields to update)
+            
+        Returns:
+            dict: Response data
+        """
+        url = self._get_url(endpoint)
+        headers = self.auth_handler.get_headers()
+        
+        response = self.session.patch(url, headers=headers, json=data)
+        return self._handle_response(response)
+    
     def delete(self, endpoint: str) -> dict:
         """Make a DELETE request"""
         url = self._get_url(endpoint)
