@@ -283,7 +283,20 @@ class Model:
         if not self._check_and_handle_conflict("set_training_period", confirm):
             return self
         
-        print(f"[Model {self.name}] Setting training period: {start_date} to {end_date}")
+        # Validate minimum period length
+        from datetime import datetime
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+        total_days = (end - start).days
+        
+        MIN_TRAINING_DAYS = 180  # At least 6 months for meaningful models
+        if total_days < MIN_TRAINING_DAYS:
+            raise ValueError(
+                f"Training period too short! Got {total_days} days, need at least {MIN_TRAINING_DAYS} days "
+                f"(~6 months minimum for meaningful time series models)"
+            )
+        
+        print(f"[Model {self.name}] Setting training period: {start_date} to {end_date} ({total_days} days)")
         
         # Update model
         response = self.http.patch(f'/api/v1/models/{self.id}', {
@@ -396,10 +409,10 @@ class Model:
         self,
         past_window: int,
         future_window: int,
+        target_features: List[str],
         stride: int = 10,
         conditioning_features: Optional[List[str]] = None,
-        target_features: Optional[List[str]] = None,
-        splits: Optional[Dict[str, float]] = None,
+        splits: Optional[Dict[str, Dict[str, str]]] = None,
         confirm: Optional[bool] = None
     ) -> Dict[str, Any]:
         """
@@ -408,21 +421,26 @@ class Model:
         Args:
             past_window: Past window size (days)
             future_window: Future window size (days)
-            stride: Stride between samples (days)
-            conditioning_features: Features for conditioning (optional, uses all input features if not specified)
-            target_features: Features to predict (required, must be subset of input features)
-            splits: Train/validation/test splits, e.g. {"train": 0.7, "validation": 0.2, "test": 0.1}
+            target_features: Features to predict (REQUIRED, must be subset of input features)
+            stride: Stride between samples (days, default: 10)
+            conditioning_features: Features for conditioning (optional, defaults to all non-target features)
+            splits: Train/validation/test date ranges (optional, auto-calculated if not provided)
+                Example: {
+                    "training": {"start": "2020-01-01", "end": "2023-12-31"},
+                    "validation": {"start": "2024-01-01", "end": "2024-06-30"},
+                    "test": {"start": "2024-07-01", "end": "2024-12-31"}
+                }
             confirm: Explicit confirmation (None = prompt if needed)
             
         Returns:
-            dict: Generation statistics with keys: status, samples_generated, splits
+            dict: Generation statistics with keys: status, samples_generated, split_counts
             
         Example:
             >>> model.generate_samples(
             ...     past_window=90,
             ...     future_window=30,
-            ...     stride=10,
-            ...     target_features=["Gold Price", "S&P 500"]
+            ...     target_features=["Gold Price"],
+            ...     stride=10
             ... )
         """
         # Check for conflicts
@@ -434,28 +452,45 @@ class Model:
         print(f"  Future window: {future_window} days")
         print(f"  Stride: {stride} days")
         
+        # Validate inputs
+        self._validate_sample_generation_inputs(
+            past_window, 
+            future_window, 
+            target_features, 
+            conditioning_features, 
+            splits
+        )
+        
+        # Auto-assign conditioning features if not provided
+        all_feature_names = [f.get('display_name', f.get('name')) for f in self.input_features]
+        if conditioning_features is None:
+            conditioning_features = [f for f in all_feature_names if f not in target_features]
+            print(f"  Auto-assigned {len(conditioning_features)} conditioning features")
+        
+        # Auto-generate splits if not provided
+        if splits is None:
+            splits = self._auto_generate_splits()
+            print(f"  Auto-generated splits from training period")
+        
+        # Validate splits
+        self._validate_splits(splits, past_window, future_window)
+        
         # Build sample config
         sample_config = {
-            "past_window": past_window,
-            "future_window": future_window,
-            "stride": stride
+            "pastWindow": past_window,
+            "futureWindow": future_window,
+            "stride": stride,
+            "splits": splits,
+            "conditioningFeatures": conditioning_features,
+            "targetFeatures": target_features
         }
-        
-        if splits:
-            sample_config["splits"] = splits
-        else:
-            sample_config["splits"] = {"train": 0.7, "validation": 0.2, "test": 0.1}
         
         # Build request payload
         payload = {
+            "user_id": self._data.get("user_id"),  # For backend
             "model_id": self.id,
             "sample_config": sample_config
         }
-        
-        if conditioning_features:
-            payload["conditioningFeatures"] = conditioning_features
-        if target_features:
-            payload["targetFeatures"] = target_features
         
         # Call backend
         print("📡 Calling backend to generate samples...")
@@ -465,9 +500,203 @@ class Model:
         self._data["status"] = "samples_generated"
         self._data["sample_config"] = sample_config
         
+        # Update input_features with types
+        self._update_feature_types(conditioning_features, target_features)
+        
+        split_counts = response.get('split_counts', {})
         print(f"✅ Generated {response.get('samples_generated', 0)} samples")
+        print(f"   Training: {split_counts.get('training', 0)}")
+        print(f"   Validation: {split_counts.get('validation', 0)}")
+        print(f"   Test: {split_counts.get('test', 0)}")
         
         return response
+    
+    def _validate_sample_generation_inputs(
+        self, 
+        past_window: int, 
+        future_window: int,
+        target_features: List[str],
+        conditioning_features: Optional[List[str]],
+        splits: Optional[Dict[str, Dict[str, str]]]
+    ):
+        """Validate sample generation inputs"""
+        from datetime import datetime, timedelta
+        
+        # 0. Check minimum window sizes
+        MIN_PAST_WINDOW = 30  # At least 30 days of history
+        MIN_FUTURE_WINDOW = 5  # At least 5 days to predict
+        
+        if past_window < MIN_PAST_WINDOW:
+            raise ValueError(f"past_window must be at least {MIN_PAST_WINDOW} days (got {past_window})")
+        
+        if future_window < MIN_FUTURE_WINDOW:
+            raise ValueError(f"future_window must be at least {MIN_FUTURE_WINDOW} days (got {future_window})")
+        
+        # 1. Check we have input features
+        if not self.input_features:
+            raise ValueError("No features configured. Call model.add_features() first or use DataCollection")
+        
+        all_feature_names = [f.get('display_name', f.get('name')) for f in self.input_features]
+        
+        # 2. Target features must be specified and valid
+        if not target_features:
+            raise ValueError("target_features is required. Specify which features to predict.")
+        
+        invalid_targets = [f for f in target_features if f not in all_feature_names]
+        if invalid_targets:
+            raise ValueError(f"Invalid target features: {invalid_targets}. Available: {all_feature_names}")
+        
+        # 3. Conditioning features must be valid
+        if conditioning_features:
+            invalid_conditioning = [f for f in conditioning_features if f not in all_feature_names]
+            if invalid_conditioning:
+                raise ValueError(f"Invalid conditioning features: {invalid_conditioning}. Available: {all_feature_names}")
+            
+            # Check for overlap
+            overlap = set(target_features) & set(conditioning_features)
+            if overlap:
+                raise ValueError(f"Features cannot be both target and conditioning: {overlap}")
+        
+        # 4. All features must be assigned a type
+        assigned_features = set(target_features)
+        if conditioning_features:
+            assigned_features.update(conditioning_features)
+        else:
+            assigned_features.update([f for f in all_feature_names if f not in target_features])
+        
+        unassigned = set(all_feature_names) - assigned_features
+        if unassigned:
+            raise ValueError(f"All features must be assigned as target or conditioning. Unassigned: {unassigned}")
+    
+    def _validate_splits(self, splits: Dict[str, Dict[str, str]], past_window: int, future_window: int):
+        """Validate split date ranges and check for overlaps"""
+        from datetime import datetime, timedelta
+        
+        required_splits = ["training", "validation", "test"]
+        for split_name in required_splits:
+            if split_name not in splits:
+                raise ValueError(f"Missing required split: {split_name}")
+            if "start" not in splits[split_name] or "end" not in splits[split_name]:
+                raise ValueError(f"Split '{split_name}' must have 'start' and 'end' dates")
+        
+        # Parse dates
+        train_start = datetime.strptime(splits["training"]["start"], "%Y-%m-%d")
+        train_end = datetime.strptime(splits["training"]["end"], "%Y-%m-%d")
+        val_start = datetime.strptime(splits["validation"]["start"], "%Y-%m-%d")
+        val_end = datetime.strptime(splits["validation"]["end"], "%Y-%m-%d")
+        test_start = datetime.strptime(splits["test"]["start"], "%Y-%m-%d")
+        test_end = datetime.strptime(splits["test"]["end"], "%Y-%m-%d")
+        
+        # Check minimum split lengths
+        sample_size = past_window + future_window
+        MIN_SAMPLES_PER_SPLIT = 10  # At least 10 samples per split
+        min_split_days = sample_size + (MIN_SAMPLES_PER_SPLIT * 10)  # Assuming stride ~10 days
+        
+        train_days = (train_end - train_start).days
+        val_days = (val_end - val_start).days
+        test_days = (test_end - test_start).days
+        
+        if train_days < min_split_days:
+            raise ValueError(
+                f"Training split too short! Got {train_days} days, need at least {min_split_days} days "
+                f"(sample size {sample_size} + room for ~{MIN_SAMPLES_PER_SPLIT} samples)"
+            )
+        
+        if val_days < sample_size:
+            raise ValueError(f"Validation split too short! Got {val_days} days, need at least {sample_size} days (sample size)")
+        
+        if test_days < sample_size:
+            raise ValueError(f"Test split too short! Got {test_days} days, need at least {sample_size} days (sample size)")
+        
+        # Check temporal ordering
+        if not (train_start < train_end < val_start < val_end < test_start < test_end):
+            raise ValueError("Splits must be temporally ordered: training -> validation -> test (no overlaps)")
+        
+        # Check for date range overlaps
+        if train_end >= val_start:
+            raise ValueError(f"Training end ({train_end.date()}) must be before validation start ({val_start.date()})")
+        
+        if val_end >= test_start:
+            raise ValueError(f"Validation end ({val_end.date()}) must be before test start ({test_start.date()})")
+        
+        # Check for sample overlap (critical!)
+        sample_size = past_window + future_window
+        
+        # Gap between training and validation
+        train_val_gap = (val_start - train_end).days
+        if train_val_gap < sample_size:
+            raise ValueError(
+                f"Training and validation splits are too close! "
+                f"Gap: {train_val_gap} days, Sample size: {sample_size} days. "
+                f"A sample starting at training end could overlap into validation. "
+                f"Minimum gap required: {sample_size} days"
+            )
+        
+        # Gap between validation and test (warning only, contiguous is OK)
+        val_test_gap = (test_start - val_end).days
+        if val_test_gap < sample_size:
+            print(f"  ⚠️  Validation and test are close (gap: {val_test_gap} days, sample: {sample_size} days)")
+            print(f"      Last validation samples may overlap into test period (acceptable)")
+        
+        print(f"  ✓ Splits validated: no data leakage")
+    
+    def _auto_generate_splits(self) -> Dict[str, Dict[str, str]]:
+        """Auto-generate splits from training period (70/20/10)"""
+        from datetime import datetime, timedelta
+        
+        start = self._data.get('training_start_date')
+        end = self._data.get('training_end_date')
+        
+        if not start or not end:
+            raise ValueError("Training period not set. Call set_training_period() first")
+        
+        start_date = datetime.strptime(start, "%Y-%m-%d")
+        end_date = datetime.strptime(end, "%Y-%m-%d")
+        total_days = (end_date - start_date).days
+        
+        # 70/20/10 split
+        train_days = int(total_days * 0.7)
+        val_days = int(total_days * 0.2)
+        
+        train_end = start_date + timedelta(days=train_days)
+        val_end = train_end + timedelta(days=val_days)
+        
+        return {
+            "training": {
+                "start": start_date.strftime("%Y-%m-%d"),
+                "end": train_end.strftime("%Y-%m-%d")
+            },
+            "validation": {
+                "start": train_end.strftime("%Y-%m-%d"),
+                "end": val_end.strftime("%Y-%m-%d")
+            },
+            "test": {
+                "start": val_end.strftime("%Y-%m-%d"),
+                "end": end_date.strftime("%Y-%m-%d")
+            }
+        }
+    
+    def _update_feature_types(self, conditioning_features: List[str], target_features: List[str]):
+        """Update input_features with type assignment"""
+        updated_features = []
+        for feature in self.input_features:
+            feature_name = feature.get('display_name', feature.get('name'))
+            feature_copy = feature.copy()
+            
+            if feature_name in target_features:
+                feature_copy['type'] = 'target'
+            elif feature_name in conditioning_features:
+                feature_copy['type'] = 'conditioning'
+            
+            updated_features.append(feature_copy)
+        
+        # Update via API
+        self.http.patch(f'/api/v1/models/{self.id}', {
+            'input_features': updated_features
+        })
+        
+        # Update local cache
+        self._data['input_features'] = updated_features
     
     # ============================================
     # ENCODING
