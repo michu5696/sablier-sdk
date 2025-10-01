@@ -5,8 +5,8 @@ Main Sablier SDK client
 from typing import Optional
 from .auth import AuthHandler
 from .http_client import HTTPClient
-from .models.manager import ModelManager
-from .scenarios.manager import ScenarioManager
+from .model.manager import ModelManager
+from .scenario.manager import ScenarioManager
 from .exceptions import AuthenticationError
 
 

@@ -124,7 +124,7 @@ class YahooDataSource(DataSource):
         return None
 
 
-class DataCollection:
+class DataCollector:
     """
     Data collection and management for a model
     

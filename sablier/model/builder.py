@@ -3,6 +3,13 @@
 from typing import Optional, Any, List, Dict
 from ..http_client import HTTPClient
 from ..workflow import WorkflowValidator, WorkflowConflict
+from .validators import (
+    validate_sample_generation_inputs,
+    validate_splits,
+    auto_generate_splits,
+    validate_training_period
+)
+from .utils import update_feature_types
 
 
 class Model:
@@ -41,24 +48,24 @@ class Model:
     # PROPERTIES
     # ============================================
     
-    def data_collection(self, fred_api_key: Optional[str] = None):
+    def data_collector(self, fred_api_key: Optional[str] = None):
         """
-        Create a DataCollection instance for this model
+        Create a DataCollector instance for this model
         
         Args:
             fred_api_key: Optional FRED API key for searching and fetching
             
         Returns:
-            DataCollection: Data collection instance scoped to this model
+            DataCollector: Data collector instance scoped to this model
             
         Example:
-            >>> data = model.data_collection(fred_api_key="...")
+            >>> data = model.data_collector(fred_api_key="...")
             >>> data.search("treasury")
-            >>> data.add("DGS10", source="FRED")
+            >>> data.add("DGS10", source="FRED", name="10-Year Treasury")
             >>> data.fetch_and_process()
         """
-        from ..data_collection import DataCollection
-        return DataCollection(self, fred_api_key=fred_api_key)
+        from ..data_collector import DataCollector
+        return DataCollector(self, fred_api_key=fred_api_key)
     
     # ============================================
     # PROPERTIES (continued)
@@ -284,17 +291,7 @@ class Model:
             return self
         
         # Validate minimum period length
-        from datetime import datetime
-        start = datetime.strptime(start_date, "%Y-%m-%d")
-        end = datetime.strptime(end_date, "%Y-%m-%d")
-        total_days = (end - start).days
-        
-        MIN_TRAINING_DAYS = 180  # At least 6 months for meaningful models
-        if total_days < MIN_TRAINING_DAYS:
-            raise ValueError(
-                f"Training period too short! Got {total_days} days, need at least {MIN_TRAINING_DAYS} days "
-                f"(~6 months minimum for meaningful time series models)"
-            )
+        total_days = validate_training_period(start_date, end_date)
         
         print(f"[Model {self.name}] Setting training period: {start_date} to {end_date} ({total_days} days)")
         
@@ -453,12 +450,12 @@ class Model:
         print(f"  Stride: {stride} days")
         
         # Validate inputs
-        self._validate_sample_generation_inputs(
+        validate_sample_generation_inputs(
+            self.input_features,
             past_window, 
             future_window, 
             target_features, 
-            conditioning_features, 
-            splits
+            conditioning_features
         )
         
         # Auto-assign conditioning features if not provided
@@ -469,11 +466,14 @@ class Model:
         
         # Auto-generate splits if not provided
         if splits is None:
-            splits = self._auto_generate_splits()
-            print(f"  Auto-generated splits from training period")
+            sample_size = past_window + future_window
+            start = self._data.get('training_start_date')
+            end = self._data.get('training_end_date')
+            splits = auto_generate_splits(start, end, sample_size=sample_size)
+            print(f"  Auto-generated splits with {sample_size}-day gap")
         
         # Validate splits
-        self._validate_splits(splits, past_window, future_window)
+        validate_splits(splits, past_window, future_window)
         
         # Build sample config
         sample_config = {
@@ -501,7 +501,14 @@ class Model:
         self._data["sample_config"] = sample_config
         
         # Update input_features with types
-        self._update_feature_types(conditioning_features, target_features)
+        updated_features = update_feature_types(
+            self.http, 
+            self.id, 
+            self.input_features, 
+            conditioning_features, 
+            target_features
+        )
+        self._data['input_features'] = updated_features
         
         split_counts = response.get('split_counts', {})
         print(f"✅ Generated {response.get('samples_generated', 0)} samples")
@@ -511,241 +518,107 @@ class Model:
         
         return response
     
-    def _validate_sample_generation_inputs(
-        self, 
-        past_window: int, 
-        future_window: int,
-        target_features: List[str],
-        conditioning_features: Optional[List[str]],
-        splits: Optional[Dict[str, Dict[str, str]]]
-    ):
-        """Validate sample generation inputs"""
-        from datetime import datetime, timedelta
-        
-        # 0. Check minimum window sizes
-        MIN_PAST_WINDOW = 30  # At least 30 days of history
-        MIN_FUTURE_WINDOW = 5  # At least 5 days to predict
-        
-        if past_window < MIN_PAST_WINDOW:
-            raise ValueError(f"past_window must be at least {MIN_PAST_WINDOW} days (got {past_window})")
-        
-        if future_window < MIN_FUTURE_WINDOW:
-            raise ValueError(f"future_window must be at least {MIN_FUTURE_WINDOW} days (got {future_window})")
-        
-        # 1. Check we have input features
-        if not self.input_features:
-            raise ValueError("No features configured. Call model.add_features() first or use DataCollection")
-        
-        all_feature_names = [f.get('display_name', f.get('name')) for f in self.input_features]
-        
-        # 2. Target features must be specified and valid
-        if not target_features:
-            raise ValueError("target_features is required. Specify which features to predict.")
-        
-        invalid_targets = [f for f in target_features if f not in all_feature_names]
-        if invalid_targets:
-            raise ValueError(f"Invalid target features: {invalid_targets}. Available: {all_feature_names}")
-        
-        # 3. Conditioning features must be valid
-        if conditioning_features:
-            invalid_conditioning = [f for f in conditioning_features if f not in all_feature_names]
-            if invalid_conditioning:
-                raise ValueError(f"Invalid conditioning features: {invalid_conditioning}. Available: {all_feature_names}")
-            
-            # Check for overlap
-            overlap = set(target_features) & set(conditioning_features)
-            if overlap:
-                raise ValueError(f"Features cannot be both target and conditioning: {overlap}")
-        
-        # 4. All features must be assigned a type
-        assigned_features = set(target_features)
-        if conditioning_features:
-            assigned_features.update(conditioning_features)
-        else:
-            assigned_features.update([f for f in all_feature_names if f not in target_features])
-        
-        unassigned = set(all_feature_names) - assigned_features
-        if unassigned:
-            raise ValueError(f"All features must be assigned as target or conditioning. Unassigned: {unassigned}")
-    
-    def _validate_splits(self, splits: Dict[str, Dict[str, str]], past_window: int, future_window: int):
-        """Validate split date ranges and check for overlaps"""
-        from datetime import datetime, timedelta
-        
-        required_splits = ["training", "validation", "test"]
-        for split_name in required_splits:
-            if split_name not in splits:
-                raise ValueError(f"Missing required split: {split_name}")
-            if "start" not in splits[split_name] or "end" not in splits[split_name]:
-                raise ValueError(f"Split '{split_name}' must have 'start' and 'end' dates")
-        
-        # Parse dates
-        train_start = datetime.strptime(splits["training"]["start"], "%Y-%m-%d")
-        train_end = datetime.strptime(splits["training"]["end"], "%Y-%m-%d")
-        val_start = datetime.strptime(splits["validation"]["start"], "%Y-%m-%d")
-        val_end = datetime.strptime(splits["validation"]["end"], "%Y-%m-%d")
-        test_start = datetime.strptime(splits["test"]["start"], "%Y-%m-%d")
-        test_end = datetime.strptime(splits["test"]["end"], "%Y-%m-%d")
-        
-        # Check minimum split lengths
-        sample_size = past_window + future_window
-        MIN_SAMPLES_PER_SPLIT = 10  # At least 10 samples per split
-        min_split_days = sample_size + (MIN_SAMPLES_PER_SPLIT * 10)  # Assuming stride ~10 days
-        
-        train_days = (train_end - train_start).days
-        val_days = (val_end - val_start).days
-        test_days = (test_end - test_start).days
-        
-        if train_days < min_split_days:
-            raise ValueError(
-                f"Training split too short! Got {train_days} days, need at least {min_split_days} days "
-                f"(sample size {sample_size} + room for ~{MIN_SAMPLES_PER_SPLIT} samples)"
-            )
-        
-        if val_days < sample_size:
-            raise ValueError(f"Validation split too short! Got {val_days} days, need at least {sample_size} days (sample size)")
-        
-        if test_days < sample_size:
-            raise ValueError(f"Test split too short! Got {test_days} days, need at least {sample_size} days (sample size)")
-        
-        # Check temporal ordering
-        if not (train_start < train_end < val_start < val_end < test_start < test_end):
-            raise ValueError("Splits must be temporally ordered: training -> validation -> test (no overlaps)")
-        
-        # Check for date range overlaps
-        if train_end >= val_start:
-            raise ValueError(f"Training end ({train_end.date()}) must be before validation start ({val_start.date()})")
-        
-        if val_end >= test_start:
-            raise ValueError(f"Validation end ({val_end.date()}) must be before test start ({test_start.date()})")
-        
-        # Check for sample overlap (critical!)
-        sample_size = past_window + future_window
-        
-        # Gap between training and validation
-        train_val_gap = (val_start - train_end).days
-        if train_val_gap < sample_size:
-            raise ValueError(
-                f"Training and validation splits are too close! "
-                f"Gap: {train_val_gap} days, Sample size: {sample_size} days. "
-                f"A sample starting at training end could overlap into validation. "
-                f"Minimum gap required: {sample_size} days"
-            )
-        
-        # Gap between validation and test (warning only, contiguous is OK)
-        val_test_gap = (test_start - val_end).days
-        if val_test_gap < sample_size:
-            print(f"  ⚠️  Validation and test are close (gap: {val_test_gap} days, sample: {sample_size} days)")
-            print(f"      Last validation samples may overlap into test period (acceptable)")
-        
-        print(f"  ✓ Splits validated: no data leakage")
-    
-    def _auto_generate_splits(self) -> Dict[str, Dict[str, str]]:
-        """Auto-generate splits from training period (70/20/10)"""
-        from datetime import datetime, timedelta
-        
-        start = self._data.get('training_start_date')
-        end = self._data.get('training_end_date')
-        
-        if not start or not end:
-            raise ValueError("Training period not set. Call set_training_period() first")
-        
-        start_date = datetime.strptime(start, "%Y-%m-%d")
-        end_date = datetime.strptime(end, "%Y-%m-%d")
-        total_days = (end_date - start_date).days
-        
-        # 70/20/10 split
-        train_days = int(total_days * 0.7)
-        val_days = int(total_days * 0.2)
-        
-        train_end = start_date + timedelta(days=train_days)
-        val_end = train_end + timedelta(days=val_days)
-        
-        return {
-            "training": {
-                "start": start_date.strftime("%Y-%m-%d"),
-                "end": train_end.strftime("%Y-%m-%d")
-            },
-            "validation": {
-                "start": train_end.strftime("%Y-%m-%d"),
-                "end": val_end.strftime("%Y-%m-%d")
-            },
-            "test": {
-                "start": val_end.strftime("%Y-%m-%d"),
-                "end": end_date.strftime("%Y-%m-%d")
-            }
-        }
-    
-    def _update_feature_types(self, conditioning_features: List[str], target_features: List[str]):
-        """Update input_features with type assignment"""
-        updated_features = []
-        for feature in self.input_features:
-            feature_name = feature.get('display_name', feature.get('name'))
-            feature_copy = feature.copy()
-            
-            if feature_name in target_features:
-                feature_copy['type'] = 'target'
-            elif feature_name in conditioning_features:
-                feature_copy['type'] = 'conditioning'
-            
-            updated_features.append(feature_copy)
-        
-        # Update via API
-        self.http.patch(f'/api/v1/models/{self.id}', {
-            'input_features': updated_features
-        })
-        
-        # Update local cache
-        self._data['input_features'] = updated_features
-    
     # ============================================
     # ENCODING
     # ============================================
     
-    def encode_samples(self, confirm: Optional[bool] = None) -> Dict[str, Any]:
+    def encode_samples(
+        self, 
+        encoding_type: str = "pca-ica",
+        split: str = "training",
+        confirm: Optional[bool] = None
+    ) -> Dict[str, Any]:
         """
-        Fit PCA-ICA encoding models and encode all samples
+        Fit encoding models and encode all samples
         
-        This method performs two operations:
-        1. Fits encoding models for each feature-window combination
+        This performs a two-step process:
+        1. Fits PCA-ICA (or UMAP) encoding models on specified split
         2. Encodes all samples using the fitted models
         
         Args:
+            encoding_type: Type of encoding ("pca-ica" or "umap", default: "pca-ica")
+            split: Which split to use for fitting ("training", "validation", 
+                   "training+validation", or "all", default: "training")
             confirm: Explicit confirmation (None = prompt if needed)
             
         Returns:
-            dict: Encoding statistics with keys: status, models_fitted, samples_encoded
+            dict: {
+                "status": "success",
+                "models_fitted": int,
+                "samples_encoded": int,
+                "features_processed": int,
+                "split_used": str
+            }
             
         Example:
+            >>> # Basic usage - fit and encode using PCA-ICA on training split
             >>> result = model.encode_samples()
             >>> print(f"Fitted {result['models_fitted']} encoding models")
             >>> print(f"Encoded {result['samples_encoded']} samples")
+            
+            >>> # Use UMAP encoding (requires PCA-ICA to be fitted first)
+            >>> result = model.encode_samples(encoding_type="umap")
+            
+            >>> # Fit on combined training+validation data
+            >>> result = model.encode_samples(split="training+validation")
         """
+        # Validate encoding_type
+        if encoding_type not in ["pca-ica", "umap"]:
+            raise ValueError(f"Invalid encoding_type: {encoding_type}. Must be 'pca-ica' or 'umap'")
+        
+        # Validate split
+        if split not in ["training", "validation", "training+validation", "all"]:
+            raise ValueError(f"Invalid split: {split}. Must be 'training', 'validation', 'training+validation', or 'all'")
+        
         # Check for conflicts
         if not self._check_and_handle_conflict("encode_samples", confirm):
             return {"status": "cancelled"}
         
-        print(f"[Model {self.name}] Encoding samples...")
+        print(f"[Model {self.name}] Encoding samples using {encoding_type.upper()}...")
         
         # Step 1: Fit encoding models
-        print("  Step 1/2: Fitting PCA-ICA encoding models...")
-        fit_response = self.http.post('/api/v1/ml/fit', {
-            "model_id": self.id,
-            "user_id": self._data.get("user_id")  # For API key auth
-        })
-        
-        models_fitted = fit_response.get('models_fitted', 0)
-        print(f"  ✅ Fitted {models_fitted} encoding models")
+        print(f"  Step 1/2: Fitting {encoding_type.upper()} encoding models on '{split}' split...")
+        try:
+            # Add query parameter for split
+            fit_url = f'/api/v1/ml/fit?split={split}'
+            fit_response = self.http.post(fit_url, {
+                "model_id": self.id,
+                "user_id": self._data.get("user_id"),  # For API key auth
+                "encoding_type": encoding_type
+            })
+            
+            models_fitted = fit_response.get('models_fitted', 0)
+            features_processed = fit_response.get('features_processed', 0)
+            samples_used = fit_response.get('samples_used', 0)
+            
+            print(f"  ✅ Fitted {models_fitted} encoding models")
+            print(f"     Features processed: {features_processed}")
+            print(f"     Samples used: {samples_used}")
+            
+        except Exception as e:
+            print(f"  ❌ Failed to fit encoding models: {e}")
+            raise
         
         # Step 2: Encode samples
         print("  Step 2/2: Encoding all samples...")
-        encode_response = self.http.post('/api/v1/ml/encode', {
-            "model_id": self.id,
-            "user_id": self._data.get("user_id")  # For API key auth
-        })
-        
-        samples_encoded = encode_response.get('samples_encoded', 0)
-        print(f"  ✅ Encoded {samples_encoded} samples")
+        try:
+            # Add query parameter for source
+            encode_url = '/api/v1/ml/encode?source=database'
+            encode_response = self.http.post(encode_url, {
+                "model_id": self.id,
+                "user_id": self._data.get("user_id"),  # For API key auth
+                "encoding_type": encoding_type
+            })
+            
+            samples_encoded = encode_response.get('samples_encoded', 0)
+            encoding_features_processed = encode_response.get('features_processed', 0)
+            
+            print(f"  ✅ Encoded {samples_encoded} samples")
+            print(f"     Features processed: {encoding_features_processed}")
+            
+        except Exception as e:
+            print(f"  ❌ Failed to encode samples: {e}")
+            raise
         
         # Update model status
         self._data["status"] = "samples_encoded"
@@ -755,7 +628,10 @@ class Model:
         return {
             "status": "success",
             "models_fitted": models_fitted,
-            "samples_encoded": samples_encoded
+            "samples_encoded": samples_encoded,
+            "features_processed": features_processed,
+            "split_used": split,
+            "encoding_type": encoding_type
         }
     
     # ============================================
