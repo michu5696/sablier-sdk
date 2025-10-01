@@ -129,28 +129,4 @@ class ModelManager:
                 return model
         
         return None
-    
-    def delete(self, model_id: str, confirm: Optional[bool] = None) -> dict:
-        """
-        Delete a model by ID
-        
-        Args:
-            model_id: Model ID to delete
-            confirm: Explicit confirmation (True = skip prompt)
-            
-        Returns:
-            dict: Deletion status
-            
-        Example:
-            >>> # Delete with confirmation prompt
-            >>> client.models.delete(model_id)
-            
-            >>> # Or get model and delete it
-            >>> model = client.models.get(model_id)
-            >>> model.delete()
-        """
-        # Get the model first
-        model = self.get(model_id)
-        
-        # Use model's delete method
-        return model.delete(confirm=confirm)
+

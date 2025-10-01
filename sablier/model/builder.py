@@ -638,22 +638,128 @@ class Model:
     # TRAINING
     # ============================================
     
-    def train(self, qrf_config: Optional[dict] = None, confirm: Optional[bool] = None) -> 'TrainingResults':
+    def train(self, config: Optional[Dict[str, Any]] = None, confirm: Optional[bool] = None) -> Dict[str, Any]:
         """
-        Train the QRF model
+        Train the model on encoded samples
+        
+        This method:
+        1. Trains a Quantile Regression Forest on encoded conditioning/target data
+        2. Uses future feature augmentation for robustness
+        3. Computes SHAP feature importance
+        4. Saves trained model to storage
         
         Args:
-            qrf_config: Optional QRF configuration
+            config: Optional model configuration. Defaults to:
+                {
+                    'n_estimators': 200,
+                    'max_depth': 20,
+                    'min_samples_split': 5,
+                    'min_samples_leaf': 2,
+                    'random_state': 42
+                }
             confirm: Explicit confirmation (None = prompt if needed)
             
         Returns:
-            TrainingResults: Training results with metrics
+            dict: {
+                "status": "success",
+                "model_id": str,
+                "training_metrics": {
+                    "train_mse": float,
+                    "val_mse": float,
+                    "augmented_training_samples": int,
+                    "augmented_validation_samples": int
+                },
+                "model_metadata": dict,
+                "feature_importance": dict,
+                "component_breakdown": dict,
+                "categories": dict
+            }
+            
+        Example:
+            >>> # Basic usage - train with default config
+            >>> result = model.train()
+            
+            >>> # Custom config
+            >>> result = model.train(config={
+            ...     'n_estimators': 500,
+            ...     'max_depth': 30
+            ... })
         """
-        # Training doesn't have conflicts (always replaces previous model)
-        # TODO: Implement model training
+        # Validate model status
+        if self.status != "samples_encoded":
+            print(f"❌ Model must be in 'samples_encoded' status to train (current: {self.status})")
+            print("   Run model.encode_samples() first")
+            return {"status": "error", "message": "Model not ready for training"}
+        
+        # Use default config if not provided
+        default_config = {
+            'n_estimators': 200,
+            'max_depth': 20,
+            'min_samples_split': 5,
+            'min_samples_leaf': 2,
+            'random_state': 42
+        }
+        
+        final_config = {**default_config, **(config or {})}
+        
         print(f"[Model {self.name}] Training model...")
-        from .training_results import TrainingResults
-        return TrainingResults({})
+        print(f"  Config: n_estimators={final_config['n_estimators']}, max_depth={final_config['max_depth']}, "
+              f"min_samples_split={final_config['min_samples_split']}")
+        print()
+        
+        # Build payload
+        payload = {
+            "user_id": self._data.get("user_id"),
+            "model_id": self.id,
+            "qrf_config": final_config  # Backend expects qrf_config key
+        }
+        
+        # Call backend
+        print("📡 Step 1/2: Training model on encoded samples...")
+        try:
+            response = self.http.post('/api/v1/ml/train-model', payload)
+        except Exception as e:
+            print(f"  ❌ Training failed: {e}")
+            raise
+        
+        # Extract metrics
+        training_metrics = response.get('training_metrics', {})
+        
+        print("  ✅ Model training complete")
+        print(f"     Training MSE: {training_metrics.get('train_mse', 0):.6f}")
+        print(f"     Validation MSE: {training_metrics.get('val_mse', 0):.6f}")
+        print(f"     Augmented training samples: {training_metrics.get('augmented_training_samples', 0)}")
+        print(f"     Augmented validation samples: {training_metrics.get('augmented_validation_samples', 0)}")
+        print()
+        
+        print("📊 Step 2/2: Computing feature importance (SHAP)...")
+        feature_importance = response.get('feature_importance', {})
+        categories = response.get('categories', {})
+        
+        print("  ✅ Feature importance computed")
+        if categories:
+            total_features = sum(len(v) for v in categories.values())
+            print(f"     Total features analyzed: {total_features}")
+            print(f"     Categories: {', '.join(categories.keys())}")
+        print()
+        
+        # Update model status
+        self._data["status"] = "trained"
+        self._data["training_metrics"] = training_metrics
+        self._data["model_metadata"] = response.get('model_metadata', {})
+        
+        print(f"✅ Training complete - model saved to storage")
+        
+        return {
+            "status": "success",
+            "model_id": response.get('model_id'),
+            "training_metrics": training_metrics,
+            "model_metadata": response.get('model_metadata', {}),
+            "feature_importance": feature_importance,
+            "component_breakdown": response.get('component_breakdown', {}),
+            "categories": categories,
+            "per_sample_importance": response.get('per_sample_importance', {})
+        }
     
     # ============================================
     # FORECASTING
