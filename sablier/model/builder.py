@@ -767,27 +767,130 @@ class Model:
     
     def generate_forecast(
         self,
-        sample_id: str,
-        n_samples: int = 100,
-        conditioning_features: list[str] = None
-    ) -> 'SyntheticData':
+        sample_id: Optional[str] = None,
+        scenario = None,  # Scenario instance
+        conditioning_features: Optional[List[str]] = None,
+        n_samples: int = 100
+    ) -> Dict[str, Any]:
         """
-        Generate forecast from a sample
+        Generate forecast samples
+        
+        Two usage modes:
+        
+        1. Post-Training Validation (uses test samples):
+           >>> # Use specific test sample
+           >>> forecast = model.generate_forecast(
+           ...     sample_id="test_sample_123",
+           ...     conditioning_features=["Feature A"],  # Optional
+           ...     n_samples=100
+           ... )
+           
+           >>> # Auto-select first test sample
+           >>> forecast = model.generate_forecast(n_samples=100)
+        
+        2. Scenario-Based Generation (called by Scenario):
+           >>> forecast = model.generate_forecast(
+           ...     scenario=scenario_instance,
+           ...     n_samples=1000
+           ... )
         
         Args:
-            sample_id: Sample ID to use for conditioning
+            sample_id: Test sample ID (optional, auto-selects if None)
+            scenario: Scenario instance for scenario-based generation
+            conditioning_features: Which features to condition on (for sample mode only)
             n_samples: Number of forecast samples to generate
-            conditioning_features: Features to condition on
             
         Returns:
-            SyntheticData: Synthetic data instance with forecasts
+            dict: {
+                "status": "success",
+                "forecast_samples": List[Dict],
+                "distribution_params": dict,
+                "n_samples": int
+            }
         """
-        # TODO: Implement forecasting
+        # Validate model status
+        if self.status != "trained":
+            print(f"❌ Model must be trained to generate forecasts (current status: {self.status})")
+            print("   Run model.train() first")
+            return {"status": "error", "message": "Model not trained"}
+        
         print(f"[Model {self.name}] Generating forecast...")
-        from ..synthetic_data import SyntheticData
-        import pandas as pd
-        return SyntheticData(
-            data=pd.DataFrame(),
-            source_model=self,
-            metadata={"n_samples": n_samples}
-        )
+        
+        # Determine mode and build payload
+        if scenario is not None:
+            # Scenario mode
+            print(f"  Mode: Scenario-based (scenario: {scenario.name})")
+            print(f"  Generating {n_samples} synthetic paths...")
+            
+            payload = {
+                "user_id": self._data.get("user_id"),
+                "model_id": self.id,
+                "conditioning_source": "scenario",
+                "scenario_id": scenario.id,
+                "n_samples": n_samples
+            }
+            
+        else:
+            # Sample validation mode
+            # Auto-select test sample if not provided
+            if sample_id is None:
+                print("  Auto-selecting test sample...")
+                sample_id = self._get_first_test_sample_id()
+                if not sample_id:
+                    print("❌ No test samples found")
+                    return {"status": "error", "message": "No test samples available"}
+                print(f"  Selected sample: {sample_id}")
+            
+            print(f"  Mode: Sample validation")
+            print(f"  Sample: {sample_id}")
+            if conditioning_features:
+                print(f"  Conditioning on: {', '.join(conditioning_features)}")
+            else:
+                print(f"  Conditioning on: all future features")
+            print(f"  Generating {n_samples} forecast samples...")
+            
+            payload = {
+                "user_id": self._data.get("user_id"),
+                "model_id": self.id,
+                "conditioning_source": "sample",
+                "sample_id": sample_id,
+                "conditioning_features": conditioning_features,
+                "n_samples": n_samples
+            }
+        
+        # Call backend
+        try:
+            response = self.http.post('/api/v1/ml/forecast', payload)
+        except Exception as e:
+            print(f"  ❌ Forecast generation failed: {e}")
+            raise
+        
+        forecast_samples = response.get('forecast_samples', [])
+        
+        print(f"✅ Generated {len(forecast_samples)} forecast samples")
+        print(f"   Distribution: {response.get('distribution_params', {}).get('method', 'unknown')}")
+        
+        return {
+            "status": "success",
+            "forecast_samples": forecast_samples,
+            "distribution_params": response.get('distribution_params', {}),
+            "n_samples": len(forecast_samples)
+        }
+    
+    def _get_first_test_sample_id(self) -> Optional[str]:
+        """Get first test sample ID"""
+        try:
+            # Query backend for test samples
+            response = self.http.get(
+                f'/api/v1/models/{self.id}/samples',
+                params={'split_type': 'test', 'limit': 1}
+            )
+            
+            samples = response.get('samples', [])
+            if samples and len(samples) > 0:
+                return samples[0]['id']
+            
+            return None
+        except Exception as e:
+            print(f"  ⚠️  Failed to auto-select test sample: {e}")
+            return None
