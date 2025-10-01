@@ -234,35 +234,33 @@ class DataCollection:
     # FEATURE MANAGEMENT
     # ============================================
     
-    def add(self, identifier: str, source: str, name: Optional[str] = None):
+    def add(self, identifier: str, source: str, name: str):
         """
         Add a feature to fetch
         
         Args:
-            identifier: Series ID (FRED) or symbol (Yahoo)
+            identifier: Series ID (FRED code like "DGS10") or symbol (Yahoo like "GC=F")
             source: "FRED" or "Yahoo"
-            name: Optional display name (auto-detected if not provided)
+            name: Display name for this feature (e.g., "10-Year Treasury", "Gold Price")
             
         Example:
+            >>> # FRED: use series code + your name
             >>> data.add("DGS10", source="FRED", name="10-Year Treasury")
-            >>> data.add("GC=F", source="Yahoo", name="Gold")
+            >>> 
+            >>> # Yahoo: use symbol + your name
+            >>> data.add("GC=F", source="Yahoo", name="Gold Price")
         """
-        # Get metadata if name not provided
-        if not name:
-            info = self.get_info(identifier, source)
-            name = info['name'] if info else identifier
-        
         feature = {
-            "name": identifier if source == "FRED" else name,
+            "name": identifier if source == "FRED" else name,  # FRED uses series code as identifier
             "source": source,
-            "display_name": name
+            "display_name": name  # User-friendly name
         }
         
         if source == "Yahoo":
             feature["symbol"] = identifier
         
         self.features.append(feature)
-        print(f"✅ Added: {name} ({source})")
+        print(f"✅ Added: {name} ({source}: {identifier})")
     
     def list_features(self) -> List[Dict[str, Any]]:
         """List features that will be fetched"""
