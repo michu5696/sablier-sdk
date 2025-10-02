@@ -1,5 +1,6 @@
 """Model class representing a Sablier model"""
 
+import logging
 from typing import Optional, Any, List, Dict
 from ..http_client import HTTPClient
 from ..workflow import WorkflowValidator, WorkflowConflict
@@ -10,6 +11,8 @@ from .validators import (
     validate_training_period
 )
 from .utils import update_feature_types
+
+logger = logging.getLogger(__name__)
 
 
 class Model:
@@ -743,10 +746,21 @@ class Model:
             print(f"     Categories: {', '.join(categories.keys())}")
         print()
         
-        # Update model status
+        # Update model status and metadata
         self._data["status"] = "trained"
         self._data["training_metrics"] = training_metrics
-        self._data["model_metadata"] = response.get('model_metadata', {})
+        
+        # Refresh model data from database to get complete metadata
+        # This ensures we have the latest feature_importance data
+        try:
+            refreshed_model = self.http.get(f'/api/v1/models/{self.id}')
+            if refreshed_model:
+                self._data["model_metadata"] = refreshed_model.get('model_metadata', {})
+                logger.info("Refreshed model metadata from database after training")
+        except Exception as e:
+            logger.warning(f"Could not refresh model metadata: {e}")
+            # Fallback to response metadata
+            self._data["model_metadata"] = response.get('model_metadata', {})
         
         print(f"✅ Training complete - model saved to storage")
         
@@ -754,7 +768,7 @@ class Model:
             "status": "success",
             "model_id": response.get('model_id'),
             "training_metrics": training_metrics,
-            "model_metadata": response.get('model_metadata', {}),
+            "model_metadata": self._data.get('model_metadata', {}),
             "feature_importance": feature_importance,
             "component_breakdown": response.get('component_breakdown', {}),
             "categories": categories,
@@ -894,3 +908,624 @@ class Model:
         except Exception as e:
             print(f"  ⚠️  Failed to auto-select test sample: {e}")
             return None
+    
+    # ============================================
+    # RECONSTRUCTION METHODS
+    # ============================================
+    
+    def reconstruct_sample(
+        self,
+        sample_id: str = None,
+        split: str = "test"
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Reconstruct a sample from the database (decode + denormalize).
+        
+        Args:
+            sample_id: Sample ID to reconstruct (auto-selects first test sample if None)
+            split: Which split to fetch from if sample_id is None
+        
+        Returns:
+            Dictionary with structure:
+            {
+                "feature_name": {
+                    "past": {"dates": [...], "values": [...]},
+                    "future": {"dates": [...], "values": [...]}
+                },
+                ...
+            }
+        
+        Example:
+            >>> reconstruction = model.reconstruct_sample()
+            >>> feature_data = reconstruction["Gold Price"]
+            >>> print(feature_data["past"]["values"])
+        """
+        import numpy as np
+        
+        # Auto-select sample if not provided
+        if sample_id is None:
+            print(f"[Reconstruction] Auto-selecting {split} sample...")
+            response = self.http.get(
+                f'/api/v1/models/{self.id}/samples',
+                params={'split_type': split, 'limit': 1}
+            )
+            samples = response.get('samples', [])
+            if not samples:
+                raise ValueError(f"No {split} samples found")
+            sample_id = samples[0]['id']
+            print(f"  Selected sample: {sample_id}")
+        
+        print(f"[Reconstruction] Reconstructing sample {sample_id}...")
+        
+        # Call reconstruct endpoint
+        payload = {
+            "user_id": self._data.get("user_id"),
+            "model_id": self.id,
+            
+            # Source encoded windows from database
+            "encoded_source": "database",
+            "encoded_table": "samples",
+            "encoded_columns": ["encoded_conditioning_data", "encoded_target_data"],
+            "sample_id": sample_id,
+            
+            # Reference values from same sample
+            "reference_source": "database",
+            "reference_table": "samples",
+            "reference_column": "conditioning_data",
+            "reference_sample_id": sample_id,
+            
+            "output_destination": "return"
+        }
+        
+        try:
+            response = self.http.post('/api/v1/ml/reconstruct', payload)
+        except Exception as e:
+            print(f"  ❌ Reconstruction failed: {e}")
+            raise
+        
+        reconstructions = response.get('reconstructions', [])
+        print(f"✅ Reconstructed {len(reconstructions)} windows")
+        
+        # Also fetch original sample for dates
+        sample_response = self.http.get(
+            f'/api/v1/models/{self.id}/samples',
+            params={'split_type': split, 'limit': 100}
+        )
+        samples = sample_response.get('samples', [])
+        original_sample = next((s for s in samples if s['id'] == sample_id), None)
+        
+        if not original_sample:
+            raise ValueError(f"Could not find original sample {sample_id}")
+        
+        # Group reconstructions by feature and temporal_tag
+        result = {}
+        for window in reconstructions:
+            feature = window['feature']
+            temporal_tag = window['temporal_tag']
+            reconstructed_values = window['reconstructed_values']
+            
+            if feature not in result:
+                result[feature] = {}
+            
+            # Get dates from original sample
+            dates = self._extract_dates_from_sample(original_sample, feature, temporal_tag)
+            
+            result[feature][temporal_tag] = {
+                "dates": np.array(dates) if dates else None,
+                "values": np.array(reconstructed_values)
+            }
+        
+        return result
+    
+    def reconstruct_forecast(
+        self,
+        forecast_samples: List[Dict],
+        reference_sample_id: str
+    ) -> List[Dict[str, Dict[str, Any]]]:
+        """
+        Reconstruct forecast outputs back to original scale.
+        
+        Args:
+            forecast_samples: Output from generate_forecast() method
+            reference_sample_id: Sample ID used for forecast generation
+        
+        Returns:
+            List of reconstructed forecast samples, each with structure:
+            {
+                "feature_name": {
+                    "future": {"dates": [...], "values": [...]}
+                }
+            }
+        
+        Example:
+            >>> forecast_result = model.generate_forecast(n_samples=10)
+            >>> reconstructed = model.reconstruct_forecast(
+            ...     forecast_result['forecast_samples'],
+            ...     reference_sample_id="..."
+            ... )
+        """
+        import numpy as np
+        
+        print(f"[Reconstruction] Reconstructing {len(forecast_samples)} forecast samples...")
+        
+        # Transform forecast samples to encoded_windows format
+        window_to_sample_index = []
+        encoded_windows = []
+        
+        for sample_idx, sample in enumerate(forecast_samples):
+            for item in sample.get('encoded_target_data', []):
+                window_to_sample_index.append(sample_idx)
+                encoded_windows.append({
+                    "feature": item['feature'],
+                    "temporal_tag": item['temporal_tag'],
+                    "data_type": "encoded_normalized_residuals",
+                    "encoded_values": item['encoded_normalized_residuals']
+                })
+        
+        # Call reconstruct endpoint
+        payload = {
+            "user_id": self._data.get("user_id"),
+            "model_id": self.id,
+            
+            # Encoded windows provided inline (forecast outputs)
+            "encoded_source": "inline",
+            "encoded_windows": encoded_windows,
+            
+            # Reference values from database (sample used for forecast)
+            "reference_source": "database",
+            "reference_table": "samples",
+            "reference_column": "conditioning_data",
+            "reference_sample_id": reference_sample_id,
+            
+            "output_destination": "return"
+        }
+        
+        try:
+            response = self.http.post('/api/v1/ml/reconstruct', payload)
+        except Exception as e:
+            print(f"  ❌ Reconstruction failed: {e}")
+            raise
+        
+        reconstructions = response.get('reconstructions', [])
+        print(f"✅ Reconstructed {len(reconstructions)} windows")
+        
+        # Fetch reference sample for dates
+        sample_response = self.http.get(
+            f'/api/v1/models/{self.id}/samples',
+            params={'limit': 100}
+        )
+        samples = sample_response.get('samples', [])
+        reference_sample = next((s for s in samples if s['id'] == reference_sample_id), None)
+        
+        if not reference_sample:
+            raise ValueError(f"Could not find reference sample {reference_sample_id}")
+        
+        # Group reconstructions back into samples
+        reconstructed_samples = []
+        windows_by_sample = {}
+        
+        for idx, window in enumerate(reconstructions):
+            sample_idx = window_to_sample_index[idx]
+            if sample_idx not in windows_by_sample:
+                windows_by_sample[sample_idx] = []
+            windows_by_sample[sample_idx].append(window)
+        
+        # Convert to structured format
+        for sample_idx in sorted(windows_by_sample.keys()):
+            sample_reconstruction = {}
+            
+            for window in windows_by_sample[sample_idx]:
+                feature = window['feature']
+                temporal_tag = window['temporal_tag']
+                reconstructed_values = window['reconstructed_values']
+                
+                if feature not in sample_reconstruction:
+                    sample_reconstruction[feature] = {}
+                
+                # Get dates from reference sample
+                dates = self._extract_dates_from_sample(reference_sample, feature, temporal_tag)
+                
+                sample_reconstruction[feature][temporal_tag] = {
+                    "dates": np.array(dates) if dates else None,
+                    "values": np.array(reconstructed_values)
+                }
+            
+            reconstructed_samples.append(sample_reconstruction)
+        
+        return reconstructed_samples
+    
+    def _get_original_past_data(self, sample_id: str, feature: str) -> tuple:
+        """
+        Get original (non-reconstructed) past data for plotting.
+        This ensures alignment with forecast data which is anchored to original values.
+        
+        Returns:
+            Tuple of (dates, denormalized_values)
+        """
+        import numpy as np
+        
+        # Fetch full sample data using the updated list_samples endpoint
+        response = self.http.get(
+            f'/api/v1/models/{self.id}/samples',
+            params={'limit': 1, 'include_data': 'true'}
+        )
+        
+        # Find the specific sample
+        samples = response.get('samples', [])
+        sample = next((s for s in samples if s['id'] == sample_id), None)
+        
+        if not sample:
+            # Try without split filter
+            response = self.http.get(
+                f'/api/v1/models/{self.id}/samples',
+                params={'limit': 100, 'include_data': 'true'}
+            )
+            samples = response.get('samples', [])
+            sample = next((s for s in samples if s['id'] == sample_id), None)
+        
+        if not sample:
+            raise ValueError(f"Sample {sample_id} not found")
+        
+        # Find the feature in conditioning_data (all past windows are here)
+        conditioning_data = sample.get('conditioning_data', [])
+        
+        for item in conditioning_data:
+            if item.get('feature') == feature and item.get('temporal_tag') == 'past':
+                dates = item.get('dates', [])
+                normalized_series = item.get('normalized_series', [])
+                
+                if not normalized_series:
+                    raise ValueError(f"No normalized_series found for {feature} past window")
+                
+                # Denormalize using model's normalization params
+                denormalized_values = self._denormalize_values(feature, normalized_series)
+                
+                return dates, denormalized_values
+        
+        raise ValueError(f"Feature {feature} with temporal_tag='past' not found in conditioning_data")
+    
+    def _denormalize_values(self, feature: str, normalized_values: list) -> list:
+        """Denormalize values using model's normalization parameters"""
+        import numpy as np
+        
+        # Get normalization params from model data (separate field, not in metadata)
+        feature_norm_params = self._data.get('feature_normalization_params', {})
+        
+        if not feature_norm_params or feature not in feature_norm_params:
+            # Try fetching from database if not in local data
+            try:
+                model_response = self.http.get(f'/api/v1/models/{self.id}')
+                feature_norm_params = model_response.get('feature_normalization_params', {})
+                # Cache it for future use
+                self._data['feature_normalization_params'] = feature_norm_params
+            except:
+                pass
+        
+        if not feature_norm_params or feature not in feature_norm_params:
+            print(f"  ⚠️  Warning: No normalization params for {feature}, returning normalized values")
+            return normalized_values
+        
+        norm_params = feature_norm_params[feature]
+        mean = norm_params.get('mean', 0.0)
+        std = norm_params.get('std', 1.0)
+        
+        # Denormalize: value = (normalized * std) + mean
+        denormalized = [(val * std) + mean for val in normalized_values]
+        
+        return denormalized
+    
+    def _extract_dates_from_sample(self, sample: Dict, feature: str, temporal_tag: str) -> Optional[List[str]]:
+        """Extract date array from sample's conditioning_data or target_data"""
+        # Search in conditioning_data
+        conditioning_data = sample.get('conditioning_data', [])
+        if conditioning_data:
+            for item in conditioning_data:
+                if item.get('feature') == feature and item.get('temporal_tag') == temporal_tag:
+                    dates = item.get('dates')
+                    if dates:
+                        return dates
+        
+        # Search in target_data
+        target_data = sample.get('target_data', [])
+        if target_data:
+            for item in target_data:
+                if item.get('feature') == feature and item.get('temporal_tag') == temporal_tag:
+                    dates = item.get('dates')
+                    if dates:
+                        return dates
+        
+        # If dates not found, generate them from sample metadata
+        # This is a fallback for when dates aren't stored in the sample
+        window_length = 30  # Default, should match the actual window length
+        if temporal_tag == "past":
+            # Use start_date if available
+            start_date = sample.get('start_date')
+            if start_date:
+                from datetime import datetime, timedelta
+                base = datetime.strptime(start_date, '%Y-%m-%d')
+                return [(base + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(window_length)]
+        elif temporal_tag == "future":
+            # Use end_date and work backwards
+            end_date = sample.get('end_date')
+            if end_date:
+                from datetime import datetime, timedelta
+                base = datetime.strptime(end_date, '%Y-%m-%d')
+                return [(base - timedelta(days=window_length - 1 - i)).strftime('%Y-%m-%d') for i in range(window_length)]
+        
+        return None
+    
+    # ============================================
+    # PLOTTING METHODS
+    # ============================================
+    
+    def plot_reconstruction(
+        self,
+        sample_id: str = None,
+        feature: str = None,
+        split: str = "test",
+        save_path: str = None,
+        show: bool = True
+    ):
+        """
+        Reconstruct and plot a sample's original vs reconstructed values.
+        
+        Args:
+            sample_id: Sample ID to reconstruct (auto-selects if None)
+            feature: Feature name to plot (plots all if None)
+            split: Which split to use if auto-selecting sample
+            save_path: Path to save plot (e.g., "reconstruction.png")
+            show: Whether to display the plot
+        
+        Example:
+            >>> model.plot_reconstruction(feature="Gold Price")
+            >>> model.plot_reconstruction(save_path="plots/reconstruction.png", show=False)
+        """
+        from ..visualization import TimeSeriesPlotter, _check_matplotlib
+        import matplotlib.pyplot as plt
+        from datetime import datetime
+        
+        _check_matplotlib()
+        
+        # Reconstruct the sample
+        reconstruction = self.reconstruct_sample(sample_id=sample_id, split=split)
+        
+        # Determine which features to plot
+        features_to_plot = [feature] if feature else list(reconstruction.keys())
+        
+        # Create subplots
+        n_features = len(features_to_plot)
+        fig, axes = plt.subplots(n_features, 1, figsize=(14, 5 * n_features))
+        if n_features == 1:
+            axes = [axes]
+        
+        for idx, feat_name in enumerate(features_to_plot):
+            feat_data = reconstruction[feat_name]
+            
+            # Combine past and future
+            past_data = feat_data.get('past', {})
+            future_data = feat_data.get('future', {})
+            
+            past_dates = past_data.get('dates', [])
+            past_values = past_data.get('values', [])
+            future_dates = future_data.get('dates', [])
+            future_values = future_data.get('values', [])
+            
+            # Concatenate
+            all_dates = list(past_dates) + list(future_dates)
+            all_values = list(past_values) + list(future_values)
+            
+            # Convert dates to datetime
+            date_objects = [datetime.strptime(d, '%Y-%m-%d') if isinstance(d, str) else d for d in all_dates]
+            
+            # For now, we don't have original values to compare, so just plot reconstructed
+            # In future, could fetch original from database for comparison
+            TimeSeriesPlotter.plot_reconstruction(
+                dates=date_objects,
+                original_values=all_values,  # Would need true original values
+                reconstructed_values=all_values,
+                feature_name=feat_name,
+                past_length=len(past_dates),
+                title=f'Reconstruction: {feat_name}',
+                ax=axes[idx]
+            )
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"📊 Plot saved to {save_path}")
+        
+        if show:
+            plt.show()
+        else:
+            plt.close()
+    
+    def plot_forecasts(
+        self,
+        forecast_result: Dict,
+        reference_sample_id: str = None,
+        target_feature: str = None,
+        n_paths: int = 10,
+        show_ci: bool = True,
+        ci_levels: List[float] = [0.68, 0.95],
+        save_path: str = None,
+        show: bool = True
+    ):
+        """
+        Plot forecast samples overlaid on the reference sample.
+        
+        Args:
+            forecast_result: Output from generate_forecast() method
+            reference_sample_id: Sample ID used for forecast (auto-detects if None)
+            target_feature: Target feature to plot (uses first target if None)
+            n_paths: Number of individual forecast paths to show
+            show_ci: Whether to show confidence interval bands
+            ci_levels: Confidence levels for intervals (e.g., [0.68, 0.95])
+            save_path: Path to save plot (e.g., "forecast.png")
+            show: Whether to display the plot
+        
+        Example:
+            >>> forecast_result = model.generate_forecast(n_samples=100)
+            >>> model.plot_forecasts(
+            ...     forecast_result,
+            ...     target_feature="Gold Price",
+            ...     show_ci=True,
+            ...     ci_levels=[0.68, 0.95]
+            ... )
+        """
+        from ..visualization import TimeSeriesPlotter, _check_matplotlib
+        import matplotlib.pyplot as plt
+        from datetime import datetime
+        import numpy as np
+        
+        _check_matplotlib()
+        
+        forecast_samples = forecast_result['forecast_samples']
+        
+        # Auto-detect reference_sample_id from forecast_samples if not provided
+        if reference_sample_id is None:
+            # Try to get from first forecast sample metadata
+            if forecast_samples and 'metadata' in forecast_samples[0]:
+                reference_sample_id = forecast_samples[0]['metadata'].get('reference_sample_id')
+            
+            if not reference_sample_id:
+                raise ValueError("reference_sample_id must be provided or detectable from forecast_samples")
+        
+        print(f"[Plotting] Reconstructing forecast samples...")
+        
+        # Reconstruct forecast samples
+        reconstructed_forecasts = self.reconstruct_forecast(forecast_samples, reference_sample_id)
+        
+        # Determine target feature
+        if target_feature is None:
+            # Use first feature that has future data in forecasts
+            for feat in reconstructed_forecasts[0].keys():
+                if 'future' in reconstructed_forecasts[0][feat]:
+                    target_feature = feat
+                    break
+        
+        if not target_feature:
+            raise ValueError("No target feature found in forecast samples")
+        
+        print(f"[Plotting] Plotting {len(reconstructed_forecasts)} forecasts for '{target_feature}'...")
+        
+        # Get ORIGINAL past data (not reconstructed) to align with forecast reference
+        # Forecasts are anchored to the original reference value, not the reconstructed one
+        past_dates, past_values = self._get_original_past_data(reference_sample_id, target_feature)
+        
+        # Extract future data from forecasts
+        future_dates = reconstructed_forecasts[0][target_feature]['future']['dates']
+        forecast_paths = [
+            sample[target_feature]['future']['values']
+            for sample in reconstructed_forecasts
+        ]
+        
+        # Check if dates are available
+        if past_dates is None or future_dates is None:
+            print("  ⚠️  Warning: Dates not found in sample data, generating synthetic dates")
+            # Generate synthetic dates for visualization
+            past_dates = list(range(len(past_values)))
+            future_dates = list(range(len(past_values), len(past_values) + len(forecast_paths[0])))
+            # Convert to datetime objects
+            from datetime import datetime, timedelta
+            base_date = datetime(2024, 1, 1)
+            past_date_objects = [base_date + timedelta(days=i) for i in past_dates]
+            future_date_objects = [base_date + timedelta(days=i) for i in future_dates]
+        else:
+            # Convert dates to datetime
+            past_date_objects = [datetime.strptime(d, '%Y-%m-%d') if isinstance(d, str) else d for d in past_dates]
+            future_date_objects = [datetime.strptime(d, '%Y-%m-%d') if isinstance(d, str) else d for d in future_dates]
+        
+        # Create plot
+        fig, ax = plt.subplots(figsize=(14, 6))
+        
+        TimeSeriesPlotter.plot_forecasts(
+            past_dates=np.array(past_date_objects),
+            past_values=np.array(past_values),
+            future_dates=np.array(future_date_objects),
+            forecast_paths=forecast_paths,
+            feature_name=target_feature,
+            n_paths=n_paths,
+            show_ci=show_ci,
+            ci_levels=ci_levels,
+            ax=ax
+        )
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"📊 Plot saved to {save_path}")
+        
+        if show:
+            plt.show()
+        else:
+            plt.close()
+    
+    def plot_feature_importance(
+        self,
+        top_n: int = 20,
+        save_path: str = None,
+        show: bool = True
+    ):
+        """
+        Plot feature importance from trained QRF model (SHAP values).
+        
+        Args:
+            top_n: Show only top N features (None = show all)
+            save_path: Path to save plot (e.g., "feature_importance.png")
+            show: Whether to display the plot
+        
+        Example:
+            >>> model.plot_feature_importance(top_n=15)
+            >>> model.plot_feature_importance(save_path="plots/importance.png")
+        """
+        from ..visualization import TimeSeriesPlotter, _check_matplotlib
+        import matplotlib.pyplot as plt
+        
+        _check_matplotlib()
+        
+        # Check if model is trained
+        if self.status != "trained":
+            raise ValueError("Model must be trained before plotting feature importance. Call model.train() first.")
+        
+        # Get feature importance from model_metadata (nested structure)
+        model_metadata = self._data.get('model_metadata', {})
+        
+        # Feature importance is nested: model_metadata -> feature_importance -> feature_importance
+        feature_importance_wrapper = model_metadata.get('feature_importance', {})
+        feature_importance = feature_importance_wrapper.get('feature_importance', {})
+        
+        if not feature_importance:
+            # Print debug info to help user
+            print(f"  Model metadata keys: {list(model_metadata.keys())}")
+            if feature_importance_wrapper:
+                print(f"  Feature importance wrapper keys: {list(feature_importance_wrapper.keys())}")
+            raise ValueError("No feature importance data found. Model may not have been trained with SHAP values.")
+        
+        # Extract feature names and importance values
+        feature_names = list(feature_importance.keys())
+        importance_values = list(feature_importance.values())
+        
+        print(f"[Plotting] Feature importance for {len(feature_names)} features...")
+        
+        # Create plot
+        fig, ax = plt.subplots(figsize=(10, max(6, min(len(feature_names), top_n or len(feature_names)) * 0.4)))
+        
+        TimeSeriesPlotter.plot_feature_importance(
+            feature_names=feature_names,
+            importance_values=importance_values,
+            top_n=top_n,
+            ax=ax
+        )
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"📊 Plot saved to {save_path}")
+        
+        if show:
+            plt.show()
+        else:
+            plt.close()
