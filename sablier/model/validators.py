@@ -134,7 +134,14 @@ def validate_splits(splits: Dict[str, Dict[str, str]], past_window: int, future_
     print(f"  ✓ Splits validated: no data leakage")
 
 
-def auto_generate_splits(start_date: str, end_date: str, sample_size: Optional[int] = None) -> Dict[str, Dict[str, str]]:
+def auto_generate_splits(
+    start_date: str, 
+    end_date: str, 
+    sample_size: Optional[int] = None,
+    train_pct: float = 0.7,
+    val_pct: float = 0.2,
+    test_pct: float = 0.1
+) -> Dict[str, Dict[str, str]]:
     """
     Auto-generate splits from training period with proper gaps
     
@@ -145,6 +152,9 @@ def auto_generate_splits(start_date: str, end_date: str, sample_size: Optional[i
         start_date: Training period start (YYYY-MM-DD)
         end_date: Training period end (YYYY-MM-DD)
         sample_size: Optional sample size (past + future windows) for calculating gaps
+        train_pct: Training split percentage (default: 0.7 = 70%)
+        val_pct: Validation split percentage (default: 0.2 = 20%)
+        test_pct: Test split percentage (default: 0.1 = 10%)
         
     Returns:
         Dict with training, validation, test splits
@@ -158,11 +168,11 @@ def auto_generate_splits(start_date: str, end_date: str, sample_size: Optional[i
     # Otherwise, use default gap
     gap_days = sample_size if sample_size else 45  # Default 45 day gap
     
-    # Allocate days: ~70% training, gap, ~20% validation, ~10% test (contiguous)
+    # Allocate days using provided percentages
     usable_days = total_days - gap_days  # Reserve gap between train and val
     
-    train_days = int(usable_days * 0.7)
-    val_days = int(usable_days * 0.2)
+    train_days = int(usable_days * train_pct)
+    val_days = int(usable_days * val_pct)
     test_days = usable_days - train_days - val_days
     
     # Calculate split boundaries

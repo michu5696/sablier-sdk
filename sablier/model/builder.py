@@ -467,13 +467,23 @@ class Model:
             conditioning_features = [f for f in all_feature_names if f not in target_features]
             print(f"  Auto-assigned {len(conditioning_features)} conditioning features")
         
-        # Auto-generate splits if not provided
-        if splits is None:
+        # Auto-generate splits if not provided or if percentage-based
+        if splits is None or (isinstance(splits, dict) and isinstance(list(splits.values())[0], (int, float))):
             sample_size = past_window + future_window
             start = self._data.get('training_start_date')
             end = self._data.get('training_end_date')
-            splits = auto_generate_splits(start, end, sample_size=sample_size)
-            print(f"  Auto-generated splits with {sample_size}-day gap")
+            
+            # If percentage splits provided, use them; otherwise use defaults
+            if splits and isinstance(list(splits.values())[0], (int, float)):
+                train_pct = splits.get('training', 70) / 100
+                val_pct = splits.get('validation', 20) / 100
+                test_pct = splits.get('test', 10) / 100
+                print(f"  Converting percentage splits: {int(train_pct*100)}% train, {int(val_pct*100)}% val, {int(test_pct*100)}% test")
+                splits = auto_generate_splits(start, end, sample_size=sample_size, 
+                                             train_pct=train_pct, val_pct=val_pct, test_pct=test_pct)
+            else:
+                splits = auto_generate_splits(start, end, sample_size=sample_size)
+                print(f"  Auto-generated splits with {sample_size}-day gap")
         
         # Validate splits
         validate_splits(splits, past_window, future_window)
@@ -782,6 +792,7 @@ class Model:
     def generate_forecast(
         self,
         sample_id: Optional[str] = None,
+        test_sample_index: int = 0,
         scenario = None,  # Scenario instance
         conditioning_features: Optional[List[str]] = None,
         n_samples: int = 100
@@ -848,11 +859,12 @@ class Model:
             # Sample validation mode
             # Auto-select test sample if not provided
             if sample_id is None:
-                print("  Auto-selecting test sample...")
-                sample_id = self._get_first_test_sample_id()
-                if not sample_id:
-                    print("❌ No test samples found")
-                    return {"status": "error", "message": "No test samples available"}
+                print(f"  Auto-selecting test sample (index: {test_sample_index})...")
+                test_sample = self._get_test_sample(index=test_sample_index, include_data=False)
+                if not test_sample:
+                    print(f"❌ No test sample found at index {test_sample_index}")
+                    return {"status": "error", "message": f"No test sample at index {test_sample_index}"}
+                sample_id = test_sample['id']
                 print(f"  Selected sample: {sample_id}")
             
             print(f"  Mode: Sample validation")
@@ -888,25 +900,38 @@ class Model:
             "status": "success",
             "forecast_samples": forecast_samples,
             "distribution_params": response.get('distribution_params', {}),
-            "n_samples": len(forecast_samples)
+            "n_samples": len(forecast_samples),
+            "reference_sample_id": sample_id if scenario is None else None  # Include for plotting
         }
     
-    def _get_first_test_sample_id(self) -> Optional[str]:
-        """Get first test sample ID"""
+    def _get_test_sample(self, index: int = 0, include_data: bool = False) -> Optional[Dict]:
+        """
+        Get test sample by index
+        
+        Args:
+            index: Sample index (0 = first test sample)
+            include_data: Whether to include full conditioning_data/target_data
+        
+        Returns:
+            Sample dict or None if not found
+        """
         try:
-            # Query backend for test samples
+            params = {'split_type': 'test', 'limit': 100}
+            if include_data:
+                params['include_data'] = 'true'
+            
             response = self.http.get(
                 f'/api/v1/models/{self.id}/samples',
-                params={'split_type': 'test', 'limit': 1}
+                params=params
             )
             
             samples = response.get('samples', [])
-            if samples and len(samples) > 0:
-                return samples[0]['id']
+            if samples and len(samples) > index:
+                return samples[index]
             
             return None
         except Exception as e:
-            print(f"  ⚠️  Failed to auto-select test sample: {e}")
+            print(f"  ⚠️  Failed to get test sample: {e}")
             return None
     
     # ============================================
@@ -1089,16 +1114,17 @@ class Model:
         reconstructions = response.get('reconstructions', [])
         print(f"✅ Reconstructed {len(reconstructions)} windows")
         
-        # Fetch reference sample for dates
-        sample_response = self.http.get(
+        # Fetch reference sample with full data (for dates)
+        # Most common case: it's a test sample, so fetch test samples
+        response = self.http.get(
             f'/api/v1/models/{self.id}/samples',
-            params={'limit': 100}
+            params={'split_type': 'test', 'limit': 100, 'include_data': 'true'}
         )
-        samples = sample_response.get('samples', [])
+        samples = response.get('samples', [])
         reference_sample = next((s for s in samples if s['id'] == reference_sample_id), None)
         
         if not reference_sample:
-            raise ValueError(f"Could not find reference sample {reference_sample_id}")
+            raise ValueError(f"Reference sample {reference_sample_id} not found in test samples")
         
         # Group reconstructions back into samples
         reconstructed_samples = []
@@ -1134,37 +1160,19 @@ class Model:
         
         return reconstructed_samples
     
-    def _get_original_past_data(self, sample_id: str, feature: str) -> tuple:
+    def _get_original_past_data(self, sample: Dict, feature: str) -> tuple:
         """
         Get original (non-reconstructed) past data for plotting.
         This ensures alignment with forecast data which is anchored to original values.
+        
+        Args:
+            sample: Full sample dict (with conditioning_data/target_data)
+            feature: Feature name
         
         Returns:
             Tuple of (dates, denormalized_values)
         """
         import numpy as np
-        
-        # Fetch full sample data using the updated list_samples endpoint
-        response = self.http.get(
-            f'/api/v1/models/{self.id}/samples',
-            params={'limit': 1, 'include_data': 'true'}
-        )
-        
-        # Find the specific sample
-        samples = response.get('samples', [])
-        sample = next((s for s in samples if s['id'] == sample_id), None)
-        
-        if not sample:
-            # Try without split filter
-            response = self.http.get(
-                f'/api/v1/models/{self.id}/samples',
-                params={'limit': 100, 'include_data': 'true'}
-            )
-            samples = response.get('samples', [])
-            sample = next((s for s in samples if s['id'] == sample_id), None)
-        
-        if not sample:
-            raise ValueError(f"Sample {sample_id} not found")
         
         # Find the feature in conditioning_data (all past windows are here)
         conditioning_data = sample.get('conditioning_data', [])
@@ -1409,9 +1417,24 @@ class Model:
         
         print(f"[Plotting] Plotting {len(reconstructed_forecasts)} forecasts for '{target_feature}'...")
         
+        # Get reference sample with FULL data (for original past values)
+        # Fetch test sample by index with full data
+        reference_sample = self._get_test_sample(index=0, include_data=True)
+        if not reference_sample or reference_sample['id'] != reference_sample_id:
+            # Fallback: fetch all test samples and find by ID
+            print(f"  Note: Fetching test samples to find reference...")
+            response = self.http.get(
+                f'/api/v1/models/{self.id}/samples',
+                params={'split_type': 'test', 'limit': 100, 'include_data': 'true'}
+            )
+            samples = response.get('samples', [])
+            reference_sample = next((s for s in samples if s['id'] == reference_sample_id), None)
+            if not reference_sample:
+                raise ValueError(f"Reference sample {reference_sample_id} not found in test samples")
+        
         # Get ORIGINAL past data (not reconstructed) to align with forecast reference
         # Forecasts are anchored to the original reference value, not the reconstructed one
-        past_dates, past_values = self._get_original_past_data(reference_sample_id, target_feature)
+        past_dates, past_values = self._get_original_past_data(reference_sample, target_feature)
         
         # Extract future data from forecasts
         future_dates = reconstructed_forecasts[0][target_feature]['future']['dates']

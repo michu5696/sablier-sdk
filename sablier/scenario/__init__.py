@@ -1,6 +1,6 @@
-"""Scenario building and generation"""
+"""Scenario module for conditional synthetic data generation"""
 
-from .manager import ScenarioManager
 from .builder import Scenario
+from .manager import ScenarioManager
 
-__all__ = ["ScenarioManager", "Scenario"]
+__all__ = ['Scenario', 'ScenarioManager']

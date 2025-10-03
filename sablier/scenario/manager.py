@@ -1,57 +1,138 @@
-"""Scenario manager for creating and retrieving scenarios"""
+"""Scenario Manager for handling scenario operations"""
 
-from typing import Optional, TYPE_CHECKING
+from typing import List, Optional
 from ..http_client import HTTPClient
 from .builder import Scenario
 
-if TYPE_CHECKING:
-    from ..models.builder import Model
-
 
 class ScenarioManager:
-    """Manages scenario creation and retrieval"""
+    """
+    Manages scenario creation, retrieval, and listing
     
-    def __init__(self, http_client: HTTPClient):
+    Scenarios are market conditions used to generate conditional synthetic data.
+    Each scenario is linked to a trained model.
+    """
+    
+    def __init__(self, http_client: HTTPClient, model_manager):
+        """
+        Initialize ScenarioManager
+        
+        Args:
+            http_client: HTTP client for API requests
+            model_manager: ModelManager instance for model references
+        """
         self.http = http_client
+        self.model_manager = model_manager
     
     def create(
         self,
-        model: 'Model',
         name: str,
-        description: str = ""
-    ) -> 'Scenario':
+        model = None,
+        model_id: str = None,
+        description: str = "",
+        n_scenarios: int = 100
+    ) -> Scenario:
         """
         Create a new scenario
         
         Args:
-            model: Model to use for scenario generation
             name: Scenario name
-            description: Scenario description
-            
-        Returns:
-            Scenario: Scenario instance
-        """
-        # TODO: Implement scenario creation
-        scenario_data = {
-            "id": "placeholder-scenario-id",
-            "name": name,
-            "description": description,
-            "model_id": model.id
-        }
+            model: Model instance to use (either this or model_id required)
+            model_id: Model ID to use (either this or model required)
+            description: Optional scenario description
+            n_scenarios: Number of synthetic paths to generate (default: 100)
         
-        return Scenario(self.http, scenario_data, model)
-    
-    def get(self, scenario_id: str, model: Optional['Model'] = None) -> 'Scenario':
+        Returns:
+            Scenario instance
+        
+        Example:
+            >>> model = client.models.get("model-id")
+            >>> scenario = client.scenarios.create(
+            ...     name="Bull Market 2025",
+            ...     model=model,
+            ...     n_scenarios=1000
+            ... )
         """
-        Retrieve an existing scenario
+        # Determine model_id
+        if model is not None:
+            model_id = model.id
+        elif model_id is None:
+            raise ValueError("Either 'model' or 'model_id' must be provided")
+        
+        print(f"[Scenario] Creating scenario: {name}")
+        print(f"  Model ID: {model_id}")
+        print(f"  Target paths: {n_scenarios}")
+        
+        # Create via API
+        response = self.http.post('/api/v1/scenarios', {
+            'model_id': model_id,
+            'name': name,
+            'description': description,
+            'n_scenarios': n_scenarios
+        })
+        
+        print(f"✅ Scenario created: {response.get('id')}")
+        
+        # Fetch the model if not provided
+        if model is None:
+            model = self.model_manager.get(model_id)
+        
+        return Scenario(self.http, response, model)
+    
+    def get(self, scenario_id: str) -> Scenario:
+        """
+        Get a scenario by ID
         
         Args:
             scenario_id: Scenario ID
-            model: Optional model reference
-            
+        
         Returns:
-            Scenario: Scenario instance
+            Scenario instance
+        
+        Example:
+            >>> scenario = client.scenarios.get("scenario-id")
         """
-        # TODO: Implement scenario retrieval
-        scenario_data = {"id": scenario_id}
-        return Scenario(self.http, scenario_data, model)
+        response = self.http.get(f'/api/v1/scenarios/{scenario_id}')
+        
+        # Also fetch the model
+        model_id = response.get('model_id')
+        model = self.model_manager.get(model_id) if model_id else None
+        
+        return Scenario(self.http, response, model)
+    
+    def list(self, model_id: str = None, limit: int = 100, offset: int = 0) -> List[Scenario]:
+        """
+        List scenarios
+        
+        Args:
+            model_id: Optional filter by model ID
+            limit: Maximum number of scenarios to return
+            offset: Pagination offset
+        
+        Returns:
+            List of Scenario instances
+        
+        Example:
+            >>> scenarios = client.scenarios.list(model_id="model-id")
+            >>> for scenario in scenarios:
+            ...     print(scenario.name, scenario.current_step)
+        """
+        params = {'limit': limit, 'offset': offset}
+        if model_id:
+            params['model_id'] = model_id
+        
+        response = self.http.get('/api/v1/scenarios', params=params)
+        scenarios_data = response.get('scenarios', [])
+        
+        # Create Scenario instances
+        scenarios = []
+        for scenario_data in scenarios_data:
+            model_id = scenario_data.get('model_id')
+            try:
+                model = self.model_manager.get(model_id) if model_id else None
+            except:
+                model = None
+            
+            scenarios.append(Scenario(self.http, scenario_data, model))
+        
+        return scenarios

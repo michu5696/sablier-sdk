@@ -57,7 +57,7 @@ class SablierClient:
         
         # Initialize managers
         self.models = ModelManager(self.http, interactive=interactive)
-        self.scenarios = ScenarioManager(self.http)
+        self.scenarios = ScenarioManager(self.http, self.models)
     
     def health_check(self) -> dict:
         """
