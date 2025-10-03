@@ -585,14 +585,6 @@ class Scenario:
         response = self.http.post('/api/v1/ml/reconstruct', payload)
         reconstructions = response.get('reconstructions', [])
         
-        print(f"  DEBUG: Got {len(reconstructions)} reconstructions")
-        if reconstructions:
-            print(f"  DEBUG: First reconstruction keys: {list(reconstructions[0].keys())}")
-            recon_values = reconstructions[0].get('reconstructed_values', [])
-            print(f"  DEBUG: reconstructed_values type: {type(recon_values)}")
-            if recon_values:
-                print(f"  DEBUG: First value: {recon_values[0] if isinstance(recon_values, list) else recon_values}")
-        
         # Group reconstructions by sample
         windows_by_sample = {}
         for idx, window in enumerate(reconstructions):

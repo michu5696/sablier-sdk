@@ -904,6 +904,393 @@ class Model:
             "reference_sample_id": sample_id if scenario is None else None  # Include for plotting
         }
     
+    # ============================================
+    # RECONSTRUCTION QUALITY CHECKING
+    # ============================================
+    
+    def check_reconstruction_quality(
+        self,
+        feature: str,
+        window: str,
+        reference_date: str,
+        split: str = "test",
+        plot: bool = True,
+        save_path: str = None
+    ) -> Dict[str, float]:
+        """
+        Check reconstruction quality for a specific feature-window combination
+        
+        Validates encoding quality by comparing original vs reconstructed values.
+        Automatically selects the correct data type:
+        - Past windows (all features): normalized_series
+        - Future conditioning: normalized_series
+        - Future target: normalized_residuals
+        
+        Args:
+            feature: Feature name (e.g., "10-Year Treasury", "S&P 500")
+            window: "past" or "future"
+            reference_date: Date to find closest sample (YYYY-MM-DD)
+            split: Sample split ("training", "validation", "test")
+            plot: Whether to generate plot
+            save_path: Path to save plot (auto-generated if None)
+        
+        Returns:
+            Dict with metrics: mse, rmse, mae, r_squared, max_error, n_components
+        
+        Examples:
+            >>> # Check future target residuals (critical for realism!)
+            >>> model.check_reconstruction_quality("10-Year Treasury", "future", "2024-01-15")
+            
+            >>> # Check past conditioning
+            >>> model.check_reconstruction_quality("S&P 500", "past", "2024-01-15")
+        """
+        import numpy as np
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+        from datetime import datetime
+        
+        print(f"\n{'='*70}")
+        print(f"RECONSTRUCTION QUALITY CHECK")
+        print(f"{'='*70}")
+        print(f"Feature: {feature}")
+        print(f"Window: {window}")
+        print(f"Reference Date: {reference_date}")
+        print(f"{'='*70}\n")
+        
+        # Find closest sample
+        print(f"🔍 Finding sample closest to {reference_date}...")
+        response = self.http.get(
+            f'/api/v1/models/{self.id}/samples',
+            params={'split_type': split, 'limit': 500, 'include_data': 'true'}
+        )
+        samples = response.get('samples', [])
+        
+        if not samples:
+            raise ValueError(f"No {split} samples found")
+        
+        target_dt = datetime.strptime(reference_date, '%Y-%m-%d')
+        closest_sample = None
+        min_distance = float('inf')
+        
+        for sample in samples:
+            sample_date_str = sample.get('start_date')
+            if sample_date_str:
+                sample_dt = datetime.strptime(sample_date_str, '%Y-%m-%d')
+                distance = abs((sample_dt - target_dt).days)
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_sample = sample
+        
+        if not closest_sample:
+            raise ValueError(f"No sample found close to {reference_date}")
+        
+        print(f"  ✅ Sample: {closest_sample['id']}")
+        print(f"     Start: {closest_sample.get('start_date')} (distance: {min_distance} days)")
+        
+        # Determine feature type and data type
+        feature_info = next(
+            (f for f in self.input_features if f.get('display_name') == feature or f.get('name') == feature),
+            None
+        )
+        if not feature_info:
+            raise ValueError(f"Feature '{feature}' not found")
+        
+        is_target = feature_info.get('type') == 'target'
+        
+        # Auto-select data_type
+        if window == "past":
+            data_type = "normalized_series"
+        elif window == "future":
+            data_type = "normalized_residuals" if is_target else "normalized_series"
+        else:
+            raise ValueError(f"Invalid window: {window}")
+        
+        print(f"\n📊 Configuration:")
+        print(f"  Feature type: {'target' if is_target else 'conditioning'}")
+        print(f"  Data type: {data_type}")
+        
+        # Extract data from sample
+        # Original data is in conditioning_data/target_data
+        # Encoded data is in encoded_conditioning_data/encoded_target_data
+        print(f"\n📥 Extracting data...")
+        
+        # Determine source for original data
+        if window == "past":
+            original_source = "conditioning_data"  # All past windows
+            encoded_source = "encoded_conditioning_data"
+        elif window == "future" and is_target:
+            original_source = "target_data"  # Future target windows
+            encoded_source = "encoded_target_data"
+        else:
+            original_source = "conditioning_data"  # Future conditioning windows
+            encoded_source = "encoded_conditioning_data"
+        
+        original_data = closest_sample.get(original_source, [])
+        encoded_data = closest_sample.get(encoded_source, [])
+        
+        original_values = None
+        encoded_values = None
+        dates = None
+        
+        # Extract original values
+        for item in original_data:
+            if item.get('feature') == feature and item.get('temporal_tag') == window:
+                original_values = item.get(data_type, [])
+                dates = item.get('dates', [])
+                break
+        
+        # Extract encoded values (from separate encoded arrays)
+        for item in encoded_data:
+            if item.get('feature') == feature and item.get('temporal_tag') == window:
+                if data_type == "normalized_series":
+                    encoded_values = item.get('encoded_normalized_series', [])
+                else:
+                    encoded_values = item.get('encoded_normalized_residuals', [])
+                
+                if encoded_values:
+                    break
+        
+        if original_values is None or encoded_values is None:
+            raise ValueError(f"Data not found for {feature} {window} {data_type}")
+        
+        # Denormalize original values to match reconstructed scale
+        norm_params = self._data.get('feature_normalization_params', {}).get(feature, {})
+        mean = norm_params.get('mean', 0)
+        std = norm_params.get('std', 1)
+        
+        if data_type == "normalized_residuals":
+            # For residuals: residual = series - reference_value
+            # To get series back: series = residual + reference_value
+            # Get last past value as reference
+            past_ref_norm = None
+            for item in closest_sample.get('conditioning_data', []):
+                if item.get('feature') == feature and item.get('temporal_tag') == 'past':
+                    past_series = item.get('normalized_series', [])
+                    if past_series:
+                        past_ref_norm = past_series[-1]
+                    break
+            
+            if past_ref_norm is None:
+                raise ValueError(f"Could not find past reference for residuals reconstruction")
+            
+            # Add reference to each residual to get the series (all in normalized space)
+            reconstructed_norm = [residual + past_ref_norm for residual in original_values]
+            
+            # Denormalize
+            original_values_denorm = [(v * std) + mean for v in reconstructed_norm]
+            
+            print(f"  DEBUG RESIDUALS: past_ref_norm={past_ref_norm:.4f}")
+            print(f"  DEBUG RESIDUALS: First residual={original_values[0]:.4f}")
+            print(f"  DEBUG RESIDUALS: First reconstructed_norm={reconstructed_norm[0]:.4f}")
+            print(f"  DEBUG RESIDUALS: First denorm={original_values_denorm[0]:.4f}")
+        else:
+            # For series: just denormalize directly
+            original_values_denorm = [(v * std) + mean for v in original_values]
+        
+        print(f"  ✅ Original: {len(original_values)} points (denormalized)")
+        print(f"  ✅ Encoded: {len(encoded_values)} components")
+        
+        # Reconstruct
+        print(f"\n🔄 Reconstructing...")
+        
+        # For residuals, we need a reference value (last past value)
+        # For series, no reference needed
+        if data_type == "normalized_residuals":
+            # Get the last past value as reference (in normalized space for backend)
+            # Find the past window for this feature
+            for item in closest_sample.get('conditioning_data', []):
+                if item.get('feature') == feature and item.get('temporal_tag') == 'past':
+                    past_series = item.get('normalized_series', [])
+                    if past_series:
+                        past_ref_norm = past_series[-1]  # Keep in normalized space
+                    break
+            
+            if past_ref_norm is None:
+                raise ValueError(f"Could not find past reference value for {feature}")
+            
+            print(f"  DEBUG: Sending past_ref_norm={past_ref_norm:.4f} to backend as reference")
+            
+            payload = {
+                "user_id": self._data.get("user_id"),
+                "model_id": self.id,
+                "encoded_source": "inline",
+                "encoded_windows": [{
+                    "feature": feature,
+                    "temporal_tag": window,
+                    "data_type": f"encoded_{data_type}",
+                    "encoded_values": encoded_values
+                }],
+                "reference_source": "inline",
+                "reference_values": {feature: past_ref_norm},  # Send NORMALIZED reference
+                "output_destination": "return"
+            }
+        else:
+            # For series, no reference needed
+            payload = {
+                "user_id": self._data.get("user_id"),
+                "model_id": self.id,
+                "encoded_source": "inline",
+                "encoded_windows": [{
+                    "feature": feature,
+                    "temporal_tag": window,
+                    "data_type": f"encoded_{data_type}",
+                    "encoded_values": encoded_values
+                }],
+                "reference_source": "none",
+                "output_destination": "return"
+            }
+        
+        response = self.http.post('/api/v1/ml/reconstruct', payload)
+        reconstructions = response.get('reconstructions', [])
+        
+        if not reconstructions:
+            raise ValueError("No reconstructions returned")
+        
+        reconstructed_values = reconstructions[0].get('reconstructed_values', [])
+        print(f"  ✅ Reconstructed: {len(reconstructed_values)} points")
+        
+        # Calculate metrics
+        print(f"\n📈 Calculating metrics...")
+        original_arr = np.array(original_values_denorm)  # Use denormalized values
+        reconstructed_arr = np.array(reconstructed_values)
+        
+        min_len = min(len(original_arr), len(reconstructed_arr))
+        original_arr = original_arr[:min_len]
+        reconstructed_arr = reconstructed_arr[:min_len]
+        
+        # Debug: Check value ranges
+        print(f"  DEBUG: Original range: [{original_arr.min():.2f}, {original_arr.max():.2f}]")
+        print(f"  DEBUG: Reconstructed range: [{reconstructed_arr.min():.2f}, {reconstructed_arr.max():.2f}]")
+        print(f"  DEBUG: First 3 original: {original_arr[:3].tolist()}")
+        print(f"  DEBUG: First 3 reconstructed: {reconstructed_arr[:3].tolist()}")
+        
+        mse = mean_squared_error(original_arr, reconstructed_arr)
+        rmse = np.sqrt(mse)
+        mae = mean_absolute_error(original_arr, reconstructed_arr)
+        r_squared = r2_score(original_arr, reconstructed_arr)
+        max_error = np.max(np.abs(original_arr - reconstructed_arr))
+        
+        metrics = {
+            "mse": float(mse),
+            "rmse": float(rmse),
+            "mae": float(mae),
+            "r_squared": float(r_squared),
+            "max_error": float(max_error),
+            "n_components": len(encoded_values),
+            "n_points": min_len
+        }
+        
+        print(f"\n✅ Reconstruction Metrics:")
+        print(f"  MSE:       {mse:.6f}")
+        print(f"  RMSE:      {rmse:.6f}")
+        print(f"  MAE:       {mae:.6f}")
+        print(f"  R²:        {r_squared:.6f}")
+        print(f"  Max Error: {max_error:.6f}")
+        print(f"  Components: {len(encoded_values)}")
+        
+        # Plot
+        if plot:
+            print(f"\n📊 Generating plot...")
+            if save_path is None:
+                import os
+                save_path = os.path.join(
+                    os.getcwd(),
+                    f"reconstruction_{feature.replace(' ', '_')}_{window}.png"
+                )
+            
+            self._plot_reconstruction_quality(
+                original_arr, reconstructed_arr, dates[:min_len] if dates else None,
+                feature, window, data_type, metrics, save_path
+            )
+            print(f"  ✅ Plot saved: {save_path}")
+        
+        return metrics
+    
+    def _plot_reconstruction_quality(
+        self, original, reconstructed, dates, feature, window, data_type, metrics, save_path
+    ):
+        """Plot reconstruction quality comparison"""
+        import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
+        from datetime import datetime
+        
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        fig.suptitle(
+            f"Reconstruction Quality: {feature} ({window} window, {data_type})",
+            fontsize=14, fontweight='bold'
+        )
+        
+        # Prepare x-axis
+        if dates:
+            x_vals = [datetime.strptime(d, '%Y-%m-%d') for d in dates]
+            x_label = 'Date'
+        else:
+            x_vals = list(range(len(original)))
+            x_label = 'Time Step'
+        
+        # Plot 1: Time series
+        ax1 = axes[0, 0]
+        ax1.plot(x_vals, original, label='Original', linewidth=2, alpha=0.8)
+        ax1.plot(x_vals, reconstructed, label='Reconstructed', linewidth=2, alpha=0.8, linestyle='--')
+        ax1.set_xlabel(x_label)
+        ax1.set_ylabel('Value')
+        ax1.set_title('Original vs Reconstructed')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        if dates:
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        
+        # Plot 2: Scatter
+        ax2 = axes[0, 1]
+        ax2.scatter(original, reconstructed, alpha=0.6, s=30)
+        min_val = min(original.min(), reconstructed.min())
+        max_val = max(original.max(), reconstructed.max())
+        ax2.plot([min_val, max_val], [min_val, max_val], 'r--', label='Perfect', linewidth=2)
+        ax2.set_xlabel('Original')
+        ax2.set_ylabel('Reconstructed')
+        ax2.set_title(f'Scatter (R² = {metrics["r_squared"]:.4f})')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # Plot 3: Residuals
+        ax3 = axes[1, 0]
+        residuals = original - reconstructed
+        ax3.plot(x_vals, residuals, linewidth=1.5, alpha=0.7)
+        ax3.axhline(y=0, color='r', linestyle='--', linewidth=2)
+        ax3.set_xlabel(x_label)
+        ax3.set_ylabel('Residual')
+        ax3.set_title('Reconstruction Residuals')
+        ax3.grid(True, alpha=0.3)
+        if dates:
+            ax3.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        
+        # Plot 4: Metrics
+        ax4 = axes[1, 1]
+        ax4.axis('off')
+        metrics_text = f"""
+Reconstruction Metrics:
+
+MSE:       {metrics['mse']:.6f}
+RMSE:      {metrics['rmse']:.6f}
+MAE:       {metrics['mae']:.6f}
+R²:        {metrics['r_squared']:.6f}
+Max Error: {metrics['max_error']:.6f}
+
+Encoding Info:
+Components: {metrics['n_components']}
+Points:     {metrics['n_points']}
+
+Window: {window}
+Data Type: {data_type}
+        """
+        ax4.text(0.1, 0.5, metrics_text, fontsize=11, family='monospace',
+                verticalalignment='center', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+        
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+    
     def _get_test_sample(self, index: int = 0, include_data: bool = False) -> Optional[Dict]:
         """
         Get test sample by index
