@@ -912,8 +912,8 @@ class Model:
         self,
         feature: str,
         window: str,
-        reference_date: str,
         split: str = "test",
+        index: int = 0,
         plot: bool = True,
         save_path: str = None
     ) -> Dict[str, float]:
@@ -929,8 +929,8 @@ class Model:
         Args:
             feature: Feature name (e.g., "10-Year Treasury", "S&P 500")
             window: "past" or "future"
-            reference_date: Date to find closest sample (YYYY-MM-DD)
             split: Sample split ("training", "validation", "test")
+            index: Which sample to check (0 = first sample in split)
             plot: Whether to generate plot
             save_path: Path to save plot (auto-generated if None)
         
@@ -938,53 +938,44 @@ class Model:
             Dict with metrics: mse, rmse, mae, r_squared, max_error, n_components
         
         Examples:
-            >>> # Check future target residuals (critical for realism!)
-            >>> model.check_reconstruction_quality("10-Year Treasury", "future", "2024-01-15")
+            >>> # Check future target residuals on first test sample (critical for realism!)
+            >>> model.check_reconstruction_quality("10-Year Treasury", "future", split="test", index=0)
             
-            >>> # Check past conditioning
-            >>> model.check_reconstruction_quality("S&P 500", "past", "2024-01-15")
+            >>> # Check past conditioning on 5th training sample
+            >>> model.check_reconstruction_quality("S&P 500", "past", split="training", index=4)
         """
         import numpy as np
         from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-        from datetime import datetime
         
         print(f"\n{'='*70}")
         print(f"RECONSTRUCTION QUALITY CHECK")
         print(f"{'='*70}")
         print(f"Feature: {feature}")
         print(f"Window: {window}")
-        print(f"Reference Date: {reference_date}")
+        print(f"Split: {split}")
+        print(f"Index: {index}")
         print(f"{'='*70}\n")
         
-        # Find closest sample
-        print(f"🔍 Finding sample closest to {reference_date}...")
+        # Fetch samples from specified split
+        print(f"🔍 Fetching {split} samples...")
         response = self.http.get(
             f'/api/v1/models/{self.id}/samples',
-            params={'split_type': split, 'limit': 500, 'include_data': 'true'}
+            params={'split_type': split, 'limit': 1000, 'include_data': 'true'}
         )
         samples = response.get('samples', [])
         
         if not samples:
             raise ValueError(f"No {split} samples found")
         
-        target_dt = datetime.strptime(reference_date, '%Y-%m-%d')
-        closest_sample = None
-        min_distance = float('inf')
+        if index >= len(samples):
+            raise ValueError(f"Index {index} out of range (only {len(samples)} {split} samples available)")
         
-        for sample in samples:
-            sample_date_str = sample.get('start_date')
-            if sample_date_str:
-                sample_dt = datetime.strptime(sample_date_str, '%Y-%m-%d')
-                distance = abs((sample_dt - target_dt).days)
-                if distance < min_distance:
-                    min_distance = distance
-                    closest_sample = sample
+        closest_sample = samples[index]
         
-        if not closest_sample:
-            raise ValueError(f"No sample found close to {reference_date}")
-        
-        print(f"  ✅ Sample: {closest_sample['id']}")
-        print(f"     Start: {closest_sample.get('start_date')} (distance: {min_distance} days)")
+        print(f"  ✅ Selected sample {index+1}/{len(samples)}")
+        print(f"     ID: {closest_sample['id']}")
+        print(f"     Start Date: {closest_sample.get('start_date')}")
+        print(f"     Split: {closest_sample.get('split_type', split)}")
         
         # Determine feature type and data type
         feature_info = next(
@@ -1060,7 +1051,7 @@ class Model:
         if data_type == "normalized_residuals":
             # For residuals: residual = series - reference_value
             # To get series back: series = residual + reference_value
-            # Get last past value as reference
+            # Get last past value as reference (from conditioning_data - past of all features is conditioning)
             past_ref_norm = None
             for item in closest_sample.get('conditioning_data', []):
                 if item.get('feature') == feature and item.get('temporal_tag') == 'past':
@@ -1070,7 +1061,7 @@ class Model:
                     break
             
             if past_ref_norm is None:
-                raise ValueError(f"Could not find past reference for residuals reconstruction")
+                raise ValueError(f"Could not find past reference for {feature} in conditioning_data")
             
             # Add reference to each residual to get the series (all in normalized space)
             reconstructed_norm = [residual + past_ref_norm for residual in original_values]
