@@ -88,11 +88,13 @@ class TimeSeriesPlotter:
         n_paths: int = 10,
         show_ci: bool = True,
         ci_levels: List[float] = [0.68, 0.95],
+        ground_truth_dates: np.ndarray = None,
+        ground_truth_values: np.ndarray = None,
         title: str = None,
         ax = None
     ):
         """
-        Plot forecast paths with optional confidence intervals.
+        Plot forecast paths with optional confidence intervals and ground truth.
         
         Args:
             past_dates: Array of past dates
@@ -103,6 +105,8 @@ class TimeSeriesPlotter:
             n_paths: Number of individual paths to show
             show_ci: Whether to show confidence interval bands
             ci_levels: Confidence interval levels (e.g., [0.68, 0.95] for 1σ and 2σ)
+            ground_truth_dates: Array of ground truth future dates (optional)
+            ground_truth_values: Array of ground truth future values (optional)
             title: Optional custom title
             ax: Optional matplotlib axis
         """
@@ -114,6 +118,11 @@ class TimeSeriesPlotter:
         # Plot past data
         ax.plot(past_dates, past_values, 'o-', color='black', 
                 label='Historical', linewidth=2, markersize=4, alpha=0.8)
+        
+        # Plot ground truth (actual realized future values) if available
+        if ground_truth_dates is not None and ground_truth_values is not None:
+            ax.plot(ground_truth_dates, ground_truth_values, 'o-', color='green', 
+                    label='Ground Truth', linewidth=2.5, markersize=5, alpha=0.9)
         
         # Plot individual forecast paths
         n_to_plot = min(n_paths, len(forecast_paths))

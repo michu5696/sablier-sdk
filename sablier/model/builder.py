@@ -636,6 +636,12 @@ class Model:
         # Update model status
         self._data["status"] = "samples_encoded"
         
+        # Persist status change to database
+        try:
+            self.http.patch(f'/api/v1/models/{self.id}', {"status": "samples_encoded"})
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to persist status change: {e}")
+        
         print(f"✅ Encoding complete")
         
         return {
@@ -1183,9 +1189,12 @@ class Model:
             print(f"\n📊 Generating plot...")
             if save_path is None:
                 import os
+                # Create reconstructions subdirectory
+                reconstructions_dir = os.path.join(os.getcwd(), "reconstructions")
+                os.makedirs(reconstructions_dir, exist_ok=True)
                 save_path = os.path.join(
-                    os.getcwd(),
-                    f"reconstruction_{feature.replace(' ', '_')}_{window}.png"
+                    reconstructions_dir,
+                    f"reconstruction_{feature.replace(' ', '_')}_{window}_{data_type}_{split}.png"
                 )
             
             self._plot_reconstruction_quality(
@@ -1199,12 +1208,12 @@ class Model:
     def _plot_reconstruction_quality(
         self, original, reconstructed, dates, feature, window, data_type, metrics, save_path
     ):
-        """Plot reconstruction quality comparison"""
+        """Plot reconstruction quality comparison - simplified to show only original vs reconstructed + scatter R²"""
         import matplotlib.pyplot as plt
         import matplotlib.dates as mdates
         from datetime import datetime
         
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         fig.suptitle(
             f"Reconstruction Quality: {feature} ({window} window, {data_type})",
             fontsize=14, fontweight='bold'
@@ -1219,7 +1228,7 @@ class Model:
             x_label = 'Time Step'
         
         # Plot 1: Time series
-        ax1 = axes[0, 0]
+        ax1 = axes[0]
         ax1.plot(x_vals, original, label='Original', linewidth=2, alpha=0.8)
         ax1.plot(x_vals, reconstructed, label='Reconstructed', linewidth=2, alpha=0.8, linestyle='--')
         ax1.set_xlabel(x_label)
@@ -1232,7 +1241,7 @@ class Model:
             plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
         
         # Plot 2: Scatter
-        ax2 = axes[0, 1]
+        ax2 = axes[1]
         ax2.scatter(original, reconstructed, alpha=0.6, s=30)
         min_val = min(original.min(), reconstructed.min())
         max_val = max(original.max(), reconstructed.max())
@@ -1243,40 +1252,20 @@ class Model:
         ax2.legend()
         ax2.grid(True, alpha=0.3)
         
-        # Plot 3: Residuals
-        ax3 = axes[1, 0]
-        residuals = original - reconstructed
-        ax3.plot(x_vals, residuals, linewidth=1.5, alpha=0.7)
-        ax3.axhline(y=0, color='r', linestyle='--', linewidth=2)
-        ax3.set_xlabel(x_label)
-        ax3.set_ylabel('Residual')
-        ax3.set_title('Reconstruction Residuals')
-        ax3.grid(True, alpha=0.3)
-        if dates:
-            ax3.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-            plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45, ha='right')
-        
-        # Plot 4: Metrics
-        ax4 = axes[1, 1]
-        ax4.axis('off')
-        metrics_text = f"""
-Reconstruction Metrics:
-
-MSE:       {metrics['mse']:.6f}
-RMSE:      {metrics['rmse']:.6f}
-MAE:       {metrics['mae']:.6f}
-R²:        {metrics['r_squared']:.6f}
+        # Add metrics as text in the scatter plot
+        metrics_text = f"""Metrics:
+MSE: {metrics['mse']:.6f}
+RMSE: {metrics['rmse']:.6f}
+MAE: {metrics['mae']:.6f}
+R²: {metrics['r_squared']:.6f}
 Max Error: {metrics['max_error']:.6f}
 
-Encoding Info:
 Components: {metrics['n_components']}
-Points:     {metrics['n_points']}
-
-Window: {window}
-Data Type: {data_type}
-        """
-        ax4.text(0.1, 0.5, metrics_text, fontsize=11, family='monospace',
-                verticalalignment='center', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+Points: {metrics['n_points']}"""
+        
+        ax2.text(0.02, 0.98, metrics_text, transform=ax2.transAxes, fontsize=9, 
+                family='monospace', verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
         
         plt.tight_layout()
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -1600,6 +1589,52 @@ Data Type: {data_type}
         
         return denormalized
     
+    def _get_ground_truth_future_data(self, sample: Dict, feature: str) -> tuple:
+        """
+        Extract ground truth future target data from a test sample.
+        
+        This gets the actual realized future values that really happened,
+        which we can compare against our forecasts.
+        
+        Args:
+            sample: Full sample dict (with target_data)
+            feature: Target feature name
+        
+        Returns:
+            Tuple of (dates, values) - both can be None if not found
+        """
+        target_data = sample.get('target_data', [])
+        
+        for item in target_data:
+            if (item.get('feature') == feature and 
+                item.get('temporal_tag') == 'future' and
+                item.get('data_type') == 'normalized_residuals'):
+                
+                # Get dates and residuals
+                dates = item.get('dates', [])
+                residuals = item.get('normalized_residuals', [])
+                
+                if residuals and dates:
+                    # Get the last normalized past value as reference
+                    past_dates, past_values = self._get_original_past_data(sample, feature)
+                    if past_values:
+                        # Get normalization parameters
+                        norm_params = self._data.get('model_metadata', {}).get('normalization_parameters', {}).get(feature, {})
+                        mean = norm_params.get('mean', 0.0)
+                        std = norm_params.get('std', 1.0)
+                        
+                        # Normalize the last past value to get the reference
+                        last_past_normalized = (past_values[-1] - mean) / std
+                        
+                        # Reconstruct the normalized series: add normalized reference to each residual
+                        reconstructed_normalized = [last_past_normalized + residual for residual in residuals]
+                        
+                        # Denormalize the reconstructed values
+                        denormalized_values = [(val * std) + mean for val in reconstructed_normalized]
+                        return dates, denormalized_values
+        
+        return None, None
+    
     def _extract_dates_from_sample(self, sample: Dict, feature: str, temporal_tag: str) -> Optional[List[str]]:
         """Extract date array from sample's conditioning_data or target_data"""
         # Search in conditioning_data
@@ -1814,6 +1849,14 @@ Data Type: {data_type}
         # Forecasts are anchored to the original reference value, not the reconstructed one
         past_dates, past_values = self._get_original_past_data(reference_sample, target_feature)
         
+        # Get GROUND TRUTH future data from the reference sample (test sample has actual future values)
+        ground_truth_dates, ground_truth_values = self._get_ground_truth_future_data(reference_sample, target_feature)
+        
+        if ground_truth_values is not None:
+            print(f"  ✅ Found ground truth: {len(ground_truth_values)} future values")
+        else:
+            print(f"  ⚠️  No ground truth data found for {target_feature}")
+        
         # Extract future data from forecasts
         future_dates = reconstructed_forecasts[0][target_feature]['future']['dates']
         forecast_paths = [
@@ -1837,6 +1880,13 @@ Data Type: {data_type}
             past_date_objects = [datetime.strptime(d, '%Y-%m-%d') if isinstance(d, str) else d for d in past_dates]
             future_date_objects = [datetime.strptime(d, '%Y-%m-%d') if isinstance(d, str) else d for d in future_dates]
         
+        # Handle ground truth dates
+        if ground_truth_dates is not None:
+            ground_truth_date_objects = [datetime.strptime(d, '%Y-%m-%d') if isinstance(d, str) else d for d in ground_truth_dates]
+        else:
+            ground_truth_date_objects = None
+            print("  ⚠️  Warning: Ground truth dates not found")
+        
         # Create plot
         fig, ax = plt.subplots(figsize=(14, 6))
         
@@ -1849,6 +1899,8 @@ Data Type: {data_type}
             n_paths=n_paths,
             show_ci=show_ci,
             ci_levels=ci_levels,
+            ground_truth_dates=np.array(ground_truth_date_objects) if ground_truth_date_objects else None,
+            ground_truth_values=np.array(ground_truth_values) if ground_truth_values else None,
             ax=ax
         )
         
