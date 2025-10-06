@@ -1607,8 +1607,7 @@ Points: {metrics['n_points']}"""
         
         for item in target_data:
             if (item.get('feature') == feature and 
-                item.get('temporal_tag') == 'future' and
-                item.get('data_type') == 'normalized_residuals'):
+                item.get('temporal_tag') == 'future'):
                 
                 # Get dates and residuals
                 dates = item.get('dates', [])
