@@ -328,93 +328,109 @@ class Scenario:
         reference_sample_id: str = None,
         features: List[str] = None
     ) -> Dict[str, Any]:
-        """Configure future conditioning using components from an existing sample"""
+        """
+        Configure future conditioning using components from an existing sample.
         
-        # Get sample ID (either provided or find closest)
+        Extracts TWO types of data:
+        1. encoded_normalized_series → for MODEL INPUT
+        2. encoded_normalized_residuals → for PLOTTING (continuity visualization)
+        """
+        
+        # Get sample ID (either provided or from previous selection)
         if reference_sample_id is None:
-            if reference_date is None:
-                raise ValueError("Either reference_date or reference_sample_id must be provided")
-            
-            print(f"  Finding closest sample to {reference_date}...")
-            reference_sample_id = self.get_closest_sample(reference_date)
-            print(f"  Selected sample: {reference_sample_id}")
+            if hasattr(self, '_selected_sample_id'):
+                reference_sample_id = self._selected_sample_id
+                print(f"  Using previously selected sample: {reference_sample_id[:8]}...")
+            elif reference_date is not None:
+                print(f"  Finding closest sample to {reference_date}...")
+                reference_sample_id = self.get_closest_sample(reference_date)
+                print(f"  Selected sample: {reference_sample_id}")
+            else:
+                raise ValueError("Either reference_date or reference_sample_id must be provided, or call select_historical_scenario() first")
+        
+        # Get features (from previous selection or parameter)
+        if features is None:
+            if hasattr(self, '_selected_features') and self._selected_features:
+                features = self._selected_features
+            else:
+                sample_config = self.model._data.get('sample_config', {})
+                features = sample_config.get('conditioningFeatures', [])
         
         # Fetch full sample with encoded data
-        print(f"  Fetching sample {reference_sample_id}...")
+        print(f"  Fetching sample {reference_sample_id[:8]}... with encoded data...")
         sample_response = self.http.get(
             f'/api/v1/models/{self.model_id}/samples',
-            params={'include_data': 'true', 'limit': 500}
+            params={'include_data': 'true', 'limit': 1000}
         )
         
         samples = sample_response.get('samples', [])
         sample = next((s for s in samples if s['id'] == reference_sample_id), None)
         
         if not sample:
-            # Try all splits if not found
-            sample_response = self.http.get(
-                f'/api/v1/models/{self.model_id}/samples',
-                params={'include_data': 'true', 'limit': 1000}
-            )
-            samples = sample_response.get('samples', [])
-            sample = next((s for s in samples if s['id'] == reference_sample_id), None)
-        
-        if not sample:
             raise ValueError(f"Sample {reference_sample_id} not found")
         
-        # Extract conditioning features if not specified
-        if features is None:
-            sample_config = self.model._data.get('sample_config', {})
-            features = sample_config.get('conditioningFeatures', [])
-        
         # Extract future conditioning from sample
-        # IMPORTANT: Only include CONDITIONING features' future windows
-        # Target features are never part of the input - they're what we're predicting!
         encoded_conditioning_data = sample.get('encoded_conditioning_data', [])
         
-        future_conditioning = []
+        # For MODEL INPUT
+        future_conditioning_for_model = []
         
-        # Process ALL conditioning features' future windows (some masked, some unmasked)
+        # For PLOTTING (decode → add ref → denormalize)
+        encoded_residuals_for_plotting = {}
+        
+        # Process future conditioning windows
         for item in encoded_conditioning_data:
             if item.get('temporal_tag') == 'future':
                 feature_name = item.get('feature')
-                encoded_series = item.get('encoded_normalized_series', [])
                 
+                # Check if this feature is selected for conditioning
+                is_selected = not features or feature_name in features
+                
+                # MODEL INPUT: encoded_normalized_series
+                encoded_series = item.get('encoded_normalized_series', [])
                 if encoded_series:
-                    # If this feature is in our scenario's conditioning list, use actual values (unmasked)
-                    # Otherwise, mask it with zeros
-                    is_selected = not features or feature_name in features
-                    
-                    future_conditioning.append({
+                    future_conditioning_for_model.append({
                         'feature': feature_name,
                         'temporal_tag': 'future',
                         'encoded_normalized_series': encoded_series if is_selected else [0.0] * len(encoded_series)
                     })
+                
+                # PLOTTING: encoded_normalized_residuals
+                if is_selected:
+                    encoded_residuals = item.get('encoded_normalized_residuals', [])
+                    if encoded_residuals:
+                        encoded_residuals_for_plotting[feature_name] = encoded_residuals
         
-        if not future_conditioning:
+        if not future_conditioning_for_model:
             raise ValueError("No future conditioning data found in sample")
         
-        print(f"  Extracted conditioning for {len(future_conditioning)} features")
+        print(f"  ✓ Extracted {len(future_conditioning_for_model)} features for model input")
+        print(f"  ✓ Extracted {len(encoded_residuals_for_plotting)} features for plotting")
         
-        # Update scenario in database
+        # Store both representations locally
+        self._data['encoded_future_conditioning'] = future_conditioning_for_model
+        self._data['encoded_residuals_for_plotting'] = encoded_residuals_for_plotting
+        self._data['reference_sample_id'] = reference_sample_id
+        
+        # Update scenario in database (only model input data)
         update_payload = {
-            'encoded_future_conditioning': future_conditioning,
+            'encoded_future_conditioning': future_conditioning_for_model,
             'current_step': 'future-conditioning-configured'
         }
         
         self.http.patch(f'/api/v1/scenarios/{self.id}', update_payload)
         
-        # Update local data
-        self._data['encoded_future_conditioning'] = future_conditioning
+        # Update local state
         self._data['current_step'] = 'future-conditioning-configured'
         self.current_step = 'future-conditioning-configured'
         
-        print(f"✅ Future conditioning configured from sample {reference_sample_id}")
+        print(f"✅ Future conditioning configured from sample {reference_sample_id[:8]}...")
         
         return {
             "status": "success",
             "mode": "from_sample",
             "reference_sample_id": reference_sample_id,
-            "features_configured": len(future_conditioning)
+            "features_configured": len([f for f in future_conditioning_for_model if f['encoded_normalized_series'] != [0.0] * len(f['encoded_normalized_series'])])
         }
     
     def _configure_manual(self, manual_config: Dict[str, List[float]]) -> Dict[str, Any]:
@@ -624,9 +640,108 @@ class Scenario:
         
         return reconstructed_samples
     
+    def select_historical_scenario(
+        self, 
+        target_date: str, 
+        features: List[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Select a historical scenario by finding the sample whose FUTURE window
+        starts closest to the target date.
+        
+        This is the primary method for scenario definition. It finds a historical
+        period that matches your target date and prepares it for conditioning.
+        
+        Args:
+            target_date: Target date for scenario (YYYY-MM-DD)
+            features: Conditioning features to use (default: all conditioning features)
+        
+        Returns:
+            Dict with scenario info and selected sample details
+        
+        Example:
+            >>> # Simulate COVID crash scenario
+            >>> scenario.select_historical_scenario('2020-03-15', 
+            ...     features=['VIX', 'S&P 500'])
+        """
+        print(f"[Scenario] Selecting historical scenario for {target_date}...")
+        
+        target = datetime.strptime(target_date, '%Y-%m-%d')
+        
+        # Fetch all samples with metadata
+        response = self.http.get(
+            f'/api/v1/models/{self.model_id}/samples',
+            params={'limit': 1000}
+        )
+        
+        samples = response.get('samples', [])
+        
+        if not samples:
+            raise ValueError("No samples found for model")
+        
+        # Find sample where future_window_start is closest to target_date
+        # future_start = end_date + 1 day
+        closest_sample = None
+        min_distance = float('inf')
+        
+        for sample in samples:
+            if sample.get('end_date'):
+                end_date = datetime.strptime(sample['end_date'], '%Y-%m-%d')
+                future_start = end_date + timedelta(days=1)
+                distance = abs((future_start - target).days)
+                
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_sample = sample
+                    closest_future_start = future_start
+        
+        if closest_sample is None:
+            raise ValueError("Could not find suitable sample")
+        
+        # Display scenario info
+        print()
+        print("=" * 70)
+        print("📅 SELECTED HISTORICAL SCENARIO")
+        print("=" * 70)
+        print(f"  Target Date: {target_date}")
+        print(f"  Sample ID: {closest_sample['id'][:8]}...")
+        print(f"  Future Window Start: {closest_future_start.strftime('%Y-%m-%d')}")
+        print(f"  Distance from Target: {min_distance} days")
+        print(f"  Split: {closest_sample.get('split_type', 'unknown')}")
+        print(f"  Sample Period: {closest_sample.get('start_date')} to {closest_sample.get('end_date')}")
+        
+        # Store selection for next step
+        self._selected_sample_id = closest_sample['id']
+        self._selected_features = features
+        
+        # Get conditioning features if not specified
+        if features is None:
+            sample_config = self.model._data.get('sample_config', {})
+            features = sample_config.get('conditioningFeatures', [])
+        
+        print(f"  Conditioning Features: {len(features)}")
+        for feat in features[:5]:  # Show first 5
+            print(f"    • {feat}")
+        if len(features) > 5:
+            print(f"    ... and {len(features) - 5} more")
+        print()
+        
+        return {
+            'status': 'success',
+            'sample_id': closest_sample['id'],
+            'target_date': target_date,
+            'future_start_date': closest_future_start.strftime('%Y-%m-%d'),
+            'distance_days': min_distance,
+            'split': closest_sample.get('split_type'),
+            'features': features
+        }
+    
     def get_closest_sample(self, target_date: str, split: str = None) -> str:
         """
         Find sample with date closest to target_date
+        
+        DEPRECATED: Use select_historical_scenario() instead for better
+        future window matching.
         
         Args:
             target_date: Target date (YYYY-MM-DD)
@@ -676,6 +791,306 @@ class Scenario:
         print(f"  Closest sample: {closest_sample['id']} (distance: {min_distance} days)")
         
         return closest_sample['id']
+    
+    def plot_conditioning_scenario(
+        self,
+        features: List[str] = None,
+        save_path: str = None,
+        show: bool = True
+    ):
+        """
+        Plot the conditioning scenario showing past (fetched) + future (selected).
+        
+        This visualizes what the model will be conditioned on before generating paths.
+        Shows:
+        - Past window: Recent fetched data (denormalized)
+        - Future window: Selected historical scenario (decoded residuals → denormalized)
+        - Smooth continuity at the boundary
+        
+        Args:
+            features: Features to plot (default: all selected conditioning features)
+            save_path: Path to save plot
+            show: Whether to display plot
+        
+        Example:
+            >>> scenario.select_historical_scenario('2020-03-15')
+            >>> scenario.configure_future_conditioning(mode='from_sample')
+            >>> scenario.plot_conditioning_scenario()
+        """
+        # Check if scenario is configured
+        if 'encoded_residuals_for_plotting' not in self._data:
+            raise ValueError(
+                "Scenario must be configured before plotting. "
+                "Call configure_future_conditioning() first."
+            )
+        
+        import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
+        import numpy as np
+        
+        # Get data - load from database if not in local cache
+        fetched_past = self._data.get('fetched_past_data', [])
+        if not fetched_past:
+            # Load from database
+            scenario_data = self.http.get(f'/api/v1/scenarios/{self.id}')
+            fetched_past = scenario_data.get('fetched_past_data', [])
+            self._data['fetched_past_data'] = fetched_past
+        
+        normalized_past = self._data.get('normalized_fetched_past', [])
+        encoded_residuals = self._data.get('encoded_residuals_for_plotting', {})
+        
+        # Get encoding models and normalization params
+        # Load from model metadata if not in local cache
+        encoding_models = self.model._data.get('encoding_models', {})
+        if not encoding_models:
+            # Try to load from model metadata
+            model_metadata = self.model._data.get('model_metadata', {})
+            encoding_models = model_metadata.get('encoding_models', {})
+            if encoding_models:
+                self.model._data['encoding_models'] = encoding_models
+        
+        norm_params = self.model._data.get('feature_normalization_params', {})
+        if not norm_params:
+            # Try to load from model metadata
+            model_metadata = self.model._data.get('model_metadata', {})
+            norm_params = model_metadata.get('feature_normalization_params', {})
+            if norm_params:
+                self.model._data['feature_normalization_params'] = norm_params
+        
+        # Determine features to plot
+        if features is None:
+            features = list(encoded_residuals.keys())
+        
+        if not features:
+            raise ValueError("No features to plot")
+        
+        print(f"[Scenario] Plotting conditioning scenario for {len(features)} features...")
+        
+        # Create subplots
+        n_features = len(features)
+        n_cols = min(2, n_features)
+        n_rows = (n_features + n_cols - 1) // n_cols
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, 4 * n_rows))
+        if n_features == 1:
+            axes = [axes]
+        else:
+            axes = axes.flatten() if n_features > 1 else [axes]
+        
+        for idx, feature_name in enumerate(features):
+            ax = axes[idx]
+            
+            # PAST: Extract denormalized values
+            past_points = [p for p in fetched_past if p['feature'] == feature_name or p.get('display_name') == feature_name]
+            past_points = sorted(past_points, key=lambda x: x['date'])
+            past_dates_str = [p['date'] for p in past_points]
+            past_values = [p['value'] for p in past_points]
+            
+            # Get last normalized value (reference for residuals)
+            # Calculate it from the last past value since normalized_past might not be stored
+            last_normalized = None
+            
+            # Try to get from normalized_past first (if available)
+            if normalized_past:
+                for item in normalized_past:
+                    if item.get('feature_name') == feature_name or item.get('feature') == feature_name:
+                        last_normalized = item['normalized_series'][-1]
+                        break
+            
+            # If not found, calculate it from last past value
+            if last_normalized is None and past_values:
+                # Get normalization params
+                mean = norm_params.get(feature_name, {}).get('mean', 0)
+                std = norm_params.get(feature_name, {}).get('std', 1)
+                # Normalize the last past value
+                last_normalized = (past_values[-1] - mean) / std
+            
+            # Check if we have data for this feature
+            if not past_points or last_normalized is None:
+                ax.text(0.5, 0.5, f'No past data for\n{feature_name}', 
+                       ha='center', va='center', transform=ax.transAxes, fontsize=10)
+                ax.set_title(feature_name, fontsize=11, fontweight='bold')
+                continue
+            
+            # Convert to datetime
+            from datetime import datetime
+            past_dates = [datetime.strptime(d, '%Y-%m-%d') for d in past_dates_str]
+            
+            # FUTURE: Reconstruct from encoded residuals using reconstruction endpoint
+            if feature_name in encoded_residuals:
+                # We need to reconstruct using the API endpoint since encoding models are in the database
+                # This will be done once for all features below to avoid multiple API calls
+                pass
+            
+        # Reconstruct ALL future conditioning features at once using the reconstruction endpoint
+        if encoded_residuals:
+            # Prepare encoded windows for reconstruction
+            encoded_windows = []
+            for feat_name, encoded_vals in encoded_residuals.items():
+                encoded_windows.append({
+                    "feature": feat_name,
+                    "temporal_tag": "future",
+                    "data_type": "encoded_normalized_residuals",
+                    "encoded_values": encoded_vals
+                })
+            
+            # Prepare reference values (last normalized values)
+            reference_values = {}
+            for feat_name in encoded_residuals.keys():
+                # Get last normalized value for this feature
+                last_norm = None
+                if normalized_past:
+                    for item in normalized_past:
+                        if item.get('feature_name') == feat_name or item.get('feature') == feat_name:
+                            last_norm = item['normalized_series'][-1]
+                            break
+                
+                # If not found, calculate from last past value
+                if last_norm is None:
+                    past_pts = [p for p in fetched_past if p['feature'] == feat_name or p.get('display_name') == feat_name]
+                    if past_pts:
+                        past_pts = sorted(past_pts, key=lambda x: x['date'])
+                        mean = norm_params.get(feat_name, {}).get('mean', 0)
+                        std = norm_params.get(feat_name, {}).get('std', 1)
+                        last_norm = (past_pts[-1]['value'] - mean) / std
+                
+                if last_norm is not None:
+                    reference_values[feat_name] = last_norm
+            
+            # Call reconstruction endpoint
+            payload = {
+                "user_id": self.model._data.get("user_id"),
+                "model_id": self.model_id,
+                "encoded_source": "inline",
+                "encoded_windows": encoded_windows,
+                "reference_source": "inline",
+                "reference_values": reference_values,
+                "output_destination": "return"
+            }
+            
+            response = self.http.post('/api/v1/ml/reconstruct', payload)
+            reconstructions = response.get('reconstructions', [])
+            
+            # Index reconstructions by feature
+            reconstructed_by_feature = {}
+            for recon in reconstructions:
+                feat = recon['feature']
+                reconstructed_by_feature[feat] = recon['reconstructed_values']
+        else:
+            reconstructed_by_feature = {}
+        
+        # Now plot with the reconstructed future values
+        for idx, feature_name in enumerate(features):
+            ax = axes[idx]
+            
+            # Get past data again for this feature
+            past_points = [p for p in fetched_past if p['feature'] == feature_name or p.get('display_name') == feature_name]
+            past_points = sorted(past_points, key=lambda x: x['date'])
+            
+            if not past_points:
+                continue  # Already handled above
+            
+            past_dates_str = [p['date'] for p in past_points]
+            past_values = [p['value'] for p in past_points]
+            from datetime import datetime
+            past_dates = [datetime.strptime(d, '%Y-%m-%d') for d in past_dates_str]
+            
+            # Check if we have reconstructed future values
+            if feature_name in reconstructed_by_feature:
+                future_values = reconstructed_by_feature[feature_name]
+                
+                # Generate future dates
+                last_date = past_dates[-1]
+                future_dates = [
+                    last_date + timedelta(days=i+1)
+                    for i in range(len(future_values))
+                ]
+                
+                # Plot
+                ax.plot(past_dates, past_values, '-', color='steelblue', 
+                       linewidth=2, label='Past (Fetched)', alpha=0.8)
+                ax.plot(future_dates, future_values, '-', color='coral', 
+                       linewidth=2, label='Future (Conditioning)', alpha=0.8)
+                
+                # Mark boundary
+                ax.axvline(past_dates[-1], color='gray', linestyle='--', 
+                          linewidth=1, alpha=0.5, label='Boundary')
+                
+                # Formatting
+                ax.set_title(feature_name, fontsize=11, fontweight='bold')
+                ax.set_xlabel('Date', fontsize=9)
+                ax.set_ylabel('Value', fontsize=9)
+                ax.legend(loc='best', fontsize=8, framealpha=0.9)
+                ax.grid(True, alpha=0.3)
+                
+                # Format x-axis
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+                plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
+            else:
+                # Only past data available
+                ax.plot(past_dates, past_values, '-', color='steelblue', 
+                       linewidth=2, label='Past (Fetched)', alpha=0.8)
+                ax.set_title(feature_name, fontsize=11, fontweight='bold')
+                ax.set_xlabel('Date', fontsize=9)
+                ax.set_ylabel('Value', fontsize=9)
+                ax.legend(loc='best', fontsize=8, framealpha=0.9)
+                ax.grid(True, alpha=0.3)
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+                plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
+        
+        # Hide unused subplots
+        for idx in range(len(features), len(axes)):
+            axes[idx].set_visible(False)
+        
+        plt.suptitle('Conditioning Scenario: Past + Future', fontsize=14, fontweight='bold', y=0.995)
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"📊 Conditioning scenario plot saved to {save_path}")
+        
+        if show:
+            plt.show()
+        else:
+            plt.close()
+    
+    def _decode_with_pca_ica(self, encoding_model: Dict, encoded_values: List[float]) -> List[float]:
+        """
+        Decode PCA-ICA encoded values back to original dimension.
+        
+        This performs the inverse transformation:
+        1. ICA inverse (unmixing) 
+        2. PCA inverse (to original space)
+        
+        Args:
+            encoding_model: Dict with PCA/ICA parameters
+            encoded_values: Encoded component values
+        
+        Returns:
+            Decoded values in original dimension
+        """
+        import numpy as np
+        
+        # Extract PCA and ICA components
+        pca_components = np.array(encoding_model.get('pca_components', []))
+        pca_mean = np.array(encoding_model.get('pca_mean', []))
+        ica_mixing = np.array(encoding_model.get('ica_mixing_matrix', []))
+        
+        # Handle empty model
+        if pca_components.size == 0 or ica_mixing.size == 0:
+            logger.warning("Empty encoding model, returning zeros")
+            return [0.0] * len(encoded_values)
+        
+        # Decode: ICA inverse → PCA inverse
+        encoded_array = np.array(encoded_values).reshape(1, -1)
+        
+        # ICA inverse (unmixing)
+        pca_space = encoded_array @ ica_mixing.T
+        
+        # PCA inverse
+        original_space = pca_space @ pca_components + pca_mean
+        
+        return original_space.flatten().tolist()
     
     def _update_step(self, step: str):
         """Update scenario step both locally and in database"""

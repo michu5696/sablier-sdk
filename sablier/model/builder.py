@@ -953,6 +953,54 @@ class Model:
         print("=" * 50)
     
     # ============================================
+    # SCENARIO CREATION
+    # ============================================
+    
+    def create_scenario(
+        self,
+        name: str,
+        description: str = "",
+        n_scenarios: int = 100
+    ):
+        """
+        Create a new scenario linked to this model.
+        
+        This is a convenience method that creates a scenario without needing
+        to access client.scenarios.create().
+        
+        Args:
+            name: Scenario name
+            description: Optional scenario description
+            n_scenarios: Number of synthetic paths to generate (default: 100)
+        
+        Returns:
+            Scenario instance
+        
+        Example:
+            >>> scenario = model.create_scenario(
+            ...     name="COVID Crash Scenario",
+            ...     description="Simulating March 2020 conditions",
+            ...     n_scenarios=1000
+            ... )
+        """
+        from ..scenario.builder import Scenario
+        
+        print(f"[Model {self.name}] Creating scenario: {name}")
+        print(f"  Target paths: {n_scenarios}")
+        
+        # Create via API
+        response = self.http.post('/api/v1/scenarios', {
+            'model_id': self.id,
+            'name': name,
+            'description': description,
+            'n_scenarios': n_scenarios
+        })
+        
+        print(f"✅ Scenario created: {response.get('name')} (ID: {response.get('id')[:8]}...)")
+        
+        return Scenario(self.http, response, self)
+    
+    # ============================================
     # FORECASTING
     # ============================================
     
