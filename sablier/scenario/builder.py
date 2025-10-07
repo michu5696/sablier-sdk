@@ -331,9 +331,13 @@ class Scenario:
         """
         Configure future conditioning using components from an existing sample.
         
-        Extracts TWO types of data:
-        1. encoded_normalized_series → for MODEL INPUT
-        2. encoded_normalized_residuals → for PLOTTING (continuity visualization)
+        IMPORTANT: This method now correctly processes conditioning data by:
+        1. Extracting encoded_normalized_residuals (user's conditioning choice)
+        2. Reconstructing them to normalized_series 
+        3. Re-encoding to get CORRECT encoded_normalized_series for model input
+        
+        The historical encoded_normalized_series from the sample is NOT used directly
+        because it represents what actually happened, not what we want to condition on.
         """
         
         # Get sample ID (either provided or from previous selection)
@@ -372,44 +376,144 @@ class Scenario:
         # Extract future conditioning from sample
         encoded_conditioning_data = sample.get('encoded_conditioning_data', [])
         
-        # For MODEL INPUT
-        future_conditioning_for_model = []
-        
-        # For PLOTTING (decode → add ref → denormalize)
+        # For PLOTTING: Extract encoded_normalized_residuals
         encoded_residuals_for_plotting = {}
+        all_feature_residuals = {}  # Track all features (selected or not)
         
-        # Process future conditioning windows
         for item in encoded_conditioning_data:
             if item.get('temporal_tag') == 'future':
                 feature_name = item.get('feature')
-                
-                # Check if this feature is selected for conditioning
                 is_selected = not features or feature_name in features
                 
-                # MODEL INPUT: encoded_normalized_series
-                encoded_series = item.get('encoded_normalized_series', [])
-                if encoded_series:
-                    future_conditioning_for_model.append({
-                        'feature': feature_name,
-                        'temporal_tag': 'future',
-                        'encoded_normalized_series': encoded_series if is_selected else [0.0] * len(encoded_series)
-                    })
-                
-                # PLOTTING: encoded_normalized_residuals
-                if is_selected:
-                    encoded_residuals = item.get('encoded_normalized_residuals', [])
-                    if encoded_residuals:
+                encoded_residuals = item.get('encoded_normalized_residuals', [])
+                if encoded_residuals:
+                    all_feature_residuals[feature_name] = encoded_residuals
+                    if is_selected:
                         encoded_residuals_for_plotting[feature_name] = encoded_residuals
         
-        if not future_conditioning_for_model:
-            raise ValueError("No future conditioning data found in sample")
+        if not all_feature_residuals:
+            raise ValueError("No future conditioning residuals found in sample")
         
-        print(f"  ✓ Extracted {len(future_conditioning_for_model)} features for model input")
-        print(f"  ✓ Extracted {len(encoded_residuals_for_plotting)} features for plotting")
+        print(f"  ✓ Extracted {len(encoded_residuals_for_plotting)} selected features for conditioning")
+        print(f"  ✓ Extracted {len(all_feature_residuals)} total features from sample")
         
-        # Store both representations locally
+        # ====================================================================
+        # RECONSTRUCT: encoded_normalized_residuals → normalized_series
+        # ====================================================================
+        print(f"  🔄 Reconstructing conditioning residuals to normalized series...")
+        
+        # Build encoded_windows for reconstruction
+        encoded_windows = []
+        for feature_name, encoded_residuals in all_feature_residuals.items():
+            encoded_windows.append({
+                "feature": feature_name,
+                "temporal_tag": "future",
+                "data_type": "encoded_normalized_residuals",
+                "encoded_values": encoded_residuals
+            })
+        
+        # Get reference values (last normalized value for each feature)
+        reference_values = {}
+        normalized_past = self._data.get('normalized_fetched_past', [])
+        
+        for feature_name in all_feature_residuals.keys():
+            # Try to get from normalized_past
+            for item in normalized_past:
+                if item.get('feature_name') == feature_name or item.get('feature') == feature_name:
+                    reference_values[feature_name] = item['normalized_series'][-1]
+                    break
+        
+        if len(reference_values) != len(all_feature_residuals):
+            missing = set(all_feature_residuals.keys()) - set(reference_values.keys())
+            raise ValueError(f"Missing reference values for features: {missing}")
+        
+        # Call reconstruct endpoint (ONE call for all features)
+        reconstruct_payload = {
+            "user_id": self.model._data.get("user_id"),
+            "model_id": self.model_id,
+            "encoded_source": "inline",
+            "encoded_windows": encoded_windows,
+            "reference_source": "inline",
+            "reference_values": reference_values,
+            "output_destination": "return"
+        }
+        
+        reconstruct_response = self.http.post('/api/v1/ml/reconstruct', reconstruct_payload)
+        reconstructions = reconstruct_response.get('reconstructions', [])
+        
+        if not reconstructions:
+            raise ValueError("Reconstruction failed - no reconstructions returned")
+        
+        print(f"  ✓ Reconstructed {len(reconstructions)} features to normalized series")
+        
+        # ====================================================================
+        # ENCODE: normalized_series → encoded_normalized_series
+        # ====================================================================
+        print(f"  🔄 Encoding reconstructed series to components...")
+        
+        # Get encoding type from model metadata
+        model_metadata = self.model._data.get('model_metadata', {})
+        encoding_type = model_metadata.get('encoding_type', 'pca-ica')
+        
+        # Build conditioning_data for encoding (mimics sample structure)
+        conditioning_data_for_encoding = []
+        reconstructed_series_by_feature = {}  # For caching/debugging
+        
+        for recon in reconstructions:
+            feature_name = recon['feature']
+            reconstructed_values = recon['reconstructed_values']
+            
+            # Cache for debugging
+            reconstructed_series_by_feature[feature_name] = reconstructed_values
+            
+            conditioning_data_for_encoding.append({
+                "feature_name": feature_name,  # encode endpoint expects "feature_name"
+                "temporal_tag": "future",
+                "normalized_series": reconstructed_values
+            })
+        
+        # Call encode endpoint (ONE call for all features)
+        encode_payload = {
+            "user_id": self.model._data.get("user_id"),
+            "model_id": self.model_id,
+            "encoding_type": encoding_type,
+            "sample_data": {
+                "conditioning_data": conditioning_data_for_encoding,
+                "target_data": []  # Empty for this use case
+            }
+        }
+        
+        encode_response = self.http.post('/api/v1/ml/encode?source=inline', encode_payload)
+        encoded_sample = encode_response.get('encoded_sample', {})
+        encoded_conditioning_data_new = encoded_sample.get('encoded_conditioning_data', [])
+        
+        if not encoded_conditioning_data_new:
+            raise ValueError("Encoding failed - no encoded data returned")
+        
+        print(f"  ✓ Encoded {len(encoded_conditioning_data_new)} features to components")
+        
+        # ====================================================================
+        # BUILD MODEL INPUT: Use NEW encodings (not historical!)
+        # ====================================================================
+        future_conditioning_for_model = []
+        
+        for encoded_item in encoded_conditioning_data_new:
+            feature_name = encoded_item['feature']
+            is_selected = not features or feature_name in features
+            
+            encoded_series = encoded_item.get('encoded_normalized_series', [])
+            future_conditioning_for_model.append({
+                'feature': feature_name,
+                'temporal_tag': 'future',
+                'encoded_normalized_series': encoded_series if is_selected else [0.0] * len(encoded_series)
+            })
+        
+        print(f"  ✓ Built model input with {len(future_conditioning_for_model)} features")
+        
+        # Store all representations locally
         self._data['encoded_future_conditioning'] = future_conditioning_for_model
         self._data['encoded_residuals_for_plotting'] = encoded_residuals_for_plotting
+        self._data['reconstructed_conditioning_series'] = reconstructed_series_by_feature  # For debugging
         self._data['reference_sample_id'] = reference_sample_id
         
         # Update scenario in database (only model input data)
@@ -543,6 +647,59 @@ class Scenario:
         )
         
         return synthetic_data
+    
+    def compute_conditioning_importance(self) -> Dict[str, Any]:
+        """
+        Compute SHAP-based feature importance for the conditioning scenario.
+        
+        This analyzes how much each conditioning feature (and their components) 
+        influences the model's predictions for this specific scenario.
+        
+        Returns:
+            dict: {
+                "feature_importance": Dict[str, float],  # Normalized importance by feature
+                "component_breakdown": Dict[str, List],  # Component-level details
+                "categories": Dict[str, List],  # Features grouped by category
+                "total_components": int
+            }
+        
+        Example:
+            >>> importance = scenario.compute_conditioning_importance()
+            >>> print(f"VIX importance: {importance['feature_importance']['VIX']:.1%}")
+            >>> # See component breakdown
+            >>> for comp in importance['component_breakdown']['VIX']:
+            ...     print(f"  {comp['component_name']}: {comp['importance']:.1%}")
+        """
+        # Verify scenario is configured
+        if self.current_step not in ['future-conditioning-configured', 'paths-generated']:
+            raise ValueError(
+                f"Scenario must be configured before computing importance. "
+                f"Current step: {self.current_step}. "
+                f"Call fetch_recent_past() and configure_future_conditioning() first."
+            )
+        
+        print(f"[Scenario] Computing SHAP-based conditioning importance...")
+        
+        # Call the conditioning importance endpoint
+        response = self.http.post('/api/v1/scenarios/conditioning-importance', {
+            'user_id': self.model._data.get('user_id'),
+            'model_id': self.model_id,
+            'scenario_id': self.id
+        })
+        
+        importance_data = response.get('importance', {})
+        
+        # Print summary
+        feature_importance = importance_data.get('feature_importance', {})
+        if feature_importance:
+            print(f"\n📊 Conditioning Feature Importance:")
+            print(f"{'='*60}")
+            sorted_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
+            for feature, importance in sorted_features[:10]:  # Top 10
+                print(f"  {feature:30s}: {importance:6.1%}")
+            print(f"{'='*60}\n")
+        
+        return importance_data
     
     # ============================================
     # UTILITY METHODS
