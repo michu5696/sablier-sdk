@@ -762,8 +762,26 @@ class Model:
             print(f"     Categories: {', '.join(categories.keys())}")
         print()
         
-        # Display copula validation results if available
-        copula_metadata = response.get('copula_metadata', {})
+        # Update model status and metadata
+        self._data["status"] = "trained"
+        self._data["training_metrics"] = training_metrics
+        
+        # Refresh model data from database to get complete metadata
+        # This ensures we have the latest copula metadata
+        try:
+            refreshed_model = self.http.get(f'/api/v1/models/{self.id}')
+            if refreshed_model:
+                self._data["model_metadata"] = refreshed_model.get('model_metadata', {})
+                logger.info("Refreshed model metadata from database after training")
+            else:
+                print("⚠️  Could not refresh model metadata from database")
+        except Exception as e:
+            logger.warning(f"Could not refresh model metadata: {e}")
+            # Fallback to response metadata
+            self._data["model_metadata"] = response.get('model_metadata', {})
+        
+        # Display copula validation results if available (after refresh)
+        copula_metadata = self._data.get('model_metadata', {}).get('copula_metadata', {})
         if copula_metadata:
             print("🔗 Structural Copula Validation Results (Uniform Space):")
             validation_results = copula_metadata.get('validation_results', {})
@@ -794,6 +812,20 @@ class Model:
                 print(f"     Mean Tail Dependence Difference: {mean_tail_diff:.3f}")
                 print(f"     Mean Mutual Info Difference: {mean_mi_diff:.3f}")
                 
+                # Display full joint distribution metrics if available
+                full_joint_score = validation_results.get('full_joint_structural_score', None)
+                if full_joint_score is not None:
+                    print(f"     Full Joint Distribution Score: {full_joint_score:.3f}")
+                    full_corr_diff = validation_results.get('full_joint_correlation_difference', 0.0)
+                    full_spearman_diff = validation_results.get('full_joint_spearman_difference', 0.0)
+                    full_tail_diff = validation_results.get('full_joint_tail_dependence_difference', 0.0)
+                    full_mi_diff = validation_results.get('full_joint_mutual_info_difference', 0.0)
+                    
+                    print(f"     Full Joint Correlation Difference: {full_corr_diff:.3f}")
+                    print(f"     Full Joint Spearman Difference: {full_spearman_diff:.3f}")
+                    print(f"     Full Joint Tail Dependence Difference: {full_tail_diff:.3f}")
+                    print(f"     Full Joint Mutual Info Difference: {full_mi_diff:.3f}")
+                
                 # Quality assessment based on structural score
                 if mean_structural_score >= 0.7:
                     print("     🎉 Copula quality: EXCELLENT (Score ≥ 0.7)")
@@ -814,22 +846,6 @@ class Model:
             print("🔗 No copula validation performed")
         print()
         
-        # Update model status and metadata
-        self._data["status"] = "trained"
-        self._data["training_metrics"] = training_metrics
-        
-        # Refresh model data from database to get complete metadata
-        # This ensures we have the latest feature_importance data
-        try:
-            refreshed_model = self.http.get(f'/api/v1/models/{self.id}')
-            if refreshed_model:
-                self._data["model_metadata"] = refreshed_model.get('model_metadata', {})
-                logger.info("Refreshed model metadata from database after training")
-        except Exception as e:
-            logger.warning(f"Could not refresh model metadata: {e}")
-            # Fallback to response metadata
-            self._data["model_metadata"] = response.get('model_metadata', {})
-        
         print(f"✅ Training complete - model saved to storage")
         
         return {
@@ -843,152 +859,6 @@ class Model:
             "per_sample_importance": response.get('per_sample_importance', {}),
             "copula_metadata": copula_metadata
         }
-    
-    def plot_copula_validation(self, save_path: Optional[str] = None) -> Optional[str]:
-        """
-        Plot copula validation results if available
-        
-        Args:
-            save_path: Optional path to save the plot. If None, saves to current directory
-            
-        Returns:
-            str: Path to saved plot file, or None if no validation data available
-            
-        Example:
-            >>> # Plot validation results
-            >>> plot_path = model.plot_copula_validation()
-            >>> print(f"Plot saved to: {plot_path}")
-            
-            >>> # Save to specific location
-            >>> plot_path = model.plot_copula_validation("my_validation_plot.png")
-        """
-        # Check if model is trained
-        if self.status != "trained":
-            print(f"❌ Model must be trained to plot copula validation (current status: {self.status})")
-            return None
-        
-        # Get copula metadata from model
-        model_metadata = self._data.get('model_metadata', {})
-        copula_metadata = model_metadata.get('copula_metadata', {})
-        
-        if not copula_metadata:
-            print("❌ No copula metadata found. Model may not have copula validation results.")
-            return None
-        
-        validation_results = copula_metadata.get('validation_results', {})
-        if not validation_results:
-            print("❌ No copula validation results found.")
-            return None
-        
-        # Determine save path
-        if save_path is None:
-            save_path = "copula_structural_validation_sdk.png"
-        
-        print(f"📊 Generating ground truth copula validation plot...")
-        print(f"   Saving to: {save_path}")
-        
-        try:
-            # Import required modules
-            import numpy as np
-            import matplotlib.pyplot as plt
-            
-            # Create a comprehensive plot showing ground truth validation metrics
-            
-            fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-            fig.suptitle('Structural Copula Validation Results (Uniform Space)', fontsize=16, fontweight='bold')
-            
-            # Extract metrics
-            mean_structural_score = validation_results.get('mean_structural_score', 0.0)
-            std_structural_score = validation_results.get('std_structural_score', 0.0)
-            per_sample_scores = validation_results.get('per_sample_scores', [])
-            mean_corr_diff = validation_results.get('mean_correlation_difference', 0.0)
-            mean_spearman_diff = validation_results.get('mean_spearman_difference', 0.0)
-            mean_tail_diff = validation_results.get('mean_tail_dependence_difference', 0.0)
-            mean_mi_diff = validation_results.get('mean_mutual_info_difference', 0.0)
-            n_validation_samples = validation_results.get('n_validation_samples', 0)
-            n_copula_components = validation_results.get('n_copula_components', 0)
-            
-            # 1. Main metrics bar chart
-            ax1 = axes[0, 0]
-            metrics = ['Structural Score', 'Correlation Diff', 'Spearman Diff', 'Tail Diff', 'MI Diff']
-            values = [mean_structural_score, mean_corr_diff, mean_spearman_diff, mean_tail_diff, mean_mi_diff]
-            colors = ['green', 'red', 'blue', 'orange', 'purple']
-            
-            bars = ax1.bar(metrics, values, color=colors, alpha=0.7)
-            ax1.set_ylabel('Value')
-            ax1.set_title('Structural Validation Metrics')
-            ax1.tick_params(axis='x', rotation=45)
-            
-            # Add values on bars
-            for bar, value in zip(bars, values):
-                height = bar.get_height()
-                ax1.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                       f'{value:.4f}', ha='center', va='bottom')
-            
-            # 2. Per-sample structural scores
-            ax2 = axes[0, 1]
-            if per_sample_scores:
-                sample_indices = range(len(per_sample_scores))
-                ax2.plot(sample_indices, per_sample_scores, 'o-', alpha=0.7, color='blue')
-                ax2.set_xlabel('Validation Sample Index')
-                ax2.set_ylabel('Structural Score')
-                ax2.set_title('Per-Sample Structural Scores')
-                ax2.set_ylim(0, 1)
-                ax2.grid(True, alpha=0.3)
-            else:
-                ax2.text(0.5, 0.5, 'No per-sample data available', 
-                        ha='center', va='center', transform=ax2.transAxes)
-                ax2.set_title('Per-Sample Structural Scores')
-            
-            # 3. Structural differences comparison
-            ax3 = axes[1, 0]
-            diff_metrics = ['Correlation', 'Spearman', 'Tail Dep', 'Mutual Info']
-            diff_values = [mean_corr_diff, mean_spearman_diff, mean_tail_diff, mean_mi_diff]
-            colors = ['red', 'blue', 'orange', 'purple']
-            
-            bars = ax3.bar(diff_metrics, diff_values, color=colors, alpha=0.7)
-            ax3.set_ylabel('Difference')
-            ax3.set_title('Structural Differences (Lower is Better)')
-            ax3.grid(True, alpha=0.3)
-            
-            # Add values on bars
-            for bar, value in zip(bars, diff_values):
-                height = bar.get_height()
-                ax3.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                       f'{value:.3f}', ha='center', va='bottom')
-            
-            # 4. Quality assessment and summary
-            ax4 = axes[1, 1]
-            quality_levels = ['Poor', 'Moderate', 'Good', 'Excellent']
-            quality_thresholds = [0.0, 0.3, 0.5, 0.7, 1.0]
-            quality_colors = ['red', 'orange', 'lightgreen', 'green']
-            
-            # Find current quality level
-            current_level = 0
-            for i, threshold in enumerate(quality_thresholds[1:], 1):
-                if mean_structural_score >= threshold:
-                    current_level = i
-            
-            # Create quality gauge
-            ax4.pie([mean_structural_score, 1-mean_structural_score], labels=[f'Score = {mean_structural_score:.3f}', ''], 
-                   colors=[quality_colors[current_level], 'lightgray'], 
-                   startangle=90, counterclock=False)
-            ax4.set_title(f'Structural Similarity: {mean_structural_score:.1%}')
-            
-            # Add summary text
-            ax4.text(0.5, -0.1, f'Validation Samples: {n_validation_samples}\nCopula Components: {n_copula_components}', 
-                    ha='center', va='top', transform=ax4.transAxes, fontsize=10)
-            
-            plt.tight_layout()
-            plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            
-            print(f"✅ Structural copula validation plot saved to: {save_path}")
-            return save_path
-            
-        except Exception as e:
-            print(f"❌ Failed to create copula validation plot: {e}")
-            return None
     
     def show_copula_validation(self) -> None:
         """
