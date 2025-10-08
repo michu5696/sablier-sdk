@@ -2189,4 +2189,137 @@ Points: {metrics['n_points']}"""
         if show:
             plt.show()
         else:
-            plt.close()
+            plt.close()    
+    # ============================================
+    # DATA EXTRACTION FOR VALIDATION
+    # ============================================
+    
+    def get_real_paths(
+        self,
+        split: str = 'validation',
+        target_features_only: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Extract real paths from samples for validation against synthetic data.
+        
+        Args:
+            split: Sample split to extract ('validation' or 'test')
+            target_features_only: If True, only return target features (default)
+        
+        Returns:
+            Dict with:
+                - 'paths': np.ndarray of shape (n_samples, n_timesteps, n_features)
+                - 'feature_names': List of feature names
+                - 'dates': List of date strings (from first sample)
+                - 'n_samples': Number of samples
+                - 'split': Split name
+        
+        Example:
+            >>> real_val = model.get_real_paths(split='validation')
+            >>> real_test = model.get_real_paths(split='test')
+            >>> validation_results = synthetic_data.validate_against_real_data(
+            ...     real_validation_data=real_val,
+            ...     real_test_data=real_test
+            ... )
+        """
+        import numpy as np
+        
+        print(f"[Model] Extracting real paths from {split} split...")
+        
+        # Fetch samples
+        response = self.http.get(
+            f'/api/v1/models/{self.id}/samples',
+            params={'split_type': split, 'limit': 1000, 'include_data': 'true'}
+        )
+        samples = response.get('samples', [])
+        
+        if not samples:
+            raise ValueError(f"No {split} samples found")
+        
+        print(f"  Found {len(samples)} samples")
+        
+        # Determine which features to extract
+        if target_features_only:
+            feature_names = [f.get('display_name', f.get('name')) 
+                           for f in self.input_features if f.get('type') == 'target']
+        else:
+            feature_names = [f.get('display_name', f.get('name')) 
+                           for f in self.input_features]
+        
+        print(f"  Extracting {len(feature_names)} features: {feature_names}")
+        
+        # Get normalization params for denormalization
+        norm_params = self._data.get('feature_normalization_params', {})
+        
+        # Extract paths from all samples
+        all_paths = []
+        dates = None
+        
+        for sample in samples:
+            sample_path = []
+            
+            # For each target feature, extract future values (denormalized)
+            for feature_name in feature_names:
+                # Find in target_data
+                target_data = sample.get('target_data', [])
+                feature_values = None
+                
+                for item in target_data:
+                    if (item.get('feature') == feature_name or 
+                        item.get('feature_name') == feature_name) and \
+                       item.get('temporal_tag') == 'future':
+                        
+                        # Get normalized residuals
+                        normalized_residuals = item.get('normalized_residuals', [])
+                        
+                        if dates is None:
+                            dates = item.get('dates', [])
+                        
+                        # Get reference value (last past value)
+                        conditioning_data = sample.get('conditioning_data', [])
+                        past_ref_norm = None
+                        
+                        for cond_item in conditioning_data:
+                            if (cond_item.get('feature') == feature_name or
+                                cond_item.get('feature_name') == feature_name) and \
+                               cond_item.get('temporal_tag') == 'past':
+                                past_series = cond_item.get('normalized_series', [])
+                                if past_series:
+                                    past_ref_norm = past_series[-1]
+                                break
+                        
+                        if past_ref_norm is None:
+                            raise ValueError(f"Could not find past reference for {feature_name}")
+                        
+                        # Convert residuals to series: series = residual + reference
+                        normalized_series = [r + past_ref_norm for r in normalized_residuals]
+                        
+                        # Denormalize
+                        mean = norm_params.get(feature_name, {}).get('mean', 0)
+                        std = norm_params.get(feature_name, {}).get('std', 1)
+                        feature_values = [(v * std) + mean for v in normalized_series]
+                        
+                        break
+                
+                if feature_values is None:
+                    raise ValueError(f"Could not find data for {feature_name} in sample {sample.get('id')}")
+                
+                sample_path.append(feature_values)
+            
+            # Transpose to (n_timesteps, n_features)
+            sample_path_array = np.array(sample_path).T
+            all_paths.append(sample_path_array)
+        
+        # Stack to (n_samples, n_timesteps, n_features)
+        paths_array = np.array(all_paths)
+        
+        print(f"  ✅ Extracted paths shape: {paths_array.shape}")
+        print(f"     (n_samples={paths_array.shape[0]}, n_timesteps={paths_array.shape[1]}, n_features={paths_array.shape[2]})")
+        
+        return {
+            'paths': paths_array,
+            'feature_names': feature_names,
+            'dates': dates,
+            'n_samples': len(samples),
+            'split': split
+        }

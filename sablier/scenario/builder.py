@@ -199,26 +199,36 @@ class Scenario:
             values = [item['value'] for item in sorted_data]
             dates = [item['date'] for item in sorted_data]
             
-            # Normalize
+            # Normalize (handle None values)
             norm = norm_params.get(feature_name, {'mean': 0, 'std': 1})
             mean = norm.get('mean', 0)
             std = norm.get('std', 1)
             
-            normalized_values = [(v - mean) / std for v in values]
+            normalized_values = []
+            for v in values:
+                if v is not None:
+                    normalized_values.append((v - mean) / std)
+                else:
+                    normalized_values.append(None)
             
             # Truncate to past_window length (most recent N days)
             truncated_values = normalized_values[-past_window:] if len(normalized_values) >= past_window else normalized_values
             truncated_dates = dates[-past_window:] if len(dates) >= past_window else dates
             
+            # Check if this feature has all non-None values
+            has_all_values = all(v is not None for v in truncated_values)
+            
             conditioning_data.append({
                 'feature_name': feature_name,  # Note: backend expects 'feature_name', not 'feature'
                 'temporal_tag': 'past',
-                'normalized_series': truncated_values
+                'normalized_series': truncated_values,
+                'has_complete_data': has_all_values  # Track availability
             })
             
             normalized_data[feature_name] = {
                 'dates': truncated_dates,
-                'values': truncated_values
+                'values': truncated_values,
+                'has_complete_data': has_all_values
             }
         
         print(f"  Normalized {len(conditioning_data)} features")
@@ -246,16 +256,30 @@ class Scenario:
         
         print(f"  Encoded {len(encoded_fetched_past)} feature windows")
         
-        # Update scenario in database with encoded data and final step
+        # Build feature availability map for past data
+        past_feature_availability = {}
+        for feature_name, data in normalized_data.items():
+            past_feature_availability[feature_name] = {
+                'past': data.get('has_complete_data', True)
+            }
+        
+        # Count features with missing data
+        missing_count = sum(1 for avail in past_feature_availability.values() if not avail['past'])
+        if missing_count > 0:
+            print(f"  ⚠️  {missing_count}/{len(past_feature_availability)} features have incomplete past data")
+        
+        # Update scenario in database with encoded data and feature availability
         self.http.patch(f'/api/v1/scenarios/{self.id}', {
             'encoded_fetched_past': encoded_fetched_past,
+            'past_feature_availability': past_feature_availability,
             'current_step': 'past-data-fetched'  # Valid DB constraint value
         })
-        print(f"  ✓ Stored encoded data in scenario")
+        print(f"  ✓ Stored encoded data and availability in scenario")
         
         # Update local data
         self._data['encoded_fetched_past'] = encoded_fetched_past
         self._data['normalized_fetched_past'] = conditioning_data
+        self._data['past_feature_availability'] = past_feature_availability
         self.current_step = 'past-data-fetched'
         
         print("✅ Past data fetched, normalized, and encoded")

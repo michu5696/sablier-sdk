@@ -1,8 +1,9 @@
 """SyntheticData class for managing and analyzing generated synthetic market paths"""
 
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import numpy as np
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +12,12 @@ try:
     HAS_PANDAS = True
 except ImportError:
     HAS_PANDAS = False
+
+try:
+    from scipy import stats
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
 
 
 class SyntheticData:
@@ -319,3 +326,621 @@ class SyntheticData:
     
     def __repr__(self):
         return f"SyntheticData(n_paths={self.n_paths}, features={self.features}, timesteps={len(self.dates)})"
+    
+    # ============================================
+    # VALIDATION METHODS
+    # ============================================
+    
+    def validate_against_real_data(
+        self,
+        real_validation_data: Dict[str, np.ndarray],
+        real_test_data: Optional[Dict[str, np.ndarray]] = None,
+        save_dir: Optional[str] = None,
+        show_plots: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Comprehensive validation comparing synthetic data to real validation/test data.
+        
+        Args:
+            real_validation_data: Dict with 'paths' (n_samples, n_timesteps, n_features) 
+                                 and 'feature_names' list
+            real_test_data: Optional test set data in same format
+            save_dir: Directory to save plots and reports
+            show_plots: Whether to display plots interactively
+        
+        Returns:
+            Validation results dictionary with metrics and plot paths
+        
+        Example:
+            >>> real_val = model.get_real_paths(split='validation')
+            >>> real_test = model.get_real_paths(split='test')
+            >>> results = synthetic_data.validate_against_real_data(
+            ...     real_validation_data=real_val,
+            ...     real_test_data=real_test,
+            ...     save_dir='./validation_report'
+            ... )
+        """
+        if not HAS_SCIPY:
+            raise ImportError("scipy is required for validation. Install: pip install scipy")
+        
+        print("=" * 70)
+        print("VALIDATION: Synthetic vs Real Data")
+        print("=" * 70)
+        print()
+        
+        # Prepare save directory
+        if save_dir:
+            save_dir = Path(save_dir)
+            save_dir.mkdir(parents=True, exist_ok=True)
+            (save_dir / 'validation').mkdir(parents=True, exist_ok=True)
+            (save_dir / 'validation' / 'distributions').mkdir(parents=True, exist_ok=True)
+            (save_dir / 'validation' / 'correlations').mkdir(parents=True, exist_ok=True)
+            (save_dir / 'test').mkdir(parents=True, exist_ok=True)
+            (save_dir / 'test' / 'distributions').mkdir(parents=True, exist_ok=True)
+            (save_dir / 'test' / 'correlations').mkdir(parents=True, exist_ok=True)
+            (save_dir / 'metrics').mkdir(parents=True, exist_ok=True)
+        
+        results = {
+            'unconditional': {},
+            'validation_set': {},
+            'test_set': {} if real_test_data else None
+        }
+        
+        # Run validation on validation set
+        print("📊 Validating against VALIDATION SET...")
+        print("-" * 70)
+        val_results = self._validate_unconditional(
+            real_validation_data, 
+            save_dir=save_dir / 'validation' if save_dir else None,
+            show_plots=show_plots,
+            dataset_name='Validation'
+        )
+        results['validation_set'] = val_results
+        
+        # Run validation on test set if provided
+        if real_test_data:
+            print("\n📊 Validating against TEST SET...")
+            print("-" * 70)
+            test_results = self._validate_unconditional(
+                real_test_data,
+                save_dir=save_dir / 'test' if save_dir else None,
+                show_plots=show_plots,
+                dataset_name='Test'
+            )
+            results['test_set'] = test_results
+        
+        # Summary
+        print("\n" + "=" * 70)
+        print("VALIDATION SUMMARY")
+        print("=" * 70)
+        self._print_validation_summary(results)
+        
+        if save_dir:
+            import json
+            with open(save_dir / 'validation_results.json', 'w') as f:
+                # Convert numpy types to python types for JSON
+                json_results = self._convert_to_json_serializable(results)
+                json.dump(json_results, f, indent=2)
+            print(f"\n💾 Results saved to {save_dir}/validation_results.json")
+        
+        return results
+    
+    def _validate_unconditional(
+        self,
+        real_data: Dict[str, np.ndarray],
+        save_dir: Optional[Path] = None,
+        show_plots: bool = True,
+        dataset_name: str = 'Real'
+    ) -> Dict[str, Any]:
+        """Run unconditional validation tests"""
+        
+        results = {}
+        
+        # 1. Distribution validation
+        print("\n1️⃣  Distribution Tests...")
+        dist_results = self.validate_distributions(
+            real_data,
+            save_dir=save_dir / 'distributions' if save_dir else None,
+            show_plots=show_plots,
+            dataset_name=dataset_name
+        )
+        results['distributions'] = dist_results
+        
+        # 2. Moments comparison
+        print("\n2️⃣  Moment Comparison...")
+        moment_results = self.validate_moments(real_data)
+        results['moments'] = moment_results
+        
+        # 3. Correlation comparison
+        print("\n3️⃣  Correlation Structure...")
+        corr_results = self.compare_correlations(
+            real_data,
+            save_dir=save_dir / 'correlations' if save_dir else None,
+            show_plots=show_plots,
+            dataset_name=dataset_name
+        )
+        results['correlations'] = corr_results
+        
+        # 4. Tail validation
+        print("\n4️⃣  Tail Behavior...")
+        tail_results = self.validate_tails(
+            real_data,
+            save_dir=save_dir / 'distributions' if save_dir else None,
+            show_plots=show_plots,
+            dataset_name=dataset_name
+        )
+        results['tails'] = tail_results
+        
+        return results
+    
+    def validate_distributions(
+        self,
+        real_data: Dict[str, np.ndarray],
+        save_dir: Optional[Path] = None,
+        show_plots: bool = True,
+        dataset_name: str = 'Real'
+    ) -> Dict[str, Any]:
+        """
+        Validate distributions using statistical tests and visualizations.
+        
+        Returns KS test, AD test p-values and generates Q-Q plots, histograms.
+        """
+        import matplotlib.pyplot as plt
+        
+        # Extract synthetic and real data
+        synthetic_paths = self._get_paths_array()  # (n_paths, n_timesteps, n_features)
+        real_paths = real_data['paths']  # (n_samples, n_timesteps, n_features)
+        
+        # Flatten to get all values per feature
+        synthetic_flat = synthetic_paths.reshape(-1, len(self.features))
+        real_flat = real_paths.reshape(-1, len(self.features))
+        
+        results = {}
+        
+        for i, feature in enumerate(self.features):
+            synthetic_values = synthetic_flat[:, i]
+            real_values = real_flat[:, i]
+            
+            # Remove NaNs
+            synthetic_values = synthetic_values[~np.isnan(synthetic_values)]
+            real_values = real_values[~np.isnan(real_values)]
+            
+            # KS test
+            ks_stat, ks_pval = stats.ks_2samp(synthetic_values, real_values)
+            
+            # Anderson-Darling test (using combined sample)
+            combined = np.concatenate([synthetic_values, real_values])
+            ad_result = stats.anderson_ksamp([synthetic_values, real_values])
+            
+            results[feature] = {
+                'ks_statistic': float(ks_stat),
+                'ks_pvalue': float(ks_pval),
+                'ad_statistic': float(ad_result.statistic),
+                'ad_pvalue': float(ad_result.pvalue) if hasattr(ad_result, 'pvalue') else None,
+                'n_synthetic': len(synthetic_values),
+                'n_real': len(real_values)
+            }
+            
+            # Print results
+            pass_ks = "✅" if ks_pval > 0.05 else "❌"
+            print(f"  {feature}:")
+            print(f"    KS test: p={ks_pval:.4f} {pass_ks}")
+            print(f"    AD test: stat={ad_result.statistic:.4f}")
+        
+        # Generate plots
+        if save_dir or show_plots:
+            self._plot_distribution_comparison(
+                synthetic_flat, real_flat, self.features,
+                save_dir=save_dir, show_plots=show_plots, dataset_name=dataset_name
+            )
+        
+        return results
+    
+    def validate_moments(self, real_data: Dict[str, np.ndarray]) -> Dict[str, Any]:
+        """
+        Compare statistical moments (mean, std, skewness, kurtosis).
+        
+        Returns table-ready comparison of moments.
+        """
+        # Extract data
+        synthetic_paths = self._get_paths_array()
+        real_paths = real_data['paths']
+        
+        synthetic_flat = synthetic_paths.reshape(-1, len(self.features))
+        real_flat = real_paths.reshape(-1, len(self.features))
+        
+        results = {}
+        
+        print("\n  Feature                    | Metric    | Real      | Synthetic | Diff")
+        print("  " + "-" * 75)
+        
+        for i, feature in enumerate(self.features):
+            syn_vals = synthetic_flat[:, i][~np.isnan(synthetic_flat[:, i])]
+            real_vals = real_flat[:, i][~np.isnan(real_flat[:, i])]
+            
+            moments = {
+                'mean': {
+                    'real': float(np.mean(real_vals)),
+                    'synthetic': float(np.mean(syn_vals)),
+                },
+                'std': {
+                    'real': float(np.std(real_vals)),
+                    'synthetic': float(np.std(syn_vals)),
+                },
+                'skewness': {
+                    'real': float(stats.skew(real_vals)),
+                    'synthetic': float(stats.skew(syn_vals)),
+                },
+                'kurtosis': {
+                    'real': float(stats.kurtosis(real_vals)),
+                    'synthetic': float(stats.kurtosis(syn_vals)),
+                }
+            }
+            
+            # Add differences
+            for metric in moments:
+                moments[metric]['diff'] = moments[metric]['synthetic'] - moments[metric]['real']
+                moments[metric]['pct_diff'] = (moments[metric]['diff'] / moments[metric]['real'] * 100) if moments[metric]['real'] != 0 else 0
+            
+            results[feature] = moments
+            
+            # Print compact table
+            for metric in ['mean', 'std', 'skewness', 'kurtosis']:
+                real_val = moments[metric]['real']
+                syn_val = moments[metric]['synthetic']
+                diff_pct = moments[metric]['pct_diff']
+                
+                print(f"  {feature:26s} | {metric:9s} | {real_val:9.4f} | {syn_val:9.4f} | {diff_pct:+6.1f}%")
+        
+        return results
+    
+    def compare_correlations(
+        self,
+        real_data: Dict[str, np.ndarray],
+        save_dir: Optional[Path] = None,
+        show_plots: bool = True,
+        dataset_name: str = 'Real'
+    ) -> Dict[str, Any]:
+        """
+        Compare correlation matrices between synthetic and real data.
+        
+        Returns correlation difference and generates heatmap visualizations.
+        """
+        import matplotlib.pyplot as plt
+        
+        # Extract data
+        synthetic_paths = self._get_paths_array()
+        real_paths = real_data['paths']
+        
+        # Flatten to (n_samples, n_features)
+        synthetic_flat = synthetic_paths.reshape(-1, len(self.features))
+        real_flat = real_paths.reshape(-1, len(self.features))
+        
+        # Compute correlation matrices
+        synthetic_corr = np.corrcoef(synthetic_flat.T)
+        real_corr = np.corrcoef(real_flat.T)
+        
+        # Compute difference
+        corr_diff = synthetic_corr - real_corr
+        frobenius_dist = np.linalg.norm(corr_diff, 'fro')
+        max_diff = np.max(np.abs(corr_diff))
+        
+        results = {
+            'synthetic_correlation': synthetic_corr.tolist(),
+            'real_correlation': real_corr.tolist(),
+            'difference': corr_diff.tolist(),
+            'frobenius_distance': float(frobenius_dist),
+            'max_absolute_difference': float(max_diff)
+        }
+        
+        print(f"  Frobenius distance: {frobenius_dist:.4f}")
+        print(f"  Max absolute diff:  {max_diff:.4f}")
+        
+        # Generate heatmap plots
+        if save_dir or show_plots:
+            self._plot_correlation_comparison(
+                real_corr, synthetic_corr, self.features,
+                save_dir=save_dir, show_plots=show_plots, dataset_name=dataset_name
+            )
+        
+        return results
+    
+    def validate_tails(
+        self,
+        real_data: Dict[str, np.ndarray],
+        quantiles: List[float] = [0.95, 0.99, 0.999],
+        save_dir: Optional[Path] = None,
+        show_plots: bool = True,
+        dataset_name: str = 'Real'
+    ) -> Dict[str, Any]:
+        """
+        Validate tail behavior using VaR, CVaR, and tail plots.
+        """
+        import matplotlib.pyplot as plt
+        
+        synthetic_paths = self._get_paths_array()
+        real_paths = real_data['paths']
+        
+        synthetic_flat = synthetic_paths.reshape(-1, len(self.features))
+        real_flat = real_paths.reshape(-1, len(self.features))
+        
+        results = {}
+        
+        print("\n  Feature                    | Quantile | Real VaR  | Syn VaR   | Diff")
+        print("  " + "-" * 75)
+        
+        for i, feature in enumerate(self.features):
+            syn_vals = synthetic_flat[:, i][~np.isnan(synthetic_flat[:, i])]
+            real_vals = real_flat[:, i][~np.isnan(real_flat[:, i])]
+            
+            feature_results = {}
+            
+            for q in quantiles:
+                real_var = np.percentile(real_vals, q * 100)
+                syn_var = np.percentile(syn_vals, q * 100)
+                
+                # CVaR (expected shortfall beyond VaR)
+                real_cvar = np.mean(real_vals[real_vals >= real_var])
+                syn_cvar = np.mean(syn_vals[syn_vals >= syn_var])
+                
+                feature_results[f'q{q}'] = {
+                    'real_var': float(real_var),
+                    'synthetic_var': float(syn_var),
+                    'real_cvar': float(real_cvar),
+                    'synthetic_cvar': float(syn_cvar),
+                    'var_diff': float(syn_var - real_var),
+                    'cvar_diff': float(syn_cvar - real_cvar)
+                }
+                
+                print(f"  {feature:26s} | {q:8.3f} | {real_var:9.4f} | {syn_var:9.4f} | {syn_var-real_var:+7.4f}")
+            
+            results[feature] = feature_results
+        
+        # Generate tail plots
+        if save_dir or show_plots:
+            self._plot_tail_comparison(
+                synthetic_flat, real_flat, self.features,
+                save_dir=save_dir, show_plots=show_plots, dataset_name=dataset_name
+            )
+        
+        return results
+    
+    # ============================================
+    # HELPER METHODS
+    # ============================================
+    
+    def _get_paths_array(self) -> np.ndarray:
+        """Convert paths DataFrame to numpy array (n_paths, n_timesteps, n_features)"""
+        paths_list = []
+        for path_idx in range(self.n_paths):
+            path_df = self.get_path(path_idx)
+            path_values = path_df[self.features].values  # (n_timesteps, n_features)
+            paths_list.append(path_values)
+        return np.array(paths_list)
+    
+    def _plot_distribution_comparison(
+        self, synthetic_flat, real_flat, features,
+        save_dir=None, show_plots=True, dataset_name='Real'
+    ):
+        """Generate Q-Q plots and histogram overlays"""
+        import matplotlib.pyplot as plt
+        
+        n_features = len(features)
+        n_cols = min(3, n_features)
+        n_rows = (n_features + n_cols - 1) // n_cols
+        
+        # Q-Q plots
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+        if n_features == 1:
+            axes = [axes]
+        else:
+            axes = axes.flatten()
+        
+        for i, feature in enumerate(features):
+            ax = axes[i]
+            syn_vals = synthetic_flat[:, i][~np.isnan(synthetic_flat[:, i])]
+            real_vals = real_flat[:, i][~np.isnan(real_flat[:, i])]
+            
+            # Q-Q plot
+            percs = np.linspace(0, 100, 100)
+            syn_quantiles = np.percentile(syn_vals, percs)
+            real_quantiles = np.percentile(real_vals, percs)
+            
+            ax.scatter(real_quantiles, syn_quantiles, alpha=0.5, s=20)
+            ax.plot([real_quantiles.min(), real_quantiles.max()],
+                   [real_quantiles.min(), real_quantiles.max()],
+                   'r--', lw=2, label='Perfect match')
+            ax.set_xlabel(f'{dataset_name} Quantiles', fontsize=9)
+            ax.set_ylabel('Synthetic Quantiles', fontsize=9)
+            ax.set_title(f'Q-Q Plot: {feature}', fontsize=10, fontweight='bold')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+        
+        # Hide unused subplots
+        for j in range(i+1, len(axes)):
+            axes[j].axis('off')
+        
+        plt.tight_layout()
+        if save_dir:
+            plt.savefig(save_dir / 'qq_plots.png', dpi=150, bbox_inches='tight')
+        if show_plots:
+            plt.show()
+        else:
+            plt.close()
+        
+        # Histogram overlays
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+        if n_features == 1:
+            axes = [axes]
+        else:
+            axes = axes.flatten()
+        
+        for i, feature in enumerate(features):
+            ax = axes[i]
+            syn_vals = synthetic_flat[:, i][~np.isnan(synthetic_flat[:, i])]
+            real_vals = real_flat[:, i][~np.isnan(real_flat[:, i])]
+            
+            ax.hist(real_vals, bins=50, alpha=0.5, density=True, label=dataset_name, color='steelblue')
+            ax.hist(syn_vals, bins=50, alpha=0.5, density=True, label='Synthetic', color='coral')
+            ax.set_xlabel('Value', fontsize=9)
+            ax.set_ylabel('Density', fontsize=9)
+            ax.set_title(f'Distribution: {feature}', fontsize=10, fontweight='bold')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+        
+        for j in range(i+1, len(axes)):
+            axes[j].axis('off')
+        
+        plt.tight_layout()
+        if save_dir:
+            plt.savefig(save_dir / 'histograms.png', dpi=150, bbox_inches='tight')
+        if show_plots:
+            plt.show()
+        else:
+            plt.close()
+    
+    def _plot_correlation_comparison(
+        self, real_corr, synthetic_corr, features,
+        save_dir=None, show_plots=True, dataset_name='Real'
+    ):
+        """Generate side-by-side correlation heatmaps"""
+        import matplotlib.pyplot as plt
+        
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        
+        # Real correlation
+        im1 = axes[0].imshow(real_corr, cmap='RdBu_r', vmin=-1, vmax=1, aspect='auto')
+        axes[0].set_title(f'{dataset_name} Data Correlation', fontsize=12, fontweight='bold')
+        axes[0].set_xticks(range(len(features)))
+        axes[0].set_yticks(range(len(features)))
+        axes[0].set_xticklabels(features, rotation=45, ha='right', fontsize=8)
+        axes[0].set_yticklabels(features, fontsize=8)
+        plt.colorbar(im1, ax=axes[0], fraction=0.046)
+        
+        # Synthetic correlation
+        im2 = axes[1].imshow(synthetic_corr, cmap='RdBu_r', vmin=-1, vmax=1, aspect='auto')
+        axes[1].set_title('Synthetic Data Correlation', fontsize=12, fontweight='bold')
+        axes[1].set_xticks(range(len(features)))
+        axes[1].set_yticks(range(len(features)))
+        axes[1].set_xticklabels(features, rotation=45, ha='right', fontsize=8)
+        axes[1].set_yticklabels(features, fontsize=8)
+        plt.colorbar(im2, ax=axes[1], fraction=0.046)
+        
+        # Difference
+        diff = synthetic_corr - real_corr
+        max_abs_diff = np.max(np.abs(diff))
+        im3 = axes[2].imshow(diff, cmap='RdBu_r', vmin=-max_abs_diff, vmax=max_abs_diff, aspect='auto')
+        axes[2].set_title('Difference (Syn - Real)', fontsize=12, fontweight='bold')
+        axes[2].set_xticks(range(len(features)))
+        axes[2].set_yticks(range(len(features)))
+        axes[2].set_xticklabels(features, rotation=45, ha='right', fontsize=8)
+        axes[2].set_yticklabels(features, fontsize=8)
+        plt.colorbar(im3, ax=axes[2], fraction=0.046)
+        
+        plt.tight_layout()
+        if save_dir:
+            plt.savefig(save_dir / 'correlation_heatmaps.png', dpi=150, bbox_inches='tight')
+        if show_plots:
+            plt.show()
+        else:
+            plt.close()
+    
+    def _plot_tail_comparison(
+        self, synthetic_flat, real_flat, features,
+        save_dir=None, show_plots=True, dataset_name='Real'
+    ):
+        """Generate tail exceedance plots"""
+        import matplotlib.pyplot as plt
+        
+        n_features = len(features)
+        n_cols = min(3, n_features)
+        n_rows = (n_features + n_cols - 1) // n_cols
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+        if n_features == 1:
+            axes = [axes]
+        else:
+            axes = axes.flatten()
+        
+        for i, feature in enumerate(features):
+            ax = axes[i]
+            syn_vals = synthetic_flat[:, i][~np.isnan(synthetic_flat[:, i])]
+            real_vals = real_flat[:, i][~np.isnan(real_flat[:, i])]
+            
+            # Upper tail exceedance (probability plot)
+            sorted_real = np.sort(real_vals)[::-1]
+            sorted_syn = np.sort(syn_vals)[::-1]
+            
+            n_real = len(sorted_real)
+            n_syn = len(sorted_syn)
+            
+            # Empirical exceedance probability
+            real_exc_prob = np.arange(1, n_real + 1) / n_real
+            syn_exc_prob = np.arange(1, n_syn + 1) / n_syn
+            
+            ax.loglog(real_exc_prob, sorted_real, 'o-', alpha=0.6, markersize=3, label=dataset_name)
+            ax.loglog(syn_exc_prob, sorted_syn, 's-', alpha=0.6, markersize=3, label='Synthetic')
+            ax.set_xlabel('Exceedance Probability', fontsize=9)
+            ax.set_ylabel('Value', fontsize=9)
+            ax.set_title(f'Tail Behavior: {feature}', fontsize=10, fontweight='bold')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3, which='both')
+        
+        for j in range(i+1, len(axes)):
+            axes[j].axis('off')
+        
+        plt.tight_layout()
+        if save_dir:
+            plt.savefig(save_dir / 'tail_comparison.png', dpi=150, bbox_inches='tight')
+        if show_plots:
+            plt.show()
+        else:
+            plt.close()
+    
+    def _print_validation_summary(self, results: Dict[str, Any]):
+        """Print a summary of validation results"""
+        
+        print("\n📋 Key Metrics:")
+        print("-" * 70)
+        
+        # Validation set summary
+        if 'validation_set' in results and results['validation_set']:
+            val_dist = results['validation_set'].get('distributions', {})
+            val_corr = results['validation_set'].get('correlations', {})
+            
+            # Count features passing KS test
+            ks_passes = sum(1 for f in val_dist.values() if f.get('ks_pvalue', 0) > 0.05)
+            total_features = len(val_dist)
+            
+            print(f"Validation Set:")
+            print(f"  Distribution match (KS p>0.05): {ks_passes}/{total_features} features")
+            if val_corr:
+                print(f"  Correlation Frobenius distance:  {val_corr.get('frobenius_distance', 'N/A'):.4f}")
+        
+        # Test set summary
+        if results.get('test_set'):
+            test_dist = results['test_set'].get('distributions', {})
+            test_corr = results['test_set'].get('correlations', {})
+            
+            ks_passes = sum(1 for f in test_dist.values() if f.get('ks_pvalue', 0) > 0.05)
+            total_features = len(test_dist)
+            
+            print(f"\nTest Set:")
+            print(f"  Distribution match (KS p>0.05): {ks_passes}/{total_features} features")
+            if test_corr:
+                print(f"  Correlation Frobenius distance:  {test_corr.get('frobenius_distance', 'N/A'):.4f}")
+    
+    def _convert_to_json_serializable(self, obj):
+        """Convert numpy types to Python types for JSON serialization"""
+        if isinstance(obj, dict):
+            return {k: self._convert_to_json_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._convert_to_json_serializable(item) for item in obj]
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.int64, np.int32)):
+            return int(obj)
+        elif isinstance(obj, (np.float64, np.float32)):
+            return float(obj)
+        else:
+            return obj
