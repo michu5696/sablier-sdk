@@ -657,7 +657,17 @@ class Model:
     # TRAINING
     # ============================================
     
-    def train(self, config: Optional[Dict[str, Any]] = None, confirm: Optional[bool] = None) -> Dict[str, Any]:
+    def train(self, 
+             config: Optional[Dict[str, Any]] = None, 
+             confirm: Optional[bool] = None,
+             fit_conditional_marginals: bool = False,
+             use_randomized_pit: bool = True,
+             parallel_samples: str = 'auto',
+             parallel_marginals: str = 'auto',
+             run_e2e_validation: bool = False,
+             e2e_validation_samples: int = 50,
+             e2e_forecast_samples: int = 1000,
+             e2e_validation_space: str = 'components') -> Dict[str, Any]:
         """
         Train the model on encoded samples
         
@@ -666,6 +676,7 @@ class Model:
         2. Uses future feature augmentation for robustness
         3. Computes SHAP feature importance
         4. Saves trained model to storage
+        5. Optionally runs end-to-end validation
         
         Args:
             config: Optional model configuration. Defaults to:
@@ -677,6 +688,14 @@ class Model:
                     'random_state': 42
                 }
             confirm: Explicit confirmation (None = prompt if needed)
+            fit_conditional_marginals: Fit GMM+EVT marginals (slow but accurate) vs empirical (fast) (default: False)
+            use_randomized_pit: Use randomized PIT for empirical mode (default: True)
+            parallel_samples: Outer parallelism for sample processing (default: 'auto')
+            parallel_marginals: Inner parallelism for marginal fitting (default: 'auto')
+            run_e2e_validation: Whether to run end-to-end validation (default: False)
+            e2e_validation_samples: Number of validation samples to use (default: 50)
+            e2e_forecast_samples: Forecast paths per validation sample (default: 1000)
+            e2e_validation_space: 'components', 'features', or 'both' (default: 'components')
             
         Returns:
             dict: {
@@ -730,7 +749,15 @@ class Model:
         payload = {
             "user_id": self._data.get("user_id"),
             "model_id": self.id,
-            "qrf_config": final_config  # Backend expects qrf_config key
+            "qrf_config": final_config,  # Backend expects qrf_config key
+            "fit_conditional_marginals": fit_conditional_marginals,
+            "use_randomized_pit": use_randomized_pit,
+            "parallel_samples": parallel_samples,
+            "parallel_marginals": parallel_marginals,
+            "run_e2e_validation": run_e2e_validation,
+            "e2e_validation_samples": e2e_validation_samples,
+            "e2e_forecast_samples": e2e_forecast_samples,
+            "e2e_validation_space": e2e_validation_space
         }
         
         # Call backend
