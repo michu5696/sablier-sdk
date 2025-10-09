@@ -658,16 +658,17 @@ class Model:
     # ============================================
     
     def train(self, 
-             config: Optional[Dict[str, Any]] = None, 
-             confirm: Optional[bool] = None,
-             fit_conditional_marginals: bool = False,
-             use_randomized_pit: bool = True,
-             parallel_samples: str = 'auto',
-             parallel_marginals: str = 'auto',
-             run_e2e_validation: bool = False,
-             e2e_validation_samples: int = 50,
-             e2e_forecast_samples: int = 1000,
-             e2e_validation_space: str = 'components') -> Dict[str, Any]:
+            config: Optional[Dict[str, Any]] = None, 
+            confirm: Optional[bool] = None,
+            fit_conditional_marginals: bool = False,
+            use_randomized_pit: bool = True,
+            parallel_samples: str = 'auto',
+            parallel_marginals: str = 'auto',
+            run_e2e_validation: bool = False,
+            e2e_validation_samples: int = 50,
+            e2e_forecast_samples: int = 1000,
+            e2e_covariance_type: str = 'increment',
+            e2e_time_scales: List[int] = None) -> Dict[str, Any]:
         """
         Train the model on encoded samples
         
@@ -695,7 +696,8 @@ class Model:
             run_e2e_validation: Whether to run end-to-end validation (default: False)
             e2e_validation_samples: Number of validation samples to use (default: 50)
             e2e_forecast_samples: Forecast paths per validation sample (default: 1000)
-            e2e_validation_space: 'components', 'features', or 'both' (default: 'components')
+            e2e_covariance_type: 'increment' or 'level' (default: 'increment')
+            e2e_time_scales: List of time scales for increment covariance (default: [1, 3, 5, 10])
             
         Returns:
             dict: {
@@ -757,7 +759,8 @@ class Model:
             "run_e2e_validation": run_e2e_validation,
             "e2e_validation_samples": e2e_validation_samples,
             "e2e_forecast_samples": e2e_forecast_samples,
-            "e2e_validation_space": e2e_validation_space
+            "e2e_covariance_type": e2e_covariance_type,
+            "e2e_time_scales": e2e_time_scales or [1, 3, 5, 10]
         }
         
         # Call backend
@@ -903,62 +906,138 @@ class Model:
         print(f"  Dimensionality reduction: {n_total_dims - n_copula_dims} components")
         print()
         
-        # Display validation results
+        # Display validation results (conditional copula validation)
         validation_results = copula_metadata.get('validation_results', {})
         if validation_results:
-            print("Structural Validation Metrics:")
+            print("Conditional Copula Validation Metrics (Uniform Space):")
             
-            # Main metrics
-            import numpy as np
-            mean_structural_score = validation_results.get('mean_structural_score', 0.0)
-            std_structural_score = validation_results.get('std_structural_score', 0.0)
-            min_score = validation_results.get('min_structural_score', 0.0)
-            max_score = validation_results.get('max_structural_score', 0.0)
-            n_validation_samples = validation_results.get('n_validation_samples', 0)
-            n_copula_components = validation_results.get('n_copula_components', 0)
+            # Main metrics from conditional copula validation
+            log_lik = validation_results.get('mean_log_likelihood', None)
+            corr_of_corr = validation_results.get('correlation_of_correlations', 0.0)
+            corr_mae = validation_results.get('correlation_mae', 0.0)
+            tail_coexceed = validation_results.get('tail_coexceedance', 0.0)
             
-            print(f"  Mean Structural Score: {mean_structural_score:.3f} ± {std_structural_score:.3f}")
-            print(f"  Score Range: [{min_score:.3f}, {max_score:.3f}]")
-            print(f"  Validation Samples: {n_validation_samples}")
-            print(f"  Copula Components: {n_copula_components}")
+            if log_lik is not None:
+                print(f"  Mean Log-Likelihood: {log_lik:.3f}")
+            else:
+                print(f"  Mean Log-Likelihood: N/A")
             
-            # Display structural differences
-            mean_corr_diff = validation_results.get('mean_correlation_difference', 0.0)
-            mean_spearman_diff = validation_results.get('mean_spearman_difference', 0.0)
-            mean_tail_diff = validation_results.get('mean_tail_dependence_difference', 0.0)
-            mean_mi_diff = validation_results.get('mean_mutual_info_difference', 0.0)
-            
-            print(f"  Mean Correlation Difference: {mean_corr_diff:.3f}")
-            print(f"  Mean Spearman Difference: {mean_spearman_diff:.3f}")
-            print(f"  Mean Tail Dependence Difference: {mean_tail_diff:.3f}")
-            print(f"  Mean Mutual Info Difference: {mean_mi_diff:.3f}")
-            
+            print(f"  Correlation-of-Correlations: {corr_of_corr:.3f}")
+            print(f"  Correlation MAE: {corr_mae:.3f}")
+            print(f"  Tail Co-exceedance: {tail_coexceed:.3f}")
             print()
             
-            # Quality assessment based on structural score
-            print("Quality Assessment (based on structural similarity):")
-            if mean_structural_score >= 0.7:
-                print("  🎉 EXCELLENT - Copula captures structural dependencies very well")
-            elif mean_structural_score >= 0.5:
-                print("  ✅ GOOD - Copula captures structural dependencies reasonably well")
-            elif mean_structural_score >= 0.3:
-                print("  ⚠️  MODERATE - Copula shows some structural similarity")
+            # Quality assessment based on conditional copula metrics
+            print("Quality Assessment:")
+            if corr_of_corr >= 0.7:
+                print("  🎉 EXCELLENT - Copula captures dependencies very well")
+            elif corr_of_corr >= 0.5:
+                print("  ✅ GOOD - Copula captures dependencies reasonably well")
+            elif corr_of_corr >= 0.3:
+                print("  ⚠️  MODERATE - Copula shows some dependency structure")
             else:
-                print("  ❌ POOR - Copula fails to capture structural dependencies")
+                print("  ❌ POOR - Copula fails to capture dependencies")
             
             print()
-            
-            # Plot availability
-            plot_filename = validation_results.get('plot_filename')
-            if plot_filename:
-                print(f"📊 Validation plot available: {plot_filename}")
-                print("   Use model.plot_copula_validation() to generate the plot")
-            else:
-                print("📊 No validation plot available")
         else:
             print("⚠️  No validation results available")
         
         print("=" * 50)
+    
+    def show_e2e_validation(self) -> None:
+        """
+        Display end-to-end validation results for a trained model
+        
+        Example:
+            >>> model.show_e2e_validation()
+        """
+        # Check if model is trained
+        if self.status != "trained":
+            print(f"❌ Model must be trained to show E2E validation (current status: {self.status})")
+            return
+        
+        # Get E2E results from model metadata (nested in copula_metadata)
+        model_metadata = self._data.get('model_metadata', {})
+        copula_metadata = model_metadata.get('copula_metadata', {})
+        e2e_results = copula_metadata.get('e2e_validation_results', {})
+        
+        if not e2e_results:
+            print("❌ No E2E validation results found. Model may not have been trained with run_e2e_validation=True")
+            return
+        
+        print("🎯 End-to-End Validation Results (Full Pipeline):")
+        print("=" * 70)
+        
+        # Overall score
+        overall_score = e2e_results.get('overall_score', 0.0)
+        print(f"Overall Score: {overall_score:.3f}")
+        print()
+        
+        # Calibration
+        calibration = e2e_results.get('calibration_metrics', {})
+        if calibration:
+            print("📊 Calibration (Coverage):")
+            cov_90 = calibration.get('mean_coverage_90', 0.0)
+            cov_50 = calibration.get('mean_coverage_50', 0.0)
+            well_cal_90 = calibration.get('well_calibrated_90', 0)
+            well_cal_50 = calibration.get('well_calibrated_50', 0)
+            total_comps = calibration.get('total_components', 0)
+            
+            print(f"  90% Coverage: {cov_90:.1%} (target: 90%)")
+            print(f"  50% Coverage: {cov_50:.1%} (target: 50%)")
+            print(f"  Well-calibrated components: {well_cal_90}/{total_comps} (90% CI)")
+            print()
+        
+        # Distribution similarity
+        distribution = e2e_results.get('distribution_metrics', {})
+        if distribution:
+            print("📈 Distribution Similarity:")
+            mean_ks = distribution.get('mean_ks', 0.0)
+            good_ks = distribution.get('good_ks_count', 0)
+            total_comps = distribution.get('total_components', 0)
+            
+            print(f"  Mean KS statistic: {mean_ks:.3f}")
+            print(f"  Components with KS<0.2: {good_ks}/{total_comps}")
+            print()
+        
+        # Correlation structure
+        correlation = e2e_results.get('correlation_metrics', {})
+        if correlation:
+            print("🔗 Covariance Structure (Multi-Scale, Reconstructed Space):")
+            
+            targets_only = correlation.get('targets_only', {})
+            if targets_only:
+                score = targets_only.get('mean_score', 0.0)
+                std = targets_only.get('std_score', 0.0)
+                n_samples = targets_only.get('n_samples', 0)
+                print(f"  Targets Only:")
+                print(f"    Score: {score:.3f} ± {std:.3f}")
+                print(f"    Samples: {n_samples}")
+                print(f"    Metric: Multi-scale increment covariance (1d, 3d, 5d, 10d)")
+            
+            targets_cond = correlation.get('targets_and_conditioning', {})
+            if targets_cond:
+                score = targets_cond.get('mean_score', 0.0)
+                std = targets_cond.get('std_score', 0.0)
+                n_samples = targets_cond.get('n_samples', 0)
+                print(f"  Targets + Conditioning:")
+                print(f"    Score: {score:.3f} ± {std:.3f}")
+                print(f"    Samples: {n_samples}")
+                print(f"    Metric: Multi-scale cross-covariance")
+            print()
+        
+        # Quality assessment
+        print("Quality Assessment:")
+        if overall_score >= 0.7:
+            print("  🎉 EXCELLENT - Model performs very well across all metrics")
+        elif overall_score >= 0.5:
+            print("  ✅ GOOD - Model performs reasonably well")
+        elif overall_score >= 0.3:
+            print("  ⚠️  MODERATE - Model shows acceptable performance")
+        else:
+            print("  ❌ POOR - Model needs improvement")
+        
+        print("=" * 70)
     
     # ============================================
     # SCENARIO CREATION
