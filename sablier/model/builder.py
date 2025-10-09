@@ -810,58 +810,39 @@ class Model:
         # Display copula validation results if available (after refresh)
         copula_metadata = self._data.get('model_metadata', {}).get('copula_metadata', {})
         if copula_metadata:
-            print("🔗 Structural Copula Validation Results (Uniform Space):")
+            print("🔗 Conditional Copula Validation Results (Uniform Space):")
             validation_results = copula_metadata.get('validation_results', {})
             
             if validation_results:
-                # Display main metrics
+                # Display main metrics (new format)
                 import numpy as np
-                mean_structural_score = validation_results.get('mean_structural_score', 0.0)
-                std_structural_score = validation_results.get('std_structural_score', 0.0)
-                min_score = validation_results.get('min_structural_score', 0.0)
-                max_score = validation_results.get('max_structural_score', 0.0)
-                n_validation_samples = validation_results.get('n_validation_samples', 0)
-                n_copula_components = validation_results.get('n_copula_components', 0)
+                mean_log_lik = validation_results.get('mean_log_likelihood', None)
+                corr_of_corr = validation_results.get('correlation_of_correlations', None)
+                corr_mae = validation_results.get('correlation_mae', None)
+                tail_coexceedance = validation_results.get('tail_coexceedance', None)
                 
-                print(f"     Mean Structural Score: {mean_structural_score:.3f} ± {std_structural_score:.3f}")
-                print(f"     Score Range: [{min_score:.3f}, {max_score:.3f}]")
-                print(f"     Validation Samples: {n_validation_samples}")
-                print(f"     Copula Components: {n_copula_components}")
+                if mean_log_lik is not None:
+                    print(f"     Mean Log-Likelihood: {mean_log_lik:.3f}")
+                if corr_of_corr is not None:
+                    print(f"     Correlation of Correlations: {corr_of_corr:.3f}")
+                if corr_mae is not None:
+                    print(f"     Correlation MAE: {corr_mae:.3f}")
+                if tail_coexceedance is not None:
+                    print(f"     Tail Co-exceedance Rate: {tail_coexceedance:.3f}")
                 
-                # Display structural differences
-                mean_corr_diff = validation_results.get('mean_correlation_difference', 0.0)
-                mean_spearman_diff = validation_results.get('mean_spearman_difference', 0.0)
-                mean_tail_diff = validation_results.get('mean_tail_dependence_difference', 0.0)
-                mean_mi_diff = validation_results.get('mean_mutual_info_difference', 0.0)
-                
-                print(f"     Mean Correlation Difference: {mean_corr_diff:.3f}")
-                print(f"     Mean Spearman Difference: {mean_spearman_diff:.3f}")
-                print(f"     Mean Tail Dependence Difference: {mean_tail_diff:.3f}")
-                print(f"     Mean Mutual Info Difference: {mean_mi_diff:.3f}")
-                
-                # Display full joint distribution metrics if available
-                full_joint_score = validation_results.get('full_joint_structural_score', None)
-                if full_joint_score is not None:
-                    print(f"     Full Joint Distribution Score: {full_joint_score:.3f}")
-                    full_corr_diff = validation_results.get('full_joint_correlation_difference', 0.0)
-                    full_spearman_diff = validation_results.get('full_joint_spearman_difference', 0.0)
-                    full_tail_diff = validation_results.get('full_joint_tail_dependence_difference', 0.0)
-                    full_mi_diff = validation_results.get('full_joint_mutual_info_difference', 0.0)
-                    
-                    print(f"     Full Joint Correlation Difference: {full_corr_diff:.3f}")
-                    print(f"     Full Joint Spearman Difference: {full_spearman_diff:.3f}")
-                    print(f"     Full Joint Tail Dependence Difference: {full_tail_diff:.3f}")
-                    print(f"     Full Joint Mutual Info Difference: {full_mi_diff:.3f}")
-                
-                # Quality assessment based on structural score
-                if mean_structural_score >= 0.7:
-                    print("     🎉 Copula quality: EXCELLENT (Score ≥ 0.7)")
-                elif mean_structural_score >= 0.5:
-                    print("     ✅ Copula quality: GOOD (Score ≥ 0.5)")
-                elif mean_structural_score >= 0.3:
-                    print("     ⚠️  Copula quality: MODERATE (Score ≥ 0.3)")
+                # Quality assessment based on correlation of correlations
+                print()
+                if corr_of_corr is not None:
+                    if corr_of_corr >= 0.7:
+                        print("     🎉 Copula quality: EXCELLENT (Corr-of-Corr ≥ 0.7)")
+                    elif corr_of_corr >= 0.5:
+                        print("     ✅ Copula quality: GOOD (Corr-of-Corr ≥ 0.5)")
+                    elif corr_of_corr >= 0.3:
+                        print("     ⚠️  Copula quality: MODERATE (Corr-of-Corr ≥ 0.3)")
+                    else:
+                        print("     ❌ Copula quality: POOR (Corr-of-Corr < 0.3)")
                 else:
-                    print("     ❌ Copula quality: POOR (Score < 0.3)")
+                    print("     ⚠️  Copula quality: Unable to assess (no metrics available)")
                 
                 # Check for validation plot
                 plot_filename = validation_results.get('plot_filename')
