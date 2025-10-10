@@ -532,6 +532,179 @@ class Model:
         return response
     
     # ============================================
+    # FEATURE GROUPING
+    # ============================================
+    
+    def auto_group_features(
+        self,
+        min_correlation: float = 0.75,
+        method: str = 'hierarchical',
+        auto_apply: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Analyze feature correlations and suggest groupings for multivariate encoding
+        
+        This should be called after generate_samples() and before encode_samples().
+        It analyzes correlations within target and conditioning features separately
+        and suggests groups of highly correlated features that should be encoded together.
+        
+        Args:
+            min_correlation: Minimum correlation threshold for grouping (default: 0.75)
+            method: Clustering method ('hierarchical' or 'threshold', default: 'hierarchical')
+            auto_apply: If True, automatically apply suggested groups without confirmation
+            
+        Returns:
+            dict: {
+                "status": "success",
+                "target_groups": List[Dict],
+                "conditioning_groups": List[Dict],
+                "correlation_matrices": Dict
+            }
+            
+        Example:
+            >>> # Analyze and review groups
+            >>> groups = model.auto_group_features(min_correlation=0.8)
+            >>> 
+            >>> # Review suggested groups
+            >>> for group in groups['target_groups']:
+            >>>     print(f"{group['name']}: {group['features']}")
+            >>>     print(f"  Avg correlation: {group['avg_correlation']:.3f}")
+            >>> 
+            >>> # Rename a group (optional)
+            >>> model.rename_group('target_group_1', 'Treasury Yield Curve')
+            >>> 
+            >>> # Groups are automatically used in encode_samples()
+        """
+        # Check status
+        if self.status not in ['samples_generated', 'encoding_fitted', 'samples_encoded', 'trained']:
+            raise ValueError(
+                f"Cannot analyze feature groups. Model status: {self.status}. "
+                f"Call generate_samples() first."
+            )
+        
+        print(f"[Model {self.name}] Analyzing feature correlations...")
+        print(f"  Minimum correlation threshold: {min_correlation}")
+        print(f"  Clustering method: {method}")
+        
+        # Call backend
+        payload = {
+            "user_id": self._data.get("user_id"),
+            "model_id": self.id,
+            "min_correlation": min_correlation,
+            "method": method
+        }
+        
+        response = self.http.post('/api/v1/ml/analyze-feature-groups', payload)
+        
+        if response.get('status') != 'success':
+            print(f"❌ Feature grouping analysis failed")
+            return response
+        
+        target_groups = response.get('target_groups', [])
+        conditioning_groups = response.get('conditioning_groups', [])
+        
+        # Display results
+        print(f"\n✅ Feature grouping analysis complete")
+        print(f"\n📊 TARGET FEATURE GROUPS ({len(target_groups)} groups):")
+        print("=" * 70)
+        for group in target_groups:
+            print(f"\n{group['name']} (ID: {group['id']})")
+            print(f"  Features ({group['n_features']}): {', '.join(group['features'])}")
+            print(f"  Avg correlation: {group['avg_correlation']:.3f}")
+            print(f"  Type: {'Multivariate' if group['is_multivariate'] else 'Univariate'}")
+        
+        if conditioning_groups:
+            print(f"\n📊 CONDITIONING FEATURE GROUPS ({len(conditioning_groups)} groups):")
+            print("=" * 70)
+            for group in conditioning_groups:
+                print(f"\n{group['name']} (ID: {group['id']})")
+                print(f"  Features ({group['n_features']}): {', '.join(group['features'])}")
+                print(f"  Avg correlation: {group['avg_correlation']:.3f}")
+                print(f"  Type: {'Multivariate' if group['is_multivariate'] else 'Univariate'}")
+        
+        print("\n" + "=" * 70)
+        
+        # Apply groups if auto_apply or prompt user
+        if auto_apply:
+            print("\n🔄 Auto-applying suggested groups...")
+            self.apply_feature_groups(response)
+        else:
+            print("\n💡 TIP: Review the groups above. You can:")
+            print("   - Rename groups: model.rename_group('target_group_1', 'New Name')")
+            print("   - Apply groups: model.apply_feature_groups(groups)")
+            print("   - Or they will be automatically applied when you call encode_samples()")
+        
+        return response
+    
+    def rename_group(self, group_id: str, new_name: str):
+        """
+        Rename a feature group
+        
+        Args:
+            group_id: Group ID (e.g., 'target_group_1')
+            new_name: New name for the group
+            
+        Example:
+            >>> model.rename_group('target_group_1', 'Treasury Yield Curve')
+        """
+        # Get current groups from model metadata
+        feature_groups = self._data.get('feature_groups')
+        if not feature_groups:
+            raise ValueError("No feature groups found. Call auto_group_features() first.")
+        
+        # Find and rename the group
+        found = False
+        for group_list_key in ['target_groups', 'conditioning_groups']:
+            groups = feature_groups.get(group_list_key, [])
+            for group in groups:
+                if group['id'] == group_id:
+                    old_name = group['name']
+                    group['name'] = new_name
+                    found = True
+                    print(f"✅ Renamed '{old_name}' → '{new_name}'")
+                    break
+            if found:
+                break
+        
+        if not found:
+            raise ValueError(f"Group '{group_id}' not found")
+        
+        # Update model metadata
+        self._update_metadata({'feature_groups': feature_groups})
+    
+    def apply_feature_groups(self, groups: Dict[str, Any]):
+        """
+        Apply feature groupings to the model
+        
+        Args:
+            groups: Groups dictionary from auto_group_features()
+            
+        Example:
+            >>> groups = model.auto_group_features()
+            >>> model.apply_feature_groups(groups)
+        """
+        feature_groups = {
+            'target_groups': groups.get('target_groups', []),
+            'conditioning_groups': groups.get('conditioning_groups', [])
+        }
+        
+        # Update model metadata
+        self._update_metadata({'feature_groups': feature_groups})
+        
+        print(f"✅ Applied {len(feature_groups['target_groups'])} target groups and "
+              f"{len(feature_groups['conditioning_groups'])} conditioning groups")
+    
+    def _update_metadata(self, updates: Dict[str, Any]):
+        """Helper to update model metadata"""
+        # Update local data
+        self._data.update(updates)
+        
+        # Update in database via backend
+        # The update endpoint expects fields directly in the payload, not nested under "updates"
+        payload = updates.copy()
+        self.http.patch(f'/api/v1/models/{self.id}', payload)
+    
+    # ============================================
     # ENCODING
     # ============================================
     
@@ -1003,27 +1176,29 @@ class Model:
         # Correlation structure
         correlation = e2e_results.get('correlation_metrics', {})
         if correlation:
-            print("🔗 Covariance Structure (Multi-Scale, Reconstructed Space):")
+            print("🔗 Correlation Structure (Reconstructed Space):")
             
             targets_only = correlation.get('targets_only', {})
             if targets_only:
-                score = targets_only.get('mean_score', 0.0)
+                score = targets_only.get('correlation_similarity', targets_only.get('mean_score', 0.0))
                 std = targets_only.get('std_score', 0.0)
                 n_samples = targets_only.get('n_samples', 0)
+                metric = targets_only.get('metric', 'correlation_of_correlations')
                 print(f"  Targets Only:")
-                print(f"    Score: {score:.3f} ± {std:.3f}")
+                print(f"    Correlation Similarity: {score:.3f} ± {std:.3f}")
                 print(f"    Samples: {n_samples}")
-                print(f"    Metric: Multi-scale increment covariance (1d, 3d, 5d, 10d)")
+                print(f"    Metric: {metric}")
             
-            targets_cond = correlation.get('targets_and_conditioning', {})
+            targets_cond = correlation.get('targets_and_conditioning')
             if targets_cond:
-                score = targets_cond.get('mean_score', 0.0)
+                score = targets_cond.get('correlation_similarity', targets_cond.get('mean_score', 0.0))
                 std = targets_cond.get('std_score', 0.0)
                 n_samples = targets_cond.get('n_samples', 0)
+                metric = targets_cond.get('metric', 'cross_correlation_of_correlations')
                 print(f"  Targets + Conditioning:")
-                print(f"    Score: {score:.3f} ± {std:.3f}")
+                print(f"    Cross-Correlation Similarity: {score:.3f} ± {std:.3f}")
                 print(f"    Samples: {n_samples}")
-                print(f"    Metric: Multi-scale cross-covariance")
+                print(f"    Metric: {metric}")
             print()
         
         # Quality assessment
@@ -1332,15 +1507,26 @@ class Model:
                 break
         
         # Extract encoded values (from separate encoded arrays)
+        # With groups, the feature might be encoded as part of a group
         for item in encoded_data:
-            if item.get('feature') == feature and item.get('temporal_tag') == window:
-                if data_type == "normalized_series":
-                    encoded_values = item.get('encoded_normalized_series', [])
-                else:
-                    encoded_values = item.get('encoded_normalized_residuals', [])
+            # Check if this item is for our feature (direct match or part of a group)
+            item_feature = item.get('feature')
+            item_temporal = item.get('temporal_tag')
+            
+            if item_temporal == window:
+                # Check direct match or if feature is in group_features
+                is_match = (item_feature == feature)
+                if not is_match and item.get('group_features'):
+                    is_match = feature in item.get('group_features', [])
                 
-                if encoded_values:
-                    break
+                if is_match:
+                    if data_type == "normalized_series":
+                        encoded_values = item.get('encoded_normalized_series', [])
+                    else:
+                        encoded_values = item.get('encoded_normalized_residuals', [])
+                    
+                    if encoded_values:
+                        break
         
         if original_values is None or encoded_values is None:
             raise ValueError(f"Data not found for {feature} {window} {data_type}")
@@ -1402,32 +1588,66 @@ class Model:
             
             print(f"  DEBUG: Sending past_ref_norm={past_ref_norm:.4f} to backend as reference")
             
+            # Build encoded window - need to find the actual encoded item to get group metadata
+            encoded_window = {
+                "feature": feature,
+                "temporal_tag": window,
+                "data_type": f"encoded_{data_type}",
+                "encoded_values": encoded_values
+            }
+            
+            # If feature is part of a group, find and preserve group metadata
+            for item in encoded_data:
+                if item.get('temporal_tag') == window:
+                    if item.get('feature') == feature or (item.get('group_features') and feature in item.get('group_features', [])):
+                        # Found the encoded item - copy metadata
+                        if 'is_group' in item:
+                            encoded_window['is_group'] = item['is_group']
+                        if 'is_multivariate' in item:
+                            encoded_window['is_multivariate'] = item['is_multivariate']
+                        if 'group_features' in item:
+                            encoded_window['group_features'] = item['group_features']
+                            encoded_window['feature'] = item['feature']  # Use group_id as feature
+                        break
+            
             payload = {
                 "user_id": self._data.get("user_id"),
                 "model_id": self.id,
                 "encoded_source": "inline",
-                "encoded_windows": [{
-                    "feature": feature,
-                    "temporal_tag": window,
-                    "data_type": f"encoded_{data_type}",
-                    "encoded_values": encoded_values
-                }],
+                "encoded_windows": [encoded_window],
                 "reference_source": "inline",
                 "reference_values": {feature: past_ref_norm},  # Send NORMALIZED reference
                 "output_destination": "return"
             }
         else:
             # For series, no reference needed
+            # Build encoded window with group metadata if applicable
+            encoded_window = {
+                "feature": feature,
+                "temporal_tag": window,
+                "data_type": f"encoded_{data_type}",
+                "encoded_values": encoded_values
+            }
+            
+            # If feature is part of a group, find and preserve group metadata
+            for item in encoded_data:
+                if item.get('temporal_tag') == window:
+                    if item.get('feature') == feature or (item.get('group_features') and feature in item.get('group_features', [])):
+                        # Found the encoded item - copy metadata
+                        if 'is_group' in item:
+                            encoded_window['is_group'] = item['is_group']
+                        if 'is_multivariate' in item:
+                            encoded_window['is_multivariate'] = item['is_multivariate']
+                        if 'group_features' in item:
+                            encoded_window['group_features'] = item['group_features']
+                            encoded_window['feature'] = item['feature']  # Use group_id as feature
+                        break
+            
             payload = {
                 "user_id": self._data.get("user_id"),
                 "model_id": self.id,
                 "encoded_source": "inline",
-                "encoded_windows": [{
-                    "feature": feature,
-                    "temporal_tag": window,
-                    "data_type": f"encoded_{data_type}",
-                    "encoded_values": encoded_values
-                }],
+                "encoded_windows": [encoded_window],
                 "reference_source": "none",
                 "output_destination": "return"
             }
@@ -1737,18 +1957,29 @@ Points: {metrics['n_points']}"""
         print(f"[Reconstruction] Reconstructing {len(forecast_samples)} forecast samples...")
         
         # Transform forecast samples to encoded_windows format
-        window_to_sample_index = []
+        # Track sample index in the window itself (since multivariate groups expand to multiple reconstructions)
         encoded_windows = []
         
         for sample_idx, sample in enumerate(forecast_samples):
             for item in sample.get('encoded_target_data', []):
-                window_to_sample_index.append(sample_idx)
-                encoded_windows.append({
+                encoded_window = {
                     "feature": item['feature'],
                     "temporal_tag": item['temporal_tag'],
                     "data_type": "encoded_normalized_residuals",
-                    "encoded_values": item['encoded_normalized_residuals']
-                })
+                    "encoded_values": item['encoded_normalized_residuals'],  # API expects "encoded_values"
+                    "_sample_idx": sample_idx  # Track which forecast sample this belongs to
+                }
+                # Preserve group metadata if present
+                if 'is_group' in item:
+                    encoded_window['is_group'] = item['is_group']
+                if 'is_multivariate' in item:
+                    encoded_window['is_multivariate'] = item['is_multivariate']
+                if 'group_features' in item:
+                    encoded_window['group_features'] = item['group_features']
+                if 'n_components' in item:
+                    encoded_window['n_components'] = item['n_components']
+                
+                encoded_windows.append(encoded_window)
         
         # Call reconstruct endpoint
         payload = {
@@ -1790,11 +2021,13 @@ Points: {metrics['n_points']}"""
             raise ValueError(f"Reference sample {reference_sample_id} not found in test samples")
         
         # Group reconstructions back into samples
+        # Use _sample_idx from window metadata (preserved through reconstruction)
         reconstructed_samples = []
         windows_by_sample = {}
         
-        for idx, window in enumerate(reconstructions):
-            sample_idx = window_to_sample_index[idx]
+        for window in reconstructions:
+            # Get sample index from window metadata (added during encoding)
+            sample_idx = window.get('_sample_idx', 0)  # Default to 0 if not found
             if sample_idx not in windows_by_sample:
                 windows_by_sample[sample_idx] = []
             windows_by_sample[sample_idx].append(window)
