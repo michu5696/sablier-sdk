@@ -401,19 +401,23 @@ class Scenario:
         encoded_conditioning_data = sample.get('encoded_conditioning_data', [])
         
         # For PLOTTING: Extract encoded_normalized_residuals
+        # Note: Always extract ALL features for plotting, ignoring the 'features' filter
+        # because 'features' contains individual feature names but encoded data has group IDs
         encoded_residuals_for_plotting = {}
         all_feature_residuals = {}  # Track all features (selected or not)
         
         for item in encoded_conditioning_data:
-            if item.get('temporal_tag') == 'future':
-                feature_name = item.get('feature')
-                is_selected = not features or feature_name in features
-                
+            temporal_tag = item.get('temporal_tag')
+            feature_name = item.get('feature')
+            
+            if temporal_tag == 'future':
+                # For plotting, we specifically need encoded_normalized_residuals
                 encoded_residuals = item.get('encoded_normalized_residuals', [])
-                if encoded_residuals:
+                
+                if encoded_residuals and len(encoded_residuals) > 0:
                     all_feature_residuals[feature_name] = encoded_residuals
-                    if is_selected:
-                        encoded_residuals_for_plotting[feature_name] = encoded_residuals
+                    # Always add to plotting (ignoring features filter since it has individual names not group IDs)
+                    encoded_residuals_for_plotting[feature_name] = encoded_residuals
         
         if not all_feature_residuals:
             raise ValueError("No future conditioning residuals found in sample")
@@ -429,27 +433,111 @@ class Scenario:
         # Build encoded_windows for reconstruction
         encoded_windows = []
         for feature_name, encoded_residuals in all_feature_residuals.items():
-            encoded_windows.append({
+            # Check if this is a group by looking in encoded_conditioning_data
+            original_encoded_item = next((x for x in encoded_conditioning_data 
+                                         if x.get('feature') == feature_name and x.get('temporal_tag') == 'future'), None)
+            
+            window = {
                 "feature": feature_name,
                 "temporal_tag": "future",
                 "data_type": "encoded_normalized_residuals",
                 "encoded_values": encoded_residuals
-            })
+            }
+            
+            # Preserve group metadata if present
+            if original_encoded_item:
+                if original_encoded_item.get('is_group'):
+                    window['is_group'] = True
+                    window['is_multivariate'] = original_encoded_item.get('is_multivariate', False)
+                    window['group_features'] = original_encoded_item.get('group_features', [])
+                    window['n_components'] = original_encoded_item.get('n_components')
+            
+            encoded_windows.append(window)
         
-        # Get reference values (last normalized value for each feature)
+        # Get reference values (last normalized value for each feature/group)
         reference_values = {}
         normalized_past = self._data.get('normalized_fetched_past', [])
+        encoded_past = self._data.get('encoded_fetched_past', [])
         
-        for feature_name in all_feature_residuals.keys():
-            # Try to get from normalized_past
-            for item in normalized_past:
-                if item.get('feature_name') == feature_name or item.get('feature') == feature_name:
-                    reference_values[feature_name] = item['normalized_series'][-1]
-                    break
         
-        if len(reference_values) != len(all_feature_residuals):
-            missing = set(all_feature_residuals.keys()) - set(reference_values.keys())
-            raise ValueError(f"Missing reference values for features: {missing}")
+        # Check if model uses feature groups
+        feature_groups = self.model._data.get('feature_groups')
+        
+        for feature_or_group_name in all_feature_residuals.keys():
+            # Check if this is a group ID by looking in encoded_conditioning_data (from sample)
+            encoded_item = next((x for x in encoded_conditioning_data 
+                               if x.get('feature') == feature_or_group_name and x.get('temporal_tag') == 'future'), None)
+            
+            # If not found in sample, try encoded_past (from fetch_recent_past)
+            if not encoded_item:
+                encoded_item = next((x for x in encoded_past if x.get('feature') == feature_or_group_name), None)
+            
+            if encoded_item and encoded_item.get('is_group'):
+                # This is a group - get reference values for all features in the group
+                group_features = encoded_item.get('group_features', [])
+                is_multivariate = encoded_item.get('is_multivariate', False)
+                
+                
+                if is_multivariate:
+                    # For multivariate groups, we need all feature reference values
+                    # The reconstruct endpoint expects them as individual entries, not nested dicts
+                    for feat in group_features:
+                        for item in normalized_past:
+                            if item.get('feature_name') == feat or item.get('feature') == feat:
+                                reference_values[feat] = item['normalized_series'][-1]
+                                logger.debug(f"  Found reference for {feat}: {item['normalized_series'][-1]}")
+                                break
+                    
+                    # Check if all features were found
+                    missing = set(group_features) - set(reference_values.keys())
+                    if missing:
+                        raise ValueError(f"Missing reference values for features in group {feature_or_group_name}: {missing}")
+                else:
+                    # Univariate group - single reference value
+                    # Store under feature name (not group ID) to match multivariate behavior
+                    feat = group_features[0]
+                    for item in normalized_past:
+                        if item.get('feature_name') == feat or item.get('feature') == feat:
+                            reference_values[feat] = item['normalized_series'][-1]
+                            logger.debug(f"  Found reference for univariate group {feature_or_group_name}: {item['normalized_series'][-1]}")
+                            break
+            else:
+                # Individual feature (no groups)
+                for item in normalized_past:
+                    if item.get('feature_name') == feature_or_group_name or item.get('feature') == feature_or_group_name:
+                        reference_values[feature_or_group_name] = item['normalized_series'][-1]
+                        break
+        
+        # Verify all reference values were found
+        # For multivariate groups, individual features are in reference_values, not group IDs
+        # So we need a smarter check
+        missing_groups = []
+        for feature_or_group_name in all_feature_residuals.keys():
+            # Check if this is a group
+            encoded_item = next((x for x in encoded_conditioning_data 
+                               if x.get('feature') == feature_or_group_name and x.get('temporal_tag') == 'future'), None)
+            if not encoded_item:
+                encoded_item = next((x for x in encoded_past if x.get('feature') == feature_or_group_name), None)
+            
+            if encoded_item and encoded_item.get('is_group'):
+                group_features = encoded_item.get('group_features', [])
+                is_multivariate = encoded_item.get('is_multivariate', False)
+                
+                if is_multivariate:
+                    # Check if all features in the group have reference values
+                    if not all(feat in reference_values for feat in group_features):
+                        missing_groups.append(feature_or_group_name)
+                else:
+                    # Univariate group - check if the single feature has a reference value
+                    if group_features[0] not in reference_values:
+                        missing_groups.append(feature_or_group_name)
+            else:
+                # Individual feature
+                if feature_or_group_name not in reference_values:
+                    missing_groups.append(feature_or_group_name)
+        
+        if missing_groups:
+            raise ValueError(f"Missing reference values for features/groups: {missing_groups}")
         
         # Call reconstruct endpoint (ONE call for all features)
         reconstruct_payload = {
@@ -746,27 +834,54 @@ class Scenario:
         if not fetched_past:
             raise ValueError("No fetched_past_data in scenario. Call fetch_recent_past() first.")
         
-        # Build reference values dict from fetched past (last value for each feature)
+        # Build reference values dict from normalized fetched past (last normalized value for each feature)
         reference_values = {}
-        for point in fetched_past:
-            feature = point.get('feature')
-            if feature:
-                # Keep updating - last one wins (most recent value)
-                reference_values[feature] = point['value']
+        normalized_fetched_past = self._data.get('normalized_fetched_past', [])
+        norm_params = self.model._data.get('feature_normalization_params', {})
+        
+        if normalized_fetched_past:
+            # Use normalized values directly
+            for item in normalized_fetched_past:
+                feature_name = item.get('feature_name') or item.get('feature')
+                normalized_series = item.get('normalized_series', [])
+                if feature_name and normalized_series:
+                    reference_values[feature_name] = normalized_series[-1]
+        else:
+            # Fallback: calculate from denormalized fetched_past
+            for point in fetched_past:
+                feature = point.get('feature')
+                if feature:
+                    # Keep updating - last one wins (most recent value)
+                    value = point['value']
+                    mean = norm_params.get(feature, {}).get('mean', 0)
+                    std = norm_params.get(feature, {}).get('std', 1)
+                    normalized_value = (value - mean) / std
+                    reference_values[feature] = normalized_value
         
         # Transform forecast samples to encoded_windows format for reconstruction
-        window_to_sample_index = []
         encoded_windows = []
         
         for sample_idx, sample in enumerate(forecast_samples):
             for item in sample.get('encoded_target_data', []):
-                window_to_sample_index.append(sample_idx)
-                encoded_windows.append({
+                encoded_window = {
                     "feature": item['feature'],
                     "temporal_tag": item['temporal_tag'],
                     "data_type": "encoded_normalized_residuals",
-                    "encoded_values": item['encoded_normalized_residuals']
-                })
+                    "encoded_values": item['encoded_normalized_residuals'],
+                    "_sample_idx": sample_idx  # Track which forecast sample this belongs to
+                }
+                
+                # Preserve group metadata if present
+                if 'is_group' in item:
+                    encoded_window['is_group'] = item['is_group']
+                if 'is_multivariate' in item:
+                    encoded_window['is_multivariate'] = item['is_multivariate']
+                if 'group_features' in item:
+                    encoded_window['group_features'] = item['group_features']
+                if 'n_components' in item:
+                    encoded_window['n_components'] = item['n_components']
+                
+                encoded_windows.append(encoded_window)
         
         # Call reconstruct endpoint with inline reference
         payload = {
@@ -782,10 +897,10 @@ class Scenario:
         response = self.http.post('/api/v1/ml/reconstruct', payload)
         reconstructions = response.get('reconstructions', [])
         
-        # Group reconstructions by sample
+        # Group reconstructions by sample using _sample_idx
         windows_by_sample = {}
-        for idx, window in enumerate(reconstructions):
-            sample_idx = window_to_sample_index[idx]
+        for window in reconstructions:
+            sample_idx = window.get('_sample_idx', 0)  # Default to 0 if not found
             if sample_idx not in windows_by_sample:
                 windows_by_sample[sample_idx] = []
             windows_by_sample[sample_idx].append(window)
@@ -1038,9 +1153,121 @@ class Scenario:
             if norm_params:
                 self.model._data['feature_normalization_params'] = norm_params
         
-        # Determine features to plot
+        # Reconstruct ALL future conditioning features at once using the reconstruction endpoint
+        if encoded_residuals:
+            # Get the selected sample to access group metadata
+            reference_sample_id = self._data.get('reference_sample_id')
+            if reference_sample_id:
+                sample_response = self.http.get(
+                    f'/api/v1/models/{self.model_id}/samples',
+                    params={'include_data': 'true', 'limit': 1000}
+                )
+                samples = sample_response.get('samples', [])
+                sample = next((s for s in samples if s['id'] == reference_sample_id), None)
+                encoded_conditioning_data = sample.get('encoded_conditioning_data', []) if sample else []
+            else:
+                encoded_conditioning_data = []
+            
+            # Prepare encoded windows for reconstruction (with group metadata)
+            encoded_windows = []
+            reference_values = {}
+            
+            for feat_or_group_name, encoded_vals in encoded_residuals.items():
+                # Find the original encoded item to get group metadata
+                encoded_item = next((x for x in encoded_conditioning_data 
+                                    if x.get('feature') == feat_or_group_name and x.get('temporal_tag') == 'future'), None)
+                
+                window = {
+                    "feature": feat_or_group_name,
+                    "temporal_tag": "future",
+                    "data_type": "encoded_normalized_residuals",
+                    "encoded_values": encoded_vals
+                }
+                
+                # Preserve group metadata if present
+                if encoded_item:
+                    if encoded_item.get('is_group'):
+                        window['is_group'] = True
+                        window['is_multivariate'] = encoded_item.get('is_multivariate', False)
+                        window['group_features'] = encoded_item.get('group_features', [])
+                        window['n_components'] = encoded_item.get('n_components')
+                        
+                        # Get reference values for this group's features
+                        group_features = encoded_item.get('group_features', [])
+                        for feat in group_features:
+                            last_norm = None
+                            if normalized_past:
+                                for item in normalized_past:
+                                    if item.get('feature_name') == feat or item.get('feature') == feat:
+                                        last_norm = item['normalized_series'][-1]
+                                        break
+                            
+                            if last_norm is None:
+                                # Calculate from last past value
+                                past_pts = [p for p in fetched_past if p['feature'] == feat or p.get('display_name') == feat]
+                                if past_pts:
+                                    past_pts = sorted(past_pts, key=lambda x: x['date'])
+                                    mean = norm_params.get(feat, {}).get('mean', 0)
+                                    std = norm_params.get(feat, {}).get('std', 1)
+                                    last_norm = (past_pts[-1]['value'] - mean) / std
+                            
+                            if last_norm is not None:
+                                reference_values[feat] = last_norm
+                    else:
+                        # Individual feature (no group)
+                        last_norm = None
+                        if normalized_past:
+                            for item in normalized_past:
+                                if item.get('feature_name') == feat_or_group_name or item.get('feature') == feat_or_group_name:
+                                    last_norm = item['normalized_series'][-1]
+                                    break
+                        
+                        if last_norm is None:
+                            past_pts = [p for p in fetched_past if p['feature'] == feat_or_group_name or p.get('display_name') == feat_or_group_name]
+                            if past_pts:
+                                past_pts = sorted(past_pts, key=lambda x: x['date'])
+                                mean = norm_params.get(feat_or_group_name, {}).get('mean', 0)
+                                std = norm_params.get(feat_or_group_name, {}).get('std', 1)
+                                last_norm = (past_pts[-1]['value'] - mean) / std
+                        
+                        if last_norm is not None:
+                            reference_values[feat_or_group_name] = last_norm
+                
+                encoded_windows.append(window)
+            
+            # Call reconstruction endpoint
+            payload = {
+                "user_id": self.model._data.get("user_id"),
+                "model_id": self.model_id,
+                "encoded_source": "inline",
+                "encoded_windows": encoded_windows,
+                "reference_source": "inline",
+                "reference_values": reference_values,
+                "output_destination": "return"
+            }
+            
+            try:
+                response = self.http.post('/api/v1/ml/reconstruct', payload)
+                reconstructions = response.get('reconstructions', [])
+                
+                # Index reconstructions by feature
+                reconstructed_by_feature = {}
+                for recon in reconstructions:
+                    feat = recon['feature']
+                    reconstructed_by_feature[feat] = recon['reconstructed_values']
+            except Exception as e:
+                logger.warning(f"Future conditioning reconstruction failed: {e}")
+                reconstructed_by_feature = {}
+        else:
+            reconstructed_by_feature = {}
+        
+        # Determine features to plot after reconstruction
         if features is None:
-            features = list(encoded_residuals.keys())
+            if reconstructed_by_feature:
+                # Use individual feature names from reconstructed data (post-group expansion)
+                features = list(reconstructed_by_feature.keys())[:6]  # Limit to 6 for readability
+            else:
+                features = list(encoded_residuals.keys())[:6]
         
         if not features:
             raise ValueError("No features to plot")
@@ -1057,108 +1284,6 @@ class Scenario:
             axes = [axes]
         else:
             axes = axes.flatten() if n_features > 1 else [axes]
-        
-        for idx, feature_name in enumerate(features):
-            ax = axes[idx]
-            
-            # PAST: Extract denormalized values
-            past_points = [p for p in fetched_past if p['feature'] == feature_name or p.get('display_name') == feature_name]
-            past_points = sorted(past_points, key=lambda x: x['date'])
-            past_dates_str = [p['date'] for p in past_points]
-            past_values = [p['value'] for p in past_points]
-            
-            # Get last normalized value (reference for residuals)
-            # Calculate it from the last past value since normalized_past might not be stored
-            last_normalized = None
-            
-            # Try to get from normalized_past first (if available)
-            if normalized_past:
-                for item in normalized_past:
-                    if item.get('feature_name') == feature_name or item.get('feature') == feature_name:
-                        last_normalized = item['normalized_series'][-1]
-                        break
-            
-            # If not found, calculate it from last past value
-            if last_normalized is None and past_values:
-                # Get normalization params
-                mean = norm_params.get(feature_name, {}).get('mean', 0)
-                std = norm_params.get(feature_name, {}).get('std', 1)
-                # Normalize the last past value
-                last_normalized = (past_values[-1] - mean) / std
-            
-            # Check if we have data for this feature
-            if not past_points or last_normalized is None:
-                ax.text(0.5, 0.5, f'No past data for\n{feature_name}', 
-                       ha='center', va='center', transform=ax.transAxes, fontsize=10)
-                ax.set_title(feature_name, fontsize=11, fontweight='bold')
-                continue
-            
-            # Convert to datetime
-            from datetime import datetime
-            past_dates = [datetime.strptime(d, '%Y-%m-%d') for d in past_dates_str]
-            
-            # FUTURE: Reconstruct from encoded residuals using reconstruction endpoint
-            if feature_name in encoded_residuals:
-                # We need to reconstruct using the API endpoint since encoding models are in the database
-                # This will be done once for all features below to avoid multiple API calls
-                pass
-            
-        # Reconstruct ALL future conditioning features at once using the reconstruction endpoint
-        if encoded_residuals:
-            # Prepare encoded windows for reconstruction
-            encoded_windows = []
-            for feat_name, encoded_vals in encoded_residuals.items():
-                encoded_windows.append({
-                    "feature": feat_name,
-                    "temporal_tag": "future",
-                    "data_type": "encoded_normalized_residuals",
-                    "encoded_values": encoded_vals
-                })
-            
-            # Prepare reference values (last normalized values)
-            reference_values = {}
-            for feat_name in encoded_residuals.keys():
-                # Get last normalized value for this feature
-                last_norm = None
-                if normalized_past:
-                    for item in normalized_past:
-                        if item.get('feature_name') == feat_name or item.get('feature') == feat_name:
-                            last_norm = item['normalized_series'][-1]
-                            break
-                
-                # If not found, calculate from last past value
-                if last_norm is None:
-                    past_pts = [p for p in fetched_past if p['feature'] == feat_name or p.get('display_name') == feat_name]
-                    if past_pts:
-                        past_pts = sorted(past_pts, key=lambda x: x['date'])
-                        mean = norm_params.get(feat_name, {}).get('mean', 0)
-                        std = norm_params.get(feat_name, {}).get('std', 1)
-                        last_norm = (past_pts[-1]['value'] - mean) / std
-                
-                if last_norm is not None:
-                    reference_values[feat_name] = last_norm
-            
-            # Call reconstruction endpoint
-            payload = {
-                "user_id": self.model._data.get("user_id"),
-                "model_id": self.model_id,
-                "encoded_source": "inline",
-                "encoded_windows": encoded_windows,
-                "reference_source": "inline",
-                "reference_values": reference_values,
-                "output_destination": "return"
-            }
-            
-            response = self.http.post('/api/v1/ml/reconstruct', payload)
-            reconstructions = response.get('reconstructions', [])
-            
-            # Index reconstructions by feature
-            reconstructed_by_feature = {}
-            for recon in reconstructions:
-                feat = recon['feature']
-                reconstructed_by_feature[feat] = recon['reconstructed_values']
-        else:
-            reconstructed_by_feature = {}
         
         # Now plot with the reconstructed future values
         for idx, feature_name in enumerate(features):
