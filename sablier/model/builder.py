@@ -483,7 +483,7 @@ class Model:
                                              train_pct=train_pct, val_pct=val_pct, test_pct=test_pct)
             else:
                 splits = auto_generate_splits(start, end, sample_size=sample_size)
-                print(f"  Auto-generated splits with {sample_size}-day gap")
+            print(f"  Auto-generated splits with {sample_size}-day gap")
         
         # Validate splits
         validate_splits(splits, past_window, future_window)
@@ -2356,7 +2356,9 @@ Points: {metrics['n_points']}"""
         if not target_feature:
             raise ValueError("No target feature found in forecast samples")
         
-        print(f"[Plotting] Plotting {len(reconstructed_forecasts)} forecasts for '{target_feature}'...")
+        print(f"[Plotting] Reconstructed {len(reconstructed_forecasts)} forecast samples")
+        print(f"[Plotting] Target feature: '{target_feature}'")
+        print(f"[Plotting] Will plot {n_paths} paths with CI bands: {show_ci}")
         
         # Get reference sample with FULL data (for original past values)
         # Fetch test sample by index with full data
@@ -2391,6 +2393,8 @@ Points: {metrics['n_points']}"""
             sample[target_feature]['future']['values']
             for sample in reconstructed_forecasts
         ]
+        
+        print(f"[Plotting] Extracted {len(forecast_paths)} forecast paths from reconstructions")
         
         # Check if dates are available
         if past_dates is None or future_dates is None:
