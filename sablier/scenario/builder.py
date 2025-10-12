@@ -694,20 +694,28 @@ class Scenario:
     # PATH GENERATION
     # ============================================
     
-    def generate_paths(self, n_samples: int = None) -> 'SyntheticData':
+    def generate_paths(self, n_samples: int = None, conditioning_features: List[str] = None) -> 'SyntheticData':
         """
         Generate synthetic market paths using the configured scenario
         
         Args:
             n_samples: Number of paths to generate (default: scenario's n_scenarios)
+            conditioning_features: Optional list of feature names to condition on.
+                                  If provided, only these features are used (others are marginalized).
+                                  If None, all configured conditioning features are used.
         
         Returns:
             SyntheticData instance containing generated paths
         
         Example:
+            >>> # Full conditioning (all features)
             >>> synthetic_data = scenario.generate_paths(n_samples=1000)
-            >>> print(synthetic_data.paths.head())
-            >>> synthetic_data.plot_paths("Gold Price")
+            
+            >>> # Partial conditioning (marginalized inference)
+            >>> synthetic_data = scenario.generate_paths(
+            ...     n_samples=1000,
+            ...     conditioning_features=['Fed Funds Rate', 'VIX']
+            ... )
         """
         from ..synthetic_data import SyntheticData
         
@@ -724,6 +732,14 @@ class Scenario:
         
         print(f"[Scenario] Generating {n_samples} synthetic paths...")
         
+        # Show conditioning mode
+        if conditioning_features:
+            print(f"🔬 Partial conditioning: {len(conditioning_features)} features")
+            print(f"   Unmasked: {', '.join(conditioning_features)}")
+            print(f"   Others: MARGINALIZED")
+        else:
+            print(f"📊 Full conditioning: all configured features")
+        
         # Call forecast endpoint with scenario mode
         print("📊 Step 1/2: Generating forecast samples...")
         
@@ -731,13 +747,19 @@ class Scenario:
         if not self.model:
             raise ValueError("Model not loaded. Cannot generate paths.")
         
-        forecast_response = self.http.post('/api/v1/ml/forecast', {
+        payload = {
             'user_id': self.model._data.get('user_id'),
             'model_id': self.model_id,
             'conditioning_source': 'scenario',
             'scenario_id': self.id,
             'n_samples': n_samples
-        })
+        }
+        
+        # Add conditioning_features if specified (for partial conditioning)
+        if conditioning_features:
+            payload['conditioning_features'] = conditioning_features
+        
+        forecast_response = self.http.post('/api/v1/ml/forecast', payload)
         
         forecast_samples = forecast_response.get('forecast_samples', [])
         print(f"  Generated {len(forecast_samples)} samples")

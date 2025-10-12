@@ -712,6 +712,8 @@ class Model:
         self, 
         encoding_type: str = "pca-ica",
         split: str = "training",
+        pca_variance_threshold_series: float = 0.95,
+        pca_variance_threshold_residuals: float = 0.99,
         confirm: Optional[bool] = None
     ) -> Dict[str, Any]:
         """
@@ -725,6 +727,8 @@ class Model:
             encoding_type: Type of encoding ("pca-ica" or "umap", default: "pca-ica")
             split: Which split to use for fitting ("training", "validation", 
                    "training+validation", or "all", default: "training")
+            pca_variance_threshold_series: Variance threshold for normalized_series (conditioning, default: 0.95)
+            pca_variance_threshold_residuals: Variance threshold for normalized_residuals (targets, default: 0.99)
             confirm: Explicit confirmation (None = prompt if needed)
             
         Returns:
@@ -770,7 +774,9 @@ class Model:
             fit_response = self.http.post(fit_url, {
                 "model_id": self.id,
                 "user_id": self._data.get("user_id"),  # For API key auth
-                "encoding_type": encoding_type
+                "encoding_type": encoding_type,
+                "pca_variance_threshold_series": pca_variance_threshold_series,
+                "pca_variance_threshold_residuals": pca_variance_threshold_residuals
             })
             
             models_fitted = fit_response.get('models_fitted', 0)
@@ -833,6 +839,8 @@ class Model:
     def train(self, 
             config: Optional[Dict[str, Any]] = None, 
             confirm: Optional[bool] = None,
+            use_augmentation: bool = True,
+            n_augmentations_per_sample: int = 2,
             fit_conditional_marginals: bool = False,
             use_randomized_pit: bool = True,
             parallel_samples: str = 'auto',
@@ -904,27 +912,23 @@ class Model:
             print("   Run model.encode_samples() first")
             return {"status": "error", "message": "Model not ready for training"}
         
-        # Use default config if not provided
-        default_config = {
-            'n_estimators': 200,
-            'max_depth': 20,
-            'min_samples_split': 5,
-            'min_samples_leaf': 2,
-            'random_state': 42
-        }
-        
-        final_config = {**default_config, **(config or {})}
-        
-        print(f"[Model {self.name}] Training model...")
-        print(f"  Config: n_estimators={final_config['n_estimators']}, max_depth={final_config['max_depth']}, "
-              f"min_samples_split={final_config['min_samples_split']}")
+        # Only send config if user provided one (let backend use adaptive defaults)
+        if config:
+            print(f"[Model {self.name}] Training model with custom config...")
+            print(f"  Config: n_estimators={config.get('n_estimators', 'default')}, "
+                  f"max_depth={config.get('max_depth', 'default')}, "
+                  f"min_samples_split={config.get('min_samples_split', 'default')}")
+        else:
+            print(f"[Model {self.name}] Training model with adaptive config...")
+            print(f"  Backend will auto-tune parameters based on training set size")
         print()
         
         # Build payload
         payload = {
             "user_id": self._data.get("user_id"),
             "model_id": self.id,
-            "qrf_config": final_config,  # Backend expects qrf_config key
+            "use_augmentation": use_augmentation,
+            "n_augmentations_per_sample": n_augmentations_per_sample,
             "fit_conditional_marginals": fit_conditional_marginals,
             "use_randomized_pit": use_randomized_pit,
             "parallel_samples": parallel_samples,
@@ -935,6 +939,10 @@ class Model:
             "e2e_covariance_type": e2e_covariance_type,
             "e2e_time_scales": e2e_time_scales or [1, 3, 5, 10]
         }
+        
+        # Only add qrf_config if user provided one (let backend use adaptive defaults)
+        if config:
+            payload["qrf_config"] = config
         
         # Call backend
         print("📡 Step 1/2: Training model on encoded samples...")
