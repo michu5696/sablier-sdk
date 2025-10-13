@@ -538,6 +538,8 @@ class Model:
     def auto_group_features(
         self,
         min_correlation: float = 0.75,
+        min_correlation_target: float = None,
+        min_correlation_conditioning: float = None,
         method: str = 'hierarchical',
         auto_apply: bool = False
     ) -> Dict[str, Any]:
@@ -549,7 +551,10 @@ class Model:
         and suggests groups of highly correlated features that should be encoded together.
         
         Args:
-            min_correlation: Minimum correlation threshold for grouping (default: 0.75)
+            min_correlation: Minimum correlation threshold for both target and conditioning (default: 0.75)
+                           Ignored if min_correlation_target or min_correlation_conditioning are specified
+            min_correlation_target: Minimum correlation threshold for target features (overrides min_correlation)
+            min_correlation_conditioning: Minimum correlation threshold for conditioning features (overrides min_correlation)
             method: Clustering method ('hierarchical' or 'threshold', default: 'hierarchical')
             auto_apply: If True, automatically apply suggested groups without confirmation
             
@@ -582,15 +587,21 @@ class Model:
                 f"Call generate_samples() first."
             )
         
+        # Determine thresholds
+        target_threshold = min_correlation_target if min_correlation_target is not None else min_correlation
+        conditioning_threshold = min_correlation_conditioning if min_correlation_conditioning is not None else min_correlation
+        
         print(f"[Model {self.name}] Analyzing feature correlations...")
-        print(f"  Minimum correlation threshold: {min_correlation}")
+        print(f"  Target correlation threshold: {target_threshold}")
+        print(f"  Conditioning correlation threshold: {conditioning_threshold}")
         print(f"  Clustering method: {method}")
         
         # Call backend
         payload = {
             "user_id": self._data.get("user_id"),
             "model_id": self.id,
-            "min_correlation": min_correlation,
+            "min_correlation_target": target_threshold,
+            "min_correlation_conditioning": conditioning_threshold,
             "method": method
         }
         
@@ -839,6 +850,8 @@ class Model:
     def train(self, 
             config: Optional[Dict[str, Any]] = None, 
             confirm: Optional[bool] = None,
+            optimize_hyperparameters: bool = False,
+            n_optimization_trials: int = 30,
             use_augmentation: bool = True,
             n_augmentations_per_sample: int = 2,
             fit_conditional_marginals: bool = False,
@@ -846,7 +859,7 @@ class Model:
             parallel_samples: str = 'auto',
             parallel_marginals: str = 'auto',
             run_e2e_validation: bool = False,
-            e2e_validation_samples: int = 50,
+            e2e_validation_samples: int = None,
             e2e_forecast_samples: int = 1000,
             e2e_covariance_type: str = 'increment',
             e2e_time_scales: List[int] = None) -> Dict[str, Any]:
@@ -870,12 +883,16 @@ class Model:
                     'random_state': 42
                 }
             confirm: Explicit confirmation (None = prompt if needed)
+            optimize_hyperparameters: Enable Bayesian optimization with Optuna (default: False)
+            n_optimization_trials: Number of optimization trials (default: 30)
+            use_augmentation: Enable component masking augmentation (default: True)
+            n_augmentations_per_sample: Number of augmented copies per sample (default: 2)
             fit_conditional_marginals: Fit GMM+EVT marginals (slow but accurate) vs empirical (fast) (default: False)
             use_randomized_pit: Use randomized PIT for empirical mode (default: True)
             parallel_samples: Outer parallelism for sample processing (default: 'auto')
             parallel_marginals: Inner parallelism for marginal fitting (default: 'auto')
             run_e2e_validation: Whether to run end-to-end validation (default: False)
-            e2e_validation_samples: Number of validation samples to use (default: 50)
+            e2e_validation_samples: Number of validation samples to use (None = use all, default: None)
             e2e_forecast_samples: Forecast paths per validation sample (default: 1000)
             e2e_covariance_type: 'increment' or 'level' (default: 'increment')
             e2e_time_scales: List of time scales for increment covariance (default: [1, 3, 5, 10])
@@ -927,6 +944,8 @@ class Model:
         payload = {
             "user_id": self._data.get("user_id"),
             "model_id": self.id,
+            "optimize_hyperparameters": optimize_hyperparameters,
+            "n_optimization_trials": n_optimization_trials,
             "use_augmentation": use_augmentation,
             "n_augmentations_per_sample": n_augmentations_per_sample,
             "fit_conditional_marginals": fit_conditional_marginals,
@@ -941,6 +960,7 @@ class Model:
         }
         
         # Only add qrf_config if user provided one (let backend use adaptive defaults)
+        # Note: If optimize_hyperparameters=True, this config will be ignored
         if config:
             payload["qrf_config"] = config
         
