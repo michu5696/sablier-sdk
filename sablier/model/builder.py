@@ -87,7 +87,8 @@ class Model:
     def refresh(self):
         """Refresh model data from API"""
         response = self.http.get(f'/api/v1/models/{self.id}')
-        self._data = response.get('model', {})
+        # The API returns the model data directly, not wrapped in 'model' key
+        self._data = response if isinstance(response, dict) and 'id' in response else response.get('model', {})
         return self
     
     def delete(self, confirm: Optional[bool] = None) -> Dict[str, Any]:
@@ -2674,4 +2675,418 @@ Points: {metrics['n_points']}"""
             'dates': dates,
             'n_samples': len(samples),
             'split': split
+        }
+    
+    # ============================================
+    # MFA METHODS
+    # ============================================
+    
+    def train_mfa(self,
+                  n_components: int = 5,
+                  n_factors: int = 10,
+                  use_t_distribution: bool = False,
+                  tail_quantile: float = 0.95,
+                  covariance_type: str = 'diag',
+                  split: str = 'training',
+                  confirm: Optional[bool] = None) -> Dict[str, Any]:
+        """
+        Train MFA (Mixture of Factor Analyzers) model
+        
+        This is an alternative to the QRF approach that uses:
+        - EVT-spliced marginals for heavy tails
+        - MFA/t-MFA for joint distribution structure
+        - Local copulas for conditional inference
+        
+        Args:
+            n_components: Number of mixture components (default: 5)
+            n_factors: Number of latent factors per component (default: 10)
+            use_t_distribution: Use t-MFA instead of MFA for heavier tails (default: False)
+            tail_quantile: Quantile threshold for EVT tails (default: 0.95)
+            covariance_type: 'diag' or 'full' covariance (default: 'diag')
+            split: Data split to use ('training', 'validation', or 'training+validation')
+            confirm: Skip confirmation prompt if True
+            
+        Returns:
+            Dict with training results including BIC, AIC, and model path
+            
+        Example:
+            >>> # Train MFA model
+            >>> result = model.train_mfa(
+            ...     n_components=5,
+            ...     n_factors=10,
+            ...     use_t_distribution=True
+            ... )
+            >>> print(f"BIC: {result['training_metrics']['bic']}")
+        """
+        # Confirmation
+        if confirm is None:
+            confirm = not self.interactive
+        
+        if not confirm and self.interactive:
+            print(f"\n🤖 Training MFA Model")
+            print(f"   Components: {n_components}")
+            print(f"   Factors: {n_factors}")
+            print(f"   Type: {'t-MFA' if use_t_distribution else 'MFA'}")
+            print(f"   Split: {split}")
+            response = input("\nProceed with MFA training? (y/n): ")
+            if response.lower() != 'y':
+                print("❌ Training cancelled")
+                return {'status': 'cancelled'}
+        
+        print(f"\n🚀 Training MFA model...")
+        
+        # Call training endpoint
+        payload = {
+            'user_id': self._data.get("user_id"),  # For API key auth
+            'model_id': self.id,
+            'n_components': n_components,
+            'n_factors': n_factors,
+            'use_t_distribution': use_t_distribution,
+            'tail_quantile': tail_quantile,
+            'covariance_type': covariance_type,
+            'split': split
+        }
+        
+        result = self.http.post('/api/v1/ml/train-mfa', payload)
+        
+        print(f"✅ MFA training completed!")
+        print(f"   Samples used: {result['n_samples_used']}")
+        print(f"   Dimensions: {result['n_dimensions']}")
+        print(f"   BIC: {result['training_metrics']['bic']:.2f}")
+        print(f"   AIC: {result['training_metrics']['aic']:.2f}")
+        print(f"   Model saved to: {result['mfa_path']}")
+        
+        # Refresh model data
+        self.refresh()
+        
+        return result
+    
+    def forecast_mfa(self,
+                     observed_components: Optional[List[Dict[str, Any]]] = None,
+                     split: str = 'validation',
+                     sample_index: int = 0,
+                     sample_id: Optional[str] = None,
+                     n_samples: int = 1000,
+                     top_k_neighbors: int = 100,
+                     copula_type: str = 't') -> Dict[str, Any]:
+        """
+        Generate forecasts using MFA + local copula
+        
+        Two modes:
+        1. Sample-based (default): Condition on a validation/test sample
+        2. Inline: Provide observed_components manually
+        
+        Args:
+            observed_components: List of observed components for inline conditioning (optional)
+            split: Which split to use for sample-based conditioning (default: 'validation')
+            sample_index: Index of sample in split (default: 0)
+            sample_id: Specific sample ID to use (overrides split/sample_index)
+            n_samples: Number of forecast samples to generate (default: 1000)
+            top_k_neighbors: Number of neighbors for local copula (default: 100)
+            copula_type: 't' for t-copula or 'skew-t' for skew-t copula
+            
+        Returns:
+            Dict with forecasts and conditioning info
+            
+        Examples:
+            >>> # Sample-based conditioning (default)
+            >>> forecasts = model.forecast_mfa(split='validation', sample_index=0, n_samples=50)
+            >>> 
+            >>> # Unconditional forecast
+            >>> forecasts = model.forecast_mfa(observed_components=[], n_samples=1000)
+            >>> 
+            >>> # Inline conditioning
+            >>> observed = [{"source": "conditioning", "feature": "VIX", ...}]
+            >>> forecasts = model.forecast_mfa(observed_components=observed)
+        """
+        print(f"\n🎲 Generating MFA forecasts...")
+        
+        # Determine conditioning source
+        if observed_components is not None:
+            conditioning_source = "inline"
+            print(f"   Mode: Inline conditioning")
+            print(f"   Conditioning on {len(observed_components)} components")
+        else:
+            conditioning_source = "sample"
+            print(f"   Mode: Sample-based conditioning")
+            print(f"   Split: {split}, Index: {sample_index}")
+        
+        print(f"   Samples: {n_samples}")
+        
+        # Call forecasting endpoint
+        payload = {
+            'user_id': self._data.get("user_id"),  # For API key auth
+            'model_id': self.id,
+            'conditioning_source': conditioning_source,
+            'n_samples': n_samples,
+            'top_k_neighbors': top_k_neighbors,
+            'copula_type': copula_type
+        }
+        
+        if conditioning_source == "inline":
+            payload['observed_components'] = observed_components or []
+        else:  # sample
+            payload['split'] = split
+            payload['sample_index'] = sample_index
+            if sample_id:
+                payload['sample_id'] = sample_id
+        
+        result = self.http.post('/api/v1/ml/forecast-mfa', payload)
+        
+        print(f"✅ Forecasting completed!")
+        print(f"   Generated {result['n_samples']} samples")
+        print(f"   Observed: {result['n_observed']} dimensions")
+        print(f"   Predicted: {result['n_predicted']} dimensions")
+        
+        return result
+    
+    def reconstruct_mfa_forecasts(self,
+                                   mfa_forecasts: Dict[str, Any],
+                                   reference_sample_id: Optional[str] = None,
+                                   split: str = 'validation') -> Dict[str, Any]:
+        """
+        Reconstruct MFA forecasts to original feature space
+        
+        Args:
+            mfa_forecasts: Output from forecast_mfa()
+            reference_sample_id: Sample ID to use for reference values (for residuals)
+                                If None, uses first validation sample
+            split: Data split to get reference sample from (default: 'validation')
+            
+        Returns:
+            dict: Reconstructed trajectories for all forecast samples
+        """
+        import numpy as np
+        
+        print(f"\n🔄 Reconstructing {len(mfa_forecasts['forecasts'])} MFA forecast samples...")
+        
+        # Get reference sample if needed
+        if reference_sample_id is None:
+            print(f"  Fetching reference sample from {split} split...")
+            sample_response = self.http.get(
+                f'/api/v1/models/{self.id}/samples',
+                params={'split_type': split, 'limit': 1}
+            )
+            samples = sample_response.get('samples', [])
+            if not samples:
+                raise ValueError(f"No {split} samples found")
+            reference_sample_id = samples[0]['id']
+            print(f"  Using reference sample: {reference_sample_id}")
+        
+        # Extract group metadata from forecasts (if available)
+        feature_metadata = {}
+        if mfa_forecasts['forecasts']:
+            first_sample = mfa_forecasts['forecasts'][0]
+            if '_group_metadata' in first_sample:
+                feature_metadata = first_sample['_group_metadata']
+                print(f"  Found group metadata for {len(feature_metadata)} features")
+        
+        # Reconstruct each forecast sample
+        all_reconstructions = []
+        
+        for i, forecast_sample in enumerate(mfa_forecasts['forecasts']):
+            if (i + 1) % 10 == 0:
+                print(f"  Reconstructing sample {i+1}/{len(mfa_forecasts['forecasts'])}...")
+            
+            # Group components by (source, feature, temporal_tag, data_type)
+            windows = {}
+            for key, value in forecast_sample.items():
+                # Parse key: "source_feature_temporal_tag_data_type_component_idx"
+                # Example: "target_group_1_future_normalized_residuals_0"
+                parts = key.rsplit('_', 1)
+                if len(parts) != 2:
+                    continue
+                    
+                window_key = parts[0]  # Everything except component_idx
+                try:
+                    component_idx = int(parts[1])
+                except ValueError:
+                    continue
+                
+                if window_key not in windows:
+                    windows[window_key] = {}
+                windows[window_key][component_idx] = value
+            
+            # Build encoded_windows for reconstruction API (similar to QRF format)
+            encoded_windows = []
+            for window_key, components in windows.items():
+                # Parse window_key: "source_feature_temporal_tag_data_type"
+                # Example: "target_group_1_future_normalized_residuals"
+                # Need to extract: source, feature, temporal_tag, data_type
+                
+                # Split and identify parts
+                parts = window_key.split('_')
+                if len(parts) < 4:
+                    continue
+                
+                # First part is source (target/conditioning)
+                source = parts[0]
+                
+                # Last part is data_type (series/residuals)
+                data_type = parts[-1]
+                
+                # Second to last is normalized/encoded status
+                # temporal_tag is before that (past/future)
+                temporal_tag = parts[-2]
+                
+                # Everything in between is the feature name
+                # For "target_group_1_future_normalized_residuals":
+                #   parts = ['target', 'group', '1', 'future', 'normalized', 'residuals']
+                #   source = 'target'
+                #   data_type = 'residuals'
+                #   temporal_tag = 'normalized' <- WRONG!
+                
+                # Better parsing: look for 'past' or 'future' to identify temporal_tag
+                temporal_idx = None
+                for i, part in enumerate(parts):
+                    if part in ['past', 'future']:
+                        temporal_idx = i
+                        break
+                
+                if temporal_idx is None:
+                    continue
+                
+                # Feature is everything between source and temporal_tag
+                feature = '_'.join(parts[1:temporal_idx])
+                temporal_tag = parts[temporal_idx]
+                
+                # data_type is "normalized_series" or "normalized_residuals"
+                # It's everything after temporal_tag
+                data_type_parts = parts[temporal_idx+1:]
+                data_type = '_'.join(data_type_parts)
+                
+                # Sort components by index
+                sorted_components = [components[idx] for idx in sorted(components.keys())]
+                
+                # Build window in format expected by reconstruct endpoint
+                # The reconstruct endpoint expects data_type like "encoded_normalized_residuals"
+                if not data_type.startswith('encoded_'):
+                    data_type = 'encoded_' + data_type
+                
+                encoded_window = {
+                    "feature": feature,
+                    "temporal_tag": temporal_tag,
+                    "data_type": data_type,
+                    "encoded_values": sorted_components,  # API expects "encoded_values"
+                    "_sample_idx": i  # Track which forecast sample this belongs to
+                }
+                
+                # Add group metadata if available (enables proper unpacking to individual features)
+                if feature in feature_metadata:
+                    metadata = feature_metadata[feature]
+                    encoded_window['n_components'] = metadata['n_components']
+                    encoded_window['is_multivariate'] = metadata['is_multivariate']
+                    encoded_window['group_features'] = metadata['group_features']
+                    encoded_window['is_group'] = metadata['is_group']
+                
+                encoded_windows.append(encoded_window)
+            
+            # Call reconstruct endpoint (same as QRF)
+            payload = {
+                "user_id": self._data.get("user_id"),
+                "model_id": self.id,
+                "encoded_source": "inline",
+                "encoded_windows": encoded_windows,
+                "reference_source": "database",
+                "reference_table": "samples",
+                "reference_column": "conditioning_data",
+                "reference_sample_id": reference_sample_id,
+                "output_destination": "return"
+            }
+            
+            response = self.http.post('/api/v1/ml/reconstruct', payload)
+            reconstructions = response.get('reconstructions', [])
+            
+            all_reconstructions.append({
+                'sample_idx': i,
+                'reconstructions': reconstructions
+            })
+        
+        print(f"✅ Reconstructed all {len(all_reconstructions)} forecast samples")
+        
+        # Also get ground truth from reference sample
+        print(f"\n🔍 Extracting ground truth from reference sample...")
+        ref_sample_response = self.http.get(
+            f'/api/v1/models/{self.id}/samples',
+            params={'split_type': split, 'limit': 100, 'include_data': 'true'}
+        )
+        ref_samples = ref_sample_response.get('samples', [])
+        ref_sample = next((s for s in ref_samples if s['id'] == reference_sample_id), None)
+        
+        ground_truth = None
+        if ref_sample:
+            # Get normalization params for denormalization
+            norm_params = self._data.get('feature_normalization_params', {})
+            
+            ref_windows = []
+            
+            # Process past windows (conditioning_data with normalized_series)
+            for item in ref_sample.get('conditioning_data', []):
+                if item.get('temporal_tag') == 'past' and 'normalized_series' in item:
+                    feature = item.get('feature')
+                    normalized_series = item['normalized_series']
+                    
+                    # Denormalize
+                    if feature in norm_params:
+                        mean = norm_params[feature].get('mean', 0.0)
+                        std = norm_params[feature].get('std', 1.0)
+                        denormalized = [val * std + mean for val in normalized_series]
+                    else:
+                        denormalized = normalized_series  # No norm params, use as-is
+                    
+                    ref_windows.append({
+                        'feature': feature,
+                        'temporal_tag': 'past',
+                        'values': denormalized
+                    })
+            
+            # Process future target windows (target_data with normalized_residuals)
+            # Need to add reference value from past window
+            past_refs = {}
+            for item in ref_sample.get('conditioning_data', []):
+                if item.get('temporal_tag') == 'past' and 'normalized_series' in item:
+                    feature = item.get('feature')
+                    normalized_series = item['normalized_series']
+                    if normalized_series:
+                        past_refs[feature] = normalized_series[-1]  # Last value as reference
+            
+            for item in ref_sample.get('target_data', []):
+                if 'normalized_residuals' in item:
+                    feature = item.get('feature')
+                    normalized_residuals = item['normalized_residuals']
+                    
+                    # Convert residuals to series by adding reference
+                    if feature in past_refs:
+                        ref_value = past_refs[feature]
+                        normalized_series = [ref_value + res for res in normalized_residuals]
+                    else:
+                        normalized_series = normalized_residuals  # No reference, use as-is
+                    
+                    # Denormalize
+                    if feature in norm_params:
+                        mean = norm_params[feature].get('mean', 0.0)
+                        std = norm_params[feature].get('std', 1.0)
+                        denormalized = [val * std + mean for val in normalized_series]
+                    else:
+                        denormalized = normalized_series  # No norm params, use as-is
+                    
+                    ref_windows.append({
+                        'feature': feature,
+                        'temporal_tag': 'future',
+                        'values': denormalized
+                    })
+            
+            ground_truth = {
+                'sample_id': reference_sample_id,
+                'windows': ref_windows
+            }
+            print(f"✅ Extracted ground truth: {len(ref_windows)} windows")
+        else:
+            print(f"⚠️  Reference sample not found")
+        
+        return {
+            'reconstructions': all_reconstructions,
+            'reference_sample_id': reference_sample_id,
+            'n_samples': len(all_reconstructions),
+            'ground_truth': ground_truth
         }
