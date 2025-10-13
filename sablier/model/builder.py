@@ -2688,6 +2688,7 @@ Points: {metrics['n_points']}"""
                   tail_quantile: float = 0.95,
                   covariance_type: str = 'diag',
                   split: str = 'training',
+                  compute_validation_ll: bool = False,
                   confirm: Optional[bool] = None) -> Dict[str, Any]:
         """
         Train MFA (Mixture of Factor Analyzers) model
@@ -2744,7 +2745,8 @@ Points: {metrics['n_points']}"""
             'use_t_distribution': use_t_distribution,
             'tail_quantile': tail_quantile,
             'covariance_type': covariance_type,
-            'split': split
+            'split': split,
+            'compute_validation_ll': compute_validation_ll
         }
         
         result = self.http.post('/api/v1/ml/train-mfa', payload)
@@ -2756,8 +2758,128 @@ Points: {metrics['n_points']}"""
         print(f"   AIC: {result['training_metrics']['aic']:.2f}")
         print(f"   Model saved to: {result['mfa_path']}")
         
+        if result.get('validation_metrics'):
+            val_metrics = result['validation_metrics']
+            train_ll = val_metrics.get('train_per_sample_log_likelihood')
+            val_ll = val_metrics['per_sample_log_likelihood']
+            gen_gap = val_metrics.get('generalization_gap')
+            
+            if train_ll:
+                print(f"   Training LL: {train_ll:.2f}")
+            print(f"   Validation LL: {val_ll:.2f}")
+            if gen_gap:
+                print(f"   Generalization gap: {gen_gap:.2f}")
+        
         # Refresh model data
         self.refresh()
+        
+        return result
+    
+    def validate_mfa(self,
+                     n_forecast_samples: int = 100,
+                     run_on_training: bool = True,
+                     run_on_validation: bool = True) -> Dict[str, Any]:
+        """
+        Validate MFA model on held-out data
+        
+        Computes:
+        - Validation log-likelihood (out-of-sample fit)
+        - Regime analysis (component assignments)
+        - Calibration metrics (forecast quality)
+        
+        Args:
+            n_forecast_samples: Number of forecast samples per validation sample (default: 100)
+            validation_split: Split to validate on (default: 'validation')
+            
+        Returns:
+            Dict with validation metrics
+            
+        Example:
+            >>> validation = model.validate_mfa(n_forecast_samples=100)
+            >>> print(f"Validation log-likelihood: {validation['validation_metrics']['per_sample_log_likelihood']}")
+        """
+        print(f"\n🔍 Validating MFA model...")
+        print(f"   Training set: {run_on_training}")
+        print(f"   Validation set: {run_on_validation}")
+        print(f"   Forecast samples per validation sample: {n_forecast_samples}")
+        
+        result = self.http.post('/api/v1/ml/validate-mfa', {
+            'user_id': self._data.get("user_id"),
+            'model_id': self.id,
+            'n_forecast_samples': n_forecast_samples,
+            'run_on_training': run_on_training,
+            'run_on_validation': run_on_validation
+        })
+        
+        # Display results
+        print(f"\n✅ Validation Complete!")
+        
+        # Training metrics (in-sample)
+        if result.get('training_metrics'):
+            print(f"\n📊 Training Metrics (In-Sample):")
+            train_metrics = result['training_metrics']
+            print(f"   Log-likelihood (per sample): {train_metrics['per_sample_log_likelihood']:.2f}")
+            print(f"   BIC: {train_metrics['bic']:.2f}")
+            print(f"   AIC: {train_metrics['aic']:.2f}")
+            print(f"   Samples: {train_metrics['n_samples']}")
+        
+        # Validation metrics (out-of-sample)
+        if result.get('validation_metrics'):
+            print(f"\n📊 Validation Metrics (Out-of-Sample):")
+            val_metrics = result['validation_metrics']
+            print(f"   Log-likelihood (per sample): {val_metrics['per_sample_log_likelihood']:.2f}")
+            print(f"   BIC: {val_metrics['bic']:.2f}")
+            print(f"   AIC: {val_metrics['aic']:.2f}")
+            print(f"   Samples: {val_metrics['n_samples']}")
+            
+            # Compare training vs validation
+            if result.get('training_metrics'):
+                train_ll = result['training_metrics']['per_sample_log_likelihood']
+                val_ll = val_metrics['per_sample_log_likelihood']
+                diff = val_ll - train_ll
+                print(f"\n   📉 Generalization Gap: {diff:.2f}")
+                if abs(diff) < 10:
+                    print(f"      ✅ Good generalization (small gap)")
+                elif abs(diff) < 50:
+                    print(f"      ⚠️  Moderate generalization (some overfitting)")
+                else:
+                    print(f"      ❌ Poor generalization (significant overfitting)")
+        
+        print(f"\n🎭 Regime Analysis:")
+        regime_analysis = result['regime_analysis']
+        print(f"   Components: {regime_analysis['n_components']}")
+        for regime in regime_analysis['regime_stats']:
+            k = regime['component_id']
+            weight = regime['mixing_weight']
+            n_assigned = regime['n_samples_assigned']
+            print(f"   Component {k}: weight={weight:.3f}, assigned={n_assigned} samples")
+        
+        print(f"\n📈 Calibration Metrics:")
+        calib = result['calibration_metrics']['calibration']
+        print(f"   KS test p-value: {calib['ks_pvalue']:.4f}")
+        print(f"   68% coverage: {calib['coverage_68']:.2%} (ideal: 68%)")
+        print(f"   95% coverage: {calib['coverage_95']:.2%} (ideal: 95%)")
+        print(f"   PIT mean: {calib['pit_mean']:.3f} (ideal: 0.5)")
+        print(f"   PIT std: {calib['pit_std']:.3f} (ideal: 0.29)")
+        
+        forecast_quality = result['calibration_metrics']['forecast_quality']
+        print(f"\n📉 Forecast Quality:")
+        print(f"   Mean CRPS: {forecast_quality['mean_crps']:.4f}")
+        print(f"   Median CRPS: {forecast_quality['median_crps']:.4f}")
+        
+        # Interpretation
+        print(f"\n💡 Interpretation:")
+        if calib['ks_pvalue'] > 0.05:
+            print(f"   ✅ Calibration: Well-calibrated (KS p-value > 0.05)")
+        else:
+            print(f"   ⚠️  Calibration: Poorly calibrated (KS p-value < 0.05)")
+        
+        coverage_68_ok = abs(calib['coverage_68'] - 0.68) < 0.05
+        coverage_95_ok = abs(calib['coverage_95'] - 0.95) < 0.05
+        if coverage_68_ok and coverage_95_ok:
+            print(f"   ✅ Coverage: Accurate confidence intervals")
+        else:
+            print(f"   ⚠️  Coverage: Confidence intervals may be mis-calibrated")
         
         return result
     
