@@ -3003,12 +3003,14 @@ Points: {metrics['n_points']}"""
                 feature_metadata = first_sample['_group_metadata']
                 print(f"  Found group metadata for {len(feature_metadata)} features")
         
-        # Reconstruct each forecast sample
-        all_reconstructions = []
+        # BATCH RECONSTRUCTION: Collect all encoded windows from all forecast samples
+        print(f"  Collecting encoded windows from all {len(mfa_forecasts['forecasts'])} forecast samples...")
+        all_encoded_windows = []
+        sample_window_mapping = {}  # Track which windows belong to which sample
         
         for i, forecast_sample in enumerate(mfa_forecasts['forecasts']):
             if (i + 1) % 10 == 0:
-                print(f"  Reconstructing sample {i+1}/{len(mfa_forecasts['forecasts'])}...")
+                print(f"  Processing sample {i+1}/{len(mfa_forecasts['forecasts'])}...")
             
             # Group components by (source, feature, temporal_tag, data_type)
             windows = {}
@@ -3029,8 +3031,8 @@ Points: {metrics['n_points']}"""
                     windows[window_key] = {}
                 windows[window_key][component_idx] = value
             
-            # Build encoded_windows for reconstruction API (similar to QRF format)
-            encoded_windows = []
+            # Build encoded_windows for this sample
+            sample_windows = []
             for window_key, components in windows.items():
                 # Parse window_key: "source_feature_temporal_tag_data_type"
                 # Example: "target_group_1_future_normalized_residuals"
@@ -3060,9 +3062,9 @@ Points: {metrics['n_points']}"""
                 
                 # Better parsing: look for 'past' or 'future' to identify temporal_tag
                 temporal_idx = None
-                for i, part in enumerate(parts):
+                for j, part in enumerate(parts):
                     if part in ['past', 'future']:
-                        temporal_idx = i
+                        temporal_idx = j
                         break
                 
                 if temporal_idx is None:
@@ -3101,27 +3103,46 @@ Points: {metrics['n_points']}"""
                     encoded_window['group_features'] = metadata['group_features']
                     encoded_window['is_group'] = metadata['is_group']
                 
-                encoded_windows.append(encoded_window)
+                sample_windows.append(encoded_window)
             
-            # Call reconstruct endpoint (same as QRF)
-            payload = {
-                "user_id": self._data.get("user_id"),
-                "model_id": self.id,
-                "encoded_source": "inline",
-                "encoded_windows": encoded_windows,
-                "reference_source": "database",
-                "reference_table": "samples",
-                "reference_column": "conditioning_data",
-                "reference_sample_id": reference_sample_id,
-                "output_destination": "return"
-            }
-            
-            response = self.http.post('/api/v1/ml/reconstruct', payload)
-            reconstructions = response.get('reconstructions', [])
+            # Add to batch collection
+            all_encoded_windows.extend(sample_windows)
+            sample_window_mapping[i] = len(sample_windows)  # Track how many windows per sample
+        
+        print(f"  Collected {len(all_encoded_windows)} total encoded windows")
+        
+        # SINGLE BATCH API CALL: Reconstruct all windows at once
+        print(f"  Making single batch reconstruction call...")
+        payload = {
+            "user_id": self._data.get("user_id"),
+            "model_id": self.id,
+            "encoded_source": "inline",
+            "encoded_windows": all_encoded_windows,
+            "reference_source": "database",
+            "reference_table": "samples",
+            "reference_column": "conditioning_data",
+            "reference_sample_id": reference_sample_id,
+            "output_destination": "return"
+        }
+        
+        response = self.http.post('/api/v1/ml/reconstruct', payload)
+        all_reconstructions_raw = response.get('reconstructions', [])
+        
+        print(f"  Received {len(all_reconstructions_raw)} reconstructed windows")
+        
+        # PARSE BATCH RESPONSE: Split back into individual samples
+        print(f"  Parsing batch response back into individual samples...")
+        all_reconstructions = []
+        current_idx = 0
+        
+        for sample_idx in range(len(mfa_forecasts['forecasts'])):
+            n_windows = sample_window_mapping[sample_idx]
+            sample_reconstructions = all_reconstructions_raw[current_idx:current_idx + n_windows]
+            current_idx += n_windows
             
             all_reconstructions.append({
-                'sample_idx': i,
-                'reconstructions': reconstructions
+                'sample_idx': sample_idx,
+                'reconstructions': sample_reconstructions
             })
         
         print(f"✅ Reconstructed all {len(all_reconstructions)} forecast samples")

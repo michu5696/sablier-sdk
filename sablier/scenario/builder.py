@@ -782,6 +782,95 @@ class Scenario:
         
         return synthetic_data
     
+    def generate_paths_mfa(self, n_samples: int = None, conditioning_features: List[str] = None) -> 'SyntheticData':
+        """
+        Generate synthetic market paths using MFA model
+        
+        This is a test method for MFA-based scenario generation.
+        If MFA works well, this will replace generate_paths().
+        
+        Args:
+            n_samples: Number of paths to generate (default: scenario's n_scenarios)
+            conditioning_features: Optional list of features to condition on (others marginalized)
+        
+        Returns:
+            SyntheticData instance containing generated paths
+        
+        Example:
+            >>> # Full conditioning (all features)
+            >>> synthetic_data = scenario.generate_paths_mfa(n_samples=1000)
+            
+            >>> # Partial conditioning (marginalized inference)
+            >>> synthetic_data = scenario.generate_paths_mfa(
+            ...     n_samples=1000,
+            ...     conditioning_features=['Fed Funds Rate', 'VIX']
+            ... )
+        """
+        from ..synthetic_data import SyntheticData
+        
+        if n_samples is None:
+            n_samples = self.n_scenarios
+        
+        # Verify scenario is configured
+        if self.current_step not in ['future-conditioning-configured', 'paths-generated']:
+            raise ValueError(
+                f"Scenario must be configured before generating paths. "
+                f"Current step: {self.current_step}. "
+                f"Call fetch_recent_past() and configure_future_conditioning() first."
+            )
+        
+        print(f"[Scenario] Generating {n_samples} synthetic paths using MFA...")
+        
+        # Show conditioning mode
+        if conditioning_features:
+            print(f"🔬 Partial conditioning: {len(conditioning_features)} features")
+            print(f"   Conditioned: {', '.join(conditioning_features)}")
+            print(f"   Marginalized: others")
+        else:
+            print(f"📊 Full conditioning: all configured features")
+        
+        # Call MFA forecast endpoint with scenario mode
+        print("📊 Step 1/2: Generating MFA forecast samples...")
+        
+        if not self.model:
+            raise ValueError("Model not loaded. Cannot generate paths.")
+        
+        payload = {
+            'user_id': self.model._data.get('user_id'),
+            'model_id': self.model_id,
+            'conditioning_source': 'scenario',
+            'scenario_id': self.id,
+            'n_samples': n_samples
+        }
+        
+        # Add conditioning_features for partial conditioning
+        if conditioning_features:
+            payload['conditioning_features'] = conditioning_features
+        
+        # Call MFA-specific endpoint
+        forecast_response = self.http.post('/api/v1/ml/forecast-mfa', payload)
+        
+        forecast_samples = forecast_response.get('forecasts', [])
+        print(f"  Generated {len(forecast_samples)} MFA samples")
+        
+        # Reconstruct forecast samples
+        print("🔄 Step 2/2: Reconstructing to original scale...")
+        reconstructed_paths = self._reconstruct_mfa_scenario_forecast(forecast_samples)
+        
+        print(f"✅ Generated {len(reconstructed_paths)} synthetic paths")
+        
+        # Update scenario status
+        self._update_step('paths-generated')
+        
+        # Create SyntheticData instance
+        synthetic_data = SyntheticData(
+            paths=reconstructed_paths,
+            scenario=self,
+            model=self.model
+        )
+        
+        return synthetic_data
+    
     def compute_conditioning_importance(self) -> Dict[str, Any]:
         """
         Compute SHAP-based feature importance for the conditioning scenario.
@@ -955,6 +1044,223 @@ class Scenario:
                 }
             
             reconstructed_samples.append(sample_reconstruction)
+        
+        return reconstructed_samples
+    
+    def _reconstruct_mfa_scenario_forecast(self, forecast_samples: List[Dict]) -> List[Dict]:
+        """
+        Reconstruct MFA forecast samples using scenario's fetched past as reference
+        
+        IMPORTANT: For scenarios, we use the REAL fetched past data as reference,
+        not the historical sample. This simulates "what if the historical scenario
+        happened starting from today".
+        
+        Args:
+            forecast_samples: MFA forecast outputs (raw format with component keys)
+        
+        Returns:
+            List of reconstructed paths with dates and values
+        """
+        # Get scenario data for reference values and dates
+        scenario = self.http.get(f'/api/v1/scenarios/{self.id}')
+        fetched_past = scenario.get('fetched_past_data', [])
+        
+        if not fetched_past:
+            raise ValueError("No fetched_past_data in scenario")
+        
+        # Build reference values from FETCHED PAST (today's data), not historical sample
+        # We need to normalize the fetched_past data to get reference values
+        reference_values = {}
+        norm_params = self.model._data.get('feature_normalization_params', {})
+        
+        # Group fetched_past by feature and get last value
+        feature_last_values = {}
+        for point in fetched_past:
+            feature = point.get('feature')
+            date = point.get('date')
+            value = point.get('value')
+            
+            if feature and date and value is not None:
+                if feature not in feature_last_values or date > feature_last_values[feature]['date']:
+                    feature_last_values[feature] = {'date': date, 'value': value}
+        
+        # Normalize the last values to get reference values
+        for feature, data in feature_last_values.items():
+            value = data['value']
+            mean = norm_params.get(feature, {}).get('mean', 0)
+            std = norm_params.get(feature, {}).get('std', 1)
+            if std == 0:
+                std = 1  # Avoid division by zero
+            normalized_value = (value - mean) / std
+            reference_values[feature] = normalized_value
+        
+        # Parse MFA forecast samples and group by sample_idx
+        # MFA returns keys like "target_group_1_future_normalized_residuals_0"
+        samples_by_idx = {}
+        
+        for sample_idx, forecast_sample in enumerate(forecast_samples):
+            # Group components by (source, feature, temporal_tag, data_type)
+            windows = {}
+            for key, value in forecast_sample.items():
+                if key == '_group_metadata':
+                    continue
+                    
+                # Parse key: "source_feature_temporal_tag_data_type_component_idx"
+                parts = key.rsplit('_', 1)
+                if len(parts) != 2:
+                    continue
+                    
+                window_key = parts[0]
+                try:
+                    component_idx = int(parts[1])
+                except ValueError:
+                    continue
+                
+                if window_key not in windows:
+                    windows[window_key] = {}
+                windows[window_key][component_idx] = value
+            
+            # Build encoded_windows for this sample
+            encoded_windows = []
+            for window_key, components in windows.items():
+                # Parse window_key to extract parts
+                # Format: "source_feature_temporal_tag_data_type"
+                # Example: "target_group_1_future_normalized_residuals"
+                # Parts: ["target", "group", "1", "future", "normalized", "residuals"]
+                parts = window_key.split('_')
+                if len(parts) < 4:
+                    continue
+                
+                source = parts[0]  # "target" or "conditioning"
+                
+                # Only reconstruct TARGET components, not conditioning components
+                # Conditioning should already be reconstructed when scenario was created
+                if source != "target":
+                    continue
+                
+                # Find temporal_tag (it's either "past" or "future")
+                temporal_idx = None
+                for i, part in enumerate(parts):
+                    if part in ['past', 'future']:
+                        temporal_idx = i
+                        break
+                
+                if temporal_idx is None:
+                    continue
+                
+                # feature is everything between source and temporal_tag
+                feature = '_'.join(parts[1:temporal_idx])
+                temporal_tag = parts[temporal_idx]
+                
+                # data_type is everything after temporal_tag
+                data_type = '_'.join(parts[temporal_idx+1:])
+                
+                # Convert components dict to list
+                encoded_values = [components[i] for i in sorted(components.keys())]
+                
+                encoded_window = {
+                    "feature": feature,
+                    "temporal_tag": temporal_tag,
+                    "data_type": "encoded_" + data_type,  # Prepend "encoded_" as expected by backend
+                    "encoded_values": encoded_values,
+                    "_sample_idx": sample_idx
+                }
+                
+                # Add group metadata if available
+                if '_group_metadata' in forecast_sample and feature in forecast_sample['_group_metadata']:
+                    metadata = forecast_sample['_group_metadata'][feature]
+                    encoded_window['is_group'] = metadata.get('is_group', False)
+                    encoded_window['is_multivariate'] = metadata.get('is_multivariate', False)
+                    encoded_window['group_features'] = metadata.get('group_features', [])
+                
+                encoded_windows.append(encoded_window)
+            
+            samples_by_idx[sample_idx] = encoded_windows
+        
+        # BATCH RECONSTRUCTION: Collect all encoded windows from all samples
+        print(f"  Collecting {len(samples_by_idx)} samples for batch reconstruction...")
+        all_encoded_windows = []
+        sample_window_mapping = {}  # Track which windows belong to which sample
+        
+        for sample_idx in sorted(samples_by_idx.keys()):
+            sample_windows = samples_by_idx[sample_idx]
+            all_encoded_windows.extend(sample_windows)
+            sample_window_mapping[sample_idx] = len(sample_windows)
+        
+        print(f"  Collected {len(all_encoded_windows)} total encoded windows")
+        
+        # SINGLE BATCH API CALL: Reconstruct all windows at once
+        print(f"  Making single batch reconstruction call...")
+        payload = {
+            "user_id": self.model._data.get("user_id"),
+            "model_id": self.model_id,
+            "encoded_source": "inline",
+            "encoded_windows": all_encoded_windows,
+            "reference_source": "inline",
+            "reference_values": reference_values,  # Use FETCHED PAST as reference
+            "output_destination": "return"
+        }
+        
+        response = self.http.post('/api/v1/ml/reconstruct', payload)
+        all_reconstructions_raw = response.get('reconstructions', [])
+        
+        print(f"  Received {len(all_reconstructions_raw)} reconstructed windows")
+        
+        # PARSE BATCH RESPONSE: Split back into individual samples
+        print(f"  Parsing batch response back into individual samples...")
+        all_reconstructed = []
+        current_idx = 0
+        
+        for sample_idx in sorted(samples_by_idx.keys()):
+            n_windows = sample_window_mapping[sample_idx]
+            sample_reconstructions = all_reconstructions_raw[current_idx:current_idx + n_windows]
+            current_idx += n_windows
+            all_reconstructed.append(sample_reconstructions)
+        
+        # Generate dates relative to FETCHED PAST (today's data)
+        sample_config = self.model._data.get('sample_config', {})
+        future_window = sample_config.get('futureWindow', 50)
+        
+        from datetime import datetime, timedelta
+        last_date_str = max(point['date'] for point in fetched_past)
+        start_date = datetime.strptime(last_date_str, '%Y-%m-%d') + timedelta(days=1)
+        future_dates = [(start_date + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(future_window)]
+        
+        # Convert to scenario format and add past window for plotting
+        # Extract past dates and values from fetched_past
+        past_by_feature = {}
+        for point in fetched_past:
+            feature = point.get('feature')
+            if feature not in past_by_feature:
+                past_by_feature[feature] = {'dates': [], 'values': []}
+            past_by_feature[feature]['dates'].append(point['date'])
+            past_by_feature[feature]['values'].append(point['value'])
+        
+        # Sort by date
+        for feature in past_by_feature:
+            sorted_pairs = sorted(zip(past_by_feature[feature]['dates'], past_by_feature[feature]['values']))
+            past_by_feature[feature]['dates'] = [d for d, v in sorted_pairs]
+            past_by_feature[feature]['values'] = [v for d, v in sorted_pairs]
+        
+        reconstructed_samples = []
+        
+        for reconstructions in all_reconstructed:
+            sample_dict = {}
+            
+            for window in reconstructions:
+                feature = window['feature']
+                values = window['reconstructed_values']
+                
+                # Include both past (fetched) and future (forecasted)
+                sample_dict[feature] = {
+                    'past': past_by_feature.get(feature, {'dates': [], 'values': []}),
+                    'future': {
+                        'dates': future_dates[:len(values)],
+                        'values': values
+                    }
+                }
+            
+            reconstructed_samples.append(sample_dict)
         
         return reconstructed_samples
     
