@@ -2686,6 +2686,8 @@ Points: {metrics['n_points']}"""
                   n_factors: int = 10,
                   use_t_distribution: bool = False,
                   tail_quantile: float = 0.95,
+                  lower_tail_quantile: Optional[float] = None,
+                  upper_tail_quantile: Optional[float] = None,
                   covariance_type: str = 'diag',
                   split: str = 'training',
                   compute_validation_ll: bool = False,
@@ -2744,6 +2746,8 @@ Points: {metrics['n_points']}"""
             'n_factors': n_factors,
             'use_t_distribution': use_t_distribution,
             'tail_quantile': tail_quantile,
+            'lower_tail_quantile': lower_tail_quantile,
+            'upper_tail_quantile': upper_tail_quantile,
             'covariance_type': covariance_type,
             'split': split,
             'compute_validation_ll': compute_validation_ll
@@ -2778,7 +2782,9 @@ Points: {metrics['n_points']}"""
     def validate_mfa(self,
                      n_forecast_samples: int = 100,
                      run_on_training: bool = True,
-                     run_on_validation: bool = True) -> Dict[str, Any]:
+                     run_on_validation: bool = True,
+                     copula_type: str = 'adaptive',
+                     top_k_neighbors: int = 100) -> Dict[str, Any]:
         """
         Validate MFA model on held-out data
         
@@ -2808,7 +2814,9 @@ Points: {metrics['n_points']}"""
             'model_id': self.id,
             'n_forecast_samples': n_forecast_samples,
             'run_on_training': run_on_training,
-            'run_on_validation': run_on_validation
+            'run_on_validation': run_on_validation,
+            'copula_type': copula_type,
+            'top_k_neighbors': top_k_neighbors
         })
         
         # Display results
