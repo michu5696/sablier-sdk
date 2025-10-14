@@ -1,6 +1,7 @@
 """Model class representing a Sablier model"""
 
 import logging
+import numpy as np
 from typing import Optional, Any, List, Dict
 from ..http_client import HTTPClient
 from ..workflow import WorkflowValidator, WorkflowConflict
@@ -2681,6 +2682,92 @@ Points: {metrics['n_points']}"""
     # MFA METHODS
     # ============================================
     
+    def optimize_mfa_hyperparameters(self,
+                                    n_trials: int = 50,
+                                    n_components_range: tuple = (2, 6),
+                                    n_factors_range: tuple = (15, 50),
+                                    lower_tail_quantile_range: tuple = (0.03, 0.15),
+                                    upper_tail_quantile_range: tuple = (0.85, 0.97),
+                                    top_k_neighbors_range: tuple = (25, 200),
+                                    objectives: List[str] = ['validation_ll', 'generalization_gap', 'ks_pvalue'],
+                                    split: str = 'training',
+                                    confirm: Optional[bool] = None) -> Dict[str, Any]:
+        """
+        Optimize MFA hyperparameters using Optuna
+        
+        This method runs Bayesian optimization to find the best hyperparameters
+        for the MFA model and automatically saves them for use in training.
+        
+        Args:
+            n_trials: Number of optimization trials
+            n_components_range: (min, max) for number of components
+            n_factors_range: (min, max) for number of factors
+            lower_tail_quantile_range: (min, max) for lower tail quantile
+            upper_tail_quantile_range: (min, max) for upper tail quantile
+            top_k_neighbors_range: (min, max) for top_k_neighbors
+            objectives: List of objectives to optimize ['validation_ll', 'generalization_gap', 'ks_pvalue']
+            split: Data split to use for optimization
+            confirm: Whether to confirm the optimization (default: auto-confirm)
+        
+        Returns:
+            Dictionary containing optimization results and optimal parameters
+        """
+        if confirm is None:
+            confirm = True
+        
+        if confirm:
+            print(f"\n🔧 MFA Hyperparameter Optimization")
+            print(f"   Trials: {n_trials}")
+            print(f"   Objectives: {objectives}")
+            print(f"   Data split: {split}")
+            print(f"   This will test {n_trials} different parameter combinations")
+            print(f"   and find the optimal settings for your data.")
+            
+            response = input(f"\nProceed with optimization? (y/N): ")
+            if response.lower() != 'y':
+                print("❌ Optimization cancelled")
+                return {"status": "cancelled"}
+        
+        print(f"\n🚀 Starting MFA hyperparameter optimization...")
+        
+        # Prepare optimization payload
+        payload = {
+            'user_id': self._data.get('user_id'),
+            'model_id': self.id,
+            'n_trials': n_trials,
+            'n_components_range': n_components_range,
+            'n_factors_range': n_factors_range,
+            'lower_tail_quantile_range': lower_tail_quantile_range,
+            'upper_tail_quantile_range': upper_tail_quantile_range,
+            'top_k_neighbors_range': top_k_neighbors_range,
+            'objectives': objectives,
+            'split': split
+        }
+        
+        # Call optimization endpoint
+        response = self.http.post('/api/v1/ml/optimize-mfa', payload)
+        
+        if response.get('status') == 'success':
+            optimal_params = response.get('optimal_parameters', {})
+            print(f"\n✅ Optimization complete!")
+            print(f"   Optimal parameters found:")
+            print(f"   • n_components: {optimal_params.get('n_components')}")
+            print(f"   • n_factors: {optimal_params.get('n_factors')}")
+            print(f"   • lower_tail_quantile: {optimal_params.get('lower_tail_quantile')}")
+            print(f"   • upper_tail_quantile: {optimal_params.get('upper_tail_quantile')}")
+            print(f"   • top_k_neighbors: {optimal_params.get('top_k_neighbors')}")
+            
+            best_score = response.get('best_score')
+            if best_score:
+                print(f"   • Best validation LL: {best_score:.2f}")
+            
+            print(f"\n💡 These parameters are now saved and will be used automatically")
+            print(f"   when you call model.train_mfa() without specifying parameters.")
+        else:
+            print(f"❌ Optimization failed: {response.get('error', 'Unknown error')}")
+        
+        return response
+    
     def train_mfa(self,
                   n_components: int = 5,
                   n_factors: int = 10,
@@ -2737,6 +2824,23 @@ Points: {metrics['n_points']}"""
                 return {'status': 'cancelled'}
         
         print(f"\n🚀 Training MFA model...")
+        
+        # Check for saved optimal parameters from hyperparameter optimization
+        model_metadata = self._data.get('model_metadata', {})
+        optimal_config = model_metadata.get('mfa_optimal_config', {})
+        
+        if optimal_config:
+            print(f"🔧 Using optimal parameters from previous optimization:")
+            n_components = optimal_config.get('n_components', n_components)
+            n_factors = optimal_config.get('n_factors', n_factors)
+            lower_tail_quantile = optimal_config.get('lower_tail_quantile', lower_tail_quantile)
+            upper_tail_quantile = optimal_config.get('upper_tail_quantile', upper_tail_quantile)
+            print(f"   • n_components: {n_components}")
+            print(f"   • n_factors: {n_factors}")
+            if lower_tail_quantile: print(f"   • lower_tail_quantile: {lower_tail_quantile}")
+            if upper_tail_quantile: print(f"   • upper_tail_quantile: {upper_tail_quantile}")
+        else:
+            print(f"📝 Using provided/default parameters (no optimization found)")
         
         # Call training endpoint
         payload = {
@@ -2820,38 +2924,104 @@ Points: {metrics['n_points']}"""
         })
         
         # Display results
-        print(f"\n✅ Validation Complete!")
+        print(f"\n" + "="*70)
+        print(f"✅ MFA Model Validation Complete")
+        print(f"="*70)
         
-        # Training metrics (in-sample)
-        if result.get('training_metrics'):
-            print(f"\n📊 Training Metrics (In-Sample):")
+        # Summary table for unconditional metrics
+        if result.get('training_metrics') and result.get('validation_metrics'):
             train_metrics = result['training_metrics']
+            val_metrics = result['validation_metrics']
+            train_ll = train_metrics['per_sample_log_likelihood']
+            val_ll = val_metrics['per_sample_log_likelihood']
+            gap = val_ll - train_ll
+            
+            print(f"\n📊 Unconditional Log-Likelihood (Joint Distribution Fit)")
+            print(f"{'─'*70}")
+            print(f"{'Metric':<30} {'Training':<20} {'Validation':<20}")
+            print(f"{'─'*70}")
+            print(f"{'Log-likelihood (per sample)':<30} {train_ll:<20.2f} {val_ll:<20.2f}")
+            print(f"{'BIC':<30} {train_metrics['bic']:<20.2f} {val_metrics['bic']:<20.2f}")
+            print(f"{'AIC':<30} {train_metrics['aic']:<20.2f} {val_metrics['aic']:<20.2f}")
+            print(f"{'N Samples':<30} {train_metrics['n_samples']:<20} {val_metrics['n_samples']:<20}")
+            print(f"{'─'*70}")
+            print(f"{'Generalization Gap (absolute)':<30} {gap:.2f}")
+            
+            # Compute relative gap
+            relative_gap = abs(gap / train_ll) * 100 if train_ll != 0 else 0
+            print(f"{'Generalization Gap (relative)':<30} {relative_gap:.1f}%")
+            
+            # Gaussian baseline reference
+            n_dims = train_metrics.get('n_dims', 0)
+            if n_dims > 0:
+                gaussian_baseline = -n_dims/2 * np.log(2 * np.pi) - n_dims/2
+                train_excess = train_ll - gaussian_baseline
+                val_excess = val_ll - gaussian_baseline
+                print(f"{'─'*70}")
+                print(f"{'Gaussian baseline LL':<30} {gaussian_baseline:.2f}")
+                print(f"{'Training excess (vs Gaussian)':<30} {train_excess:.2f}")
+                print(f"{'Validation excess (vs Gaussian)':<30} {val_excess:.2f}")
+                
+                # Interpret training fit quality
+                print(f"{'─'*70}")
+                print(f"{'Training Fit Quality:':<30}")
+                if train_excess > -20:
+                    print(f"{'  Status':<30} ⚠️  Suspiciously good (check for data leakage)")
+                elif train_excess > -50:
+                    print(f"{'  Status':<30} ✅ Excellent (captures complexity well)")
+                elif train_excess > -80:
+                    print(f"{'  Status':<30} ✅ Good (reasonable for financial data)")
+                elif train_excess > -120:
+                    print(f"{'  Status':<30} ⚠️  Moderate (model may be underfitting)")
+                else:
+                    print(f"{'  Status':<30} ❌ Poor (model struggling to fit)")
+            
+            print(f"{'─'*70}")
+            print(f"{'Generalization Quality:':<30}")
+            if relative_gap < 10:
+                print(f"{'  Status':<30} ✅ Excellent (minimal overfitting)")
+                print(f"{'  Interpretation':<30} Model generalizes very well")
+            elif relative_gap < 30:
+                print(f"{'  Status':<30} ✅ Good (acceptable overfitting)")
+                print(f"{'  Interpretation':<30} Model is reliable for new data")
+            elif relative_gap < 50:
+                print(f"{'  Status':<30} ⚠️  Moderate (some overfitting)")
+                print(f"{'  Interpretation':<30} Model may be memorizing training data")
+            elif relative_gap < 100:
+                print(f"{'  Status':<30} ⚠️  Significant (notable overfitting)")
+                print(f"{'  Interpretation':<30} Likely regime shift or insufficient data")
+            else:
+                print(f"{'  Status':<30} ❌ Severe (extreme overfitting)")
+                print(f"{'  Interpretation':<30} Major regime shift between train/val periods")
+            
+            # BIC/AIC interpretation
+            print(f"{'─'*70}")
+            print(f"{'Model Complexity (BIC/AIC):':<30}")
+            bic_diff = val_metrics['bic'] - train_metrics['bic']
+            if bic_diff < 0:
+                print(f"{'  BIC comparison':<30} ⚠️  Validation BIC lower (unusual)")
+            else:
+                print(f"{'  BIC comparison':<30} ✅ Validation BIC higher (expected)")
+            print(f"{'  Note':<30} Lower BIC = better model")
+            print(f"{'       ':<30} (penalizes complexity)")
+            
+            print(f"{'─'*70}")
+        
+        elif result.get('training_metrics'):
+            train_metrics = result['training_metrics']
+            print(f"\n📊 Training Metrics (In-Sample):")
             print(f"   Log-likelihood (per sample): {train_metrics['per_sample_log_likelihood']:.2f}")
             print(f"   BIC: {train_metrics['bic']:.2f}")
             print(f"   AIC: {train_metrics['aic']:.2f}")
             print(f"   Samples: {train_metrics['n_samples']}")
         
-        # Validation metrics (out-of-sample)
-        if result.get('validation_metrics'):
-            print(f"\n📊 Validation Metrics (Out-of-Sample):")
+        elif result.get('validation_metrics'):
             val_metrics = result['validation_metrics']
+            print(f"\n📊 Validation Metrics (Out-of-Sample):")
             print(f"   Log-likelihood (per sample): {val_metrics['per_sample_log_likelihood']:.2f}")
             print(f"   BIC: {val_metrics['bic']:.2f}")
             print(f"   AIC: {val_metrics['aic']:.2f}")
             print(f"   Samples: {val_metrics['n_samples']}")
-            
-            # Compare training vs validation
-            if result.get('training_metrics'):
-                train_ll = result['training_metrics']['per_sample_log_likelihood']
-                val_ll = val_metrics['per_sample_log_likelihood']
-                diff = val_ll - train_ll
-                print(f"\n   📉 Generalization Gap: {diff:.2f}")
-                if abs(diff) < 10:
-                    print(f"      ✅ Good generalization (small gap)")
-                elif abs(diff) < 50:
-                    print(f"      ⚠️  Moderate generalization (some overfitting)")
-                else:
-                    print(f"      ❌ Poor generalization (significant overfitting)")
         
         print(f"\n🎭 Regime Analysis:")
         regime_analysis = result['regime_analysis']
@@ -2862,32 +3032,113 @@ Points: {metrics['n_points']}"""
             n_assigned = regime['n_samples_assigned']
             print(f"   Component {k}: weight={weight:.3f}, assigned={n_assigned} samples")
         
-        print(f"\n📈 Calibration Metrics:")
+        print(f"\n📈 Conditional Forecasting Metrics (with Local Copula)")
+        print(f"{'─'*70}")
         calib = result['calibration_metrics']['calibration']
-        print(f"   KS test p-value: {calib['ks_pvalue']:.4f}")
-        print(f"   68% coverage: {calib['coverage_68']:.2%} (ideal: 68%)")
-        print(f"   95% coverage: {calib['coverage_95']:.2%} (ideal: 95%)")
-        print(f"   PIT mean: {calib['pit_mean']:.3f} (ideal: 0.5)")
-        print(f"   PIT std: {calib['pit_std']:.3f} (ideal: 0.29)")
-        
         forecast_quality = result['calibration_metrics']['forecast_quality']
-        print(f"\n📉 Forecast Quality:")
-        print(f"   Mean CRPS: {forecast_quality['mean_crps']:.4f}")
-        print(f"   Median CRPS: {forecast_quality['median_crps']:.4f}")
         
-        # Interpretation
-        print(f"\n💡 Interpretation:")
-        if calib['ks_pvalue'] > 0.05:
-            print(f"   ✅ Calibration: Well-calibrated (KS p-value > 0.05)")
+        print(f"{'Metric':<35} {'Value':<20} {'Target/Status':<15}")
+        print(f"{'─'*70}")
+        
+        # Calibration metrics
+        ks_status = "✅ Good" if calib['ks_pvalue'] > 0.05 else "⚠️  Poor"
+        print(f"{'KS test p-value':<35} {calib['ks_pvalue']:<20.4f} {ks_status:<15}")
+        
+        cov_68_diff = abs(calib['coverage_68'] - 0.68)
+        cov_68_status = "✅" if cov_68_diff < 0.05 else "⚠️"
+        print(f"{'68% coverage':<35} {calib['coverage_68']:<20.2%} {cov_68_status} (target: 68%)")
+        
+        cov_95_diff = abs(calib['coverage_95'] - 0.95)
+        cov_95_status = "✅" if cov_95_diff < 0.05 else "⚠️"
+        print(f"{'95% coverage':<35} {calib['coverage_95']:<20.2%} {cov_95_status} (target: 95%)")
+        
+        pit_mean_diff = abs(calib['pit_mean'] - 0.5)
+        pit_mean_status = "✅" if pit_mean_diff < 0.05 else "⚠️"
+        print(f"{'PIT mean':<35} {calib['pit_mean']:<20.3f} {pit_mean_status} (target: 0.5)")
+        
+        pit_std_diff = abs(calib['pit_std'] - 0.29)
+        pit_std_status = "✅" if pit_std_diff < 0.05 else "⚠️"
+        print(f"{'PIT std':<35} {calib['pit_std']:<20.3f} {pit_std_status} (target: 0.29)")
+        
+        print(f"{'─'*70}")
+        
+        # CRPS interpretation
+        mean_crps = forecast_quality['mean_crps']
+        median_crps = forecast_quality['median_crps']
+        
+        if mean_crps < 1.0:
+            crps_status = "✅ Excellent"
+        elif mean_crps < 2.0:
+            crps_status = "✅ Good"
+        elif mean_crps < 3.0:
+            crps_status = "⚠️  Moderate"
         else:
-            print(f"   ⚠️  Calibration: Poorly calibrated (KS p-value < 0.05)")
+            crps_status = "❌ Poor"
         
+        print(f"{'Mean CRPS':<35} {mean_crps:<20.4f} {crps_status:<15}")
+        print(f"{'Median CRPS':<35} {median_crps:<20.4f} {'(lower is better)':<15}")
+        print(f"{'─'*70}")
+        
+        # Overall interpretation
+        print(f"\n💡 Overall Assessment:")
+        print(f"{'─'*70}")
+        
+        # 1. Distribution Match (CRPS)
+        print(f"\n1️⃣  Distribution Match (CRPS):")
+        if mean_crps < 1.0:
+            print(f"   ✅ Excellent: Predicted distribution very close to true distribution")
+        elif mean_crps < 2.0:
+            print(f"   ✅ Good: Predicted distribution matches true distribution well")
+        elif mean_crps < 3.0:
+            print(f"   ⚠️  Moderate: Some mismatch between predicted and true distributions")
+        else:
+            print(f"   ❌ Poor: Significant mismatch between distributions")
+        
+        # 2. Calibration (KS test)
+        print(f"\n2️⃣  Forecast Calibration (KS test):")
+        if calib['ks_pvalue'] > 0.05:
+            print(f"   ✅ Well-calibrated: Forecast probabilities are reliable")
+            print(f"      → Can trust confidence intervals and risk estimates")
+        else:
+            print(f"   ⚠️  Poorly calibrated: Forecast probabilities may be biased")
+            print(f"      → Confidence intervals may be too wide or too narrow")
+        
+        # 3. Coverage accuracy
+        print(f"\n3️⃣  Coverage Accuracy:")
         coverage_68_ok = abs(calib['coverage_68'] - 0.68) < 0.05
         coverage_95_ok = abs(calib['coverage_95'] - 0.95) < 0.05
         if coverage_68_ok and coverage_95_ok:
-            print(f"   ✅ Coverage: Accurate confidence intervals")
+            print(f"   ✅ Accurate: Confidence intervals have correct coverage")
+            print(f"      → 68% and 95% intervals are reliable for risk management")
+        elif coverage_68_ok or coverage_95_ok:
+            print(f"   ⚠️  Partially accurate: Some intervals are miscalibrated")
+            if not coverage_68_ok:
+                print(f"      → 68% interval: {calib['coverage_68']:.1%} (target: 68%)")
+            if not coverage_95_ok:
+                print(f"      → 95% interval: {calib['coverage_95']:.1%} (target: 95%)")
         else:
-            print(f"   ⚠️  Coverage: Confidence intervals may be mis-calibrated")
+            print(f"   ❌ Inaccurate: Confidence intervals need recalibration")
+            print(f"      → 68% interval: {calib['coverage_68']:.1%} (target: 68%)")
+            print(f"      → 95% interval: {calib['coverage_95']:.1%} (target: 95%)")
+        
+        # 4. Overall verdict
+        print(f"\n4️⃣  Overall Verdict:")
+        all_good = (mean_crps < 2.0 and calib['ks_pvalue'] > 0.05 and 
+                   coverage_68_ok and coverage_95_ok)
+        mostly_good = (mean_crps < 3.0 and calib['ks_pvalue'] > 0.05 and 
+                      (coverage_68_ok or coverage_95_ok))
+        
+        if all_good:
+            print(f"   🎉 EXCELLENT: Model is production-ready for scenario generation")
+            print(f"      → Distributions match, calibration is good, coverage is accurate")
+        elif mostly_good:
+            print(f"   ✅ GOOD: Model is suitable for scenario generation")
+            print(f"      → Minor calibration issues, but overall reliable")
+        else:
+            print(f"   ⚠️  NEEDS IMPROVEMENT: Consider hyperparameter tuning")
+            print(f"      → Recalibration or more training data may help")
+        
+        print(f"{'─'*70}")
         
         return result
     

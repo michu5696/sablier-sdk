@@ -703,7 +703,7 @@ class Scenario:
             conditioning_features: Optional list of feature names to condition on.
                                   If provided, only these features are used (others are marginalized).
                                   If None, all configured conditioning features are used.
-        
+            
         Returns:
             SyntheticData instance containing generated paths
         
@@ -782,7 +782,7 @@ class Scenario:
         
         return synthetic_data
     
-    def generate_paths_mfa(self, n_samples: int = None, conditioning_features: List[str] = None) -> 'SyntheticData':
+    def generate_paths_mfa(self, n_samples: int = None, conditioning_features: List[str] = None, top_k_neighbors: int = None, copula_type: str = None) -> 'SyntheticData':
         """
         Generate synthetic market paths using MFA model
         
@@ -792,6 +792,8 @@ class Scenario:
         Args:
             n_samples: Number of paths to generate (default: scenario's n_scenarios)
             conditioning_features: Optional list of features to condition on (others marginalized)
+            top_k_neighbors: Number of neighbors for local copula fitting (uses backend default if None)
+            copula_type: Copula selection strategy (uses backend default if None)
         
         Returns:
             SyntheticData instance containing generated paths
@@ -842,6 +844,12 @@ class Scenario:
             'scenario_id': self.id,
             'n_samples': n_samples
         }
+        
+        # Add optional parameters only if provided
+        if top_k_neighbors is not None:
+            payload['top_k_neighbors'] = top_k_neighbors
+        if copula_type is not None:
+            payload['copula_type'] = copula_type
         
         # Add conditioning_features for partial conditioning
         if conditioning_features:
