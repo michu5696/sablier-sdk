@@ -65,7 +65,7 @@ def validate_sample_generation_inputs(
 def validate_splits(splits: Dict[str, Dict[str, str]], past_window: int, future_window: int):
     """Validate split date ranges and check for overlaps"""
     
-    required_splits = ["training", "validation", "test"]
+    required_splits = ["training", "validation"]
     for split_name in required_splits:
         if split_name not in splits:
             raise ValueError(f"Missing required split: {split_name}")
@@ -77,8 +77,12 @@ def validate_splits(splits: Dict[str, Dict[str, str]], past_window: int, future_
     train_end = datetime.strptime(splits["training"]["end"], "%Y-%m-%d")
     val_start = datetime.strptime(splits["validation"]["start"], "%Y-%m-%d")
     val_end = datetime.strptime(splits["validation"]["end"], "%Y-%m-%d")
-    test_start = datetime.strptime(splits["test"]["start"], "%Y-%m-%d")
-    test_end = datetime.strptime(splits["test"]["end"], "%Y-%m-%d")
+    
+    # Test split is optional
+    has_test = "test" in splits
+    if has_test:
+        test_start = datetime.strptime(splits["test"]["start"], "%Y-%m-%d")
+        test_end = datetime.strptime(splits["test"]["end"], "%Y-%m-%d")
     
     # Check minimum split lengths
     sample_size = past_window + future_window
@@ -87,7 +91,6 @@ def validate_splits(splits: Dict[str, Dict[str, str]], past_window: int, future_
     
     train_days = (train_end - train_start).days
     val_days = (val_end - val_start).days
-    test_days = (test_end - test_start).days
     
     if train_days < min_split_days:
         raise ValueError(
@@ -98,18 +101,24 @@ def validate_splits(splits: Dict[str, Dict[str, str]], past_window: int, future_
     if val_days < sample_size:
         raise ValueError(f"Validation split too short! Got {val_days} days, need at least {sample_size} days (sample size)")
     
-    if test_days < sample_size:
-        raise ValueError(f"Test split too short! Got {test_days} days, need at least {sample_size} days (sample size)")
+    if has_test:
+        test_days = (test_end - test_start).days
+        if test_days < sample_size:
+            raise ValueError(f"Test split too short! Got {test_days} days, need at least {sample_size} days (sample size)")
     
     # Check temporal ordering
-    if not (train_start < train_end < val_start < val_end < test_start < test_end):
-        raise ValueError("Splits must be temporally ordered: training -> validation -> test (no overlaps)")
+    if has_test:
+        if not (train_start < train_end < val_start < val_end < test_start < test_end):
+            raise ValueError("Splits must be temporally ordered: training -> validation -> test (no overlaps)")
+    else:
+        if not (train_start < train_end < val_start < val_end):
+            raise ValueError("Splits must be temporally ordered: training -> validation (no overlaps)")
     
     # Check for date range overlaps
     if train_end >= val_start:
         raise ValueError(f"Training end ({train_end.date()}) must be before validation start ({val_start.date()})")
     
-    if val_end >= test_start:
+    if has_test and val_end >= test_start:
         raise ValueError(f"Validation end ({val_end.date()}) must be before test start ({test_start.date()})")
     
     # Check for sample overlap (critical!)
@@ -126,10 +135,11 @@ def validate_splits(splits: Dict[str, Dict[str, str]], past_window: int, future_
         )
     
     # Gap between validation and test (warning only, contiguous is OK)
-    val_test_gap = (test_start - val_end).days
-    if val_test_gap < sample_size:
-        print(f"  ⚠️  Validation and test are close (gap: {val_test_gap} days, sample: {sample_size} days)")
-        print(f"      Last validation samples may overlap into test period (acceptable)")
+    if has_test:
+        val_test_gap = (test_start - val_end).days
+        if val_test_gap < sample_size:
+            print(f"  ⚠️  Validation and test are close (gap: {val_test_gap} days, sample: {sample_size} days)")
+            print(f"      Last validation samples may overlap into test period (acceptable)")
     
     print(f"  ✓ Splits validated: no data leakage")
 
@@ -138,26 +148,26 @@ def auto_generate_splits(
     start_date: str, 
     end_date: str, 
     sample_size: Optional[int] = None,
-    train_pct: float = 0.7,
+    train_pct: float = 0.8,
     val_pct: float = 0.2,
-    test_pct: float = 0.1
+    test_pct: float = 0.0
 ) -> Dict[str, Dict[str, str]]:
     """
     Auto-generate splits from training period with proper gaps
     
     Creates splits with gap between training and validation to prevent data leakage.
-    Validation and test can be contiguous (acceptable).
+    Test split is optional (set test_pct=0 to disable).
     
     Args:
         start_date: Training period start (YYYY-MM-DD)
         end_date: Training period end (YYYY-MM-DD)
         sample_size: Optional sample size (past + future windows) for calculating gaps
-        train_pct: Training split percentage (default: 0.7 = 70%)
+        train_pct: Training split percentage (default: 0.8 = 80%)
         val_pct: Validation split percentage (default: 0.2 = 20%)
-        test_pct: Test split percentage (default: 0.1 = 10%)
+        test_pct: Test split percentage (default: 0.0 = disabled)
         
     Returns:
-        Dict with training, validation, test splits
+        Dict with training, validation, and optionally test splits
     """
     
     start = datetime.strptime(start_date, "%Y-%m-%d")
@@ -173,7 +183,7 @@ def auto_generate_splits(
     
     train_days = int(usable_days * train_pct)
     val_days = int(usable_days * val_pct)
-    test_days = usable_days - train_days - val_days
+    test_days = int(usable_days * test_pct) if test_pct > 0 else 0
     
     # Calculate split boundaries
     train_start = start
@@ -181,13 +191,17 @@ def auto_generate_splits(
     
     # Add gap after training
     val_start = train_end + timedelta(days=gap_days + 1)
-    val_end = val_start + timedelta(days=val_days - 1)
     
-    # Test is contiguous with validation (no gap needed)
-    test_start = val_end + timedelta(days=1)
-    test_end = end
+    # If test split is disabled, validation extends to the end
+    if test_pct == 0:
+        val_end = end
+    else:
+        val_end = val_start + timedelta(days=val_days - 1)
+        # Test is contiguous with validation (no gap needed)
+        test_start = val_end + timedelta(days=1)
+        test_end = end
     
-    return {
+    result = {
         "training": {
             "start": train_start.strftime("%Y-%m-%d"),
             "end": train_end.strftime("%Y-%m-%d")
@@ -195,12 +209,17 @@ def auto_generate_splits(
         "validation": {
             "start": val_start.strftime("%Y-%m-%d"),
             "end": val_end.strftime("%Y-%m-%d")
-        },
-        "test": {
+        }
+    }
+    
+    # Only include test split if requested
+    if test_pct > 0:
+        result["test"] = {
             "start": test_start.strftime("%Y-%m-%d"),
             "end": test_end.strftime("%Y-%m-%d")
         }
-    }
+    
+    return result
 
 
 def validate_training_period(start_date: str, end_date: str) -> int:

@@ -477,10 +477,13 @@ class Model:
             
             # If percentage splits provided, use them; otherwise use defaults
             if splits and isinstance(list(splits.values())[0], (int, float)):
-                train_pct = splits.get('training', 70) / 100
+                train_pct = splits.get('training', 80) / 100
                 val_pct = splits.get('validation', 20) / 100
-                test_pct = splits.get('test', 10) / 100
-                print(f"  Converting percentage splits: {int(train_pct*100)}% train, {int(val_pct*100)}% val, {int(test_pct*100)}% test")
+                test_pct = splits.get('test', 0) / 100
+                if test_pct > 0:
+                    print(f"  Converting percentage splits: {int(train_pct*100)}% train, {int(val_pct*100)}% val, {int(test_pct*100)}% test")
+                else:
+                    print(f"  Converting percentage splits: {int(train_pct*100)}% train, {int(val_pct*100)}% val")
                 splits = auto_generate_splits(start, end, sample_size=sample_size, 
                                              train_pct=train_pct, val_pct=val_pct, test_pct=test_pct)
             else:
@@ -1087,7 +1090,7 @@ class Model:
             return
         
         # Get copula metadata from model
-        model_metadata = self._data.get('model_metadata', {})
+        model_metadata = self._data.get('model_metadata') or {}
         copula_metadata = model_metadata.get('copula_metadata', {})
         
         if not copula_metadata:
@@ -1160,7 +1163,7 @@ class Model:
             return
         
         # Get E2E results from model metadata (nested in copula_metadata)
-        model_metadata = self._data.get('model_metadata', {})
+        model_metadata = self._data.get('model_metadata') or {}
         copula_metadata = model_metadata.get('copula_metadata', {})
         e2e_results = copula_metadata.get('e2e_validation_results', {})
         
@@ -2505,7 +2508,7 @@ Points: {metrics['n_points']}"""
             raise ValueError("Model must be trained before plotting feature importance. Call model.train() first.")
         
         # Get feature importance from model_metadata (nested structure)
-        model_metadata = self._data.get('model_metadata', {})
+        model_metadata = self._data.get('model_metadata') or {}
         
         # Feature importance is nested: model_metadata -> feature_importance -> feature_importance
         feature_importance_wrapper = model_metadata.get('feature_importance', {})
@@ -2826,8 +2829,8 @@ Points: {metrics['n_points']}"""
         print(f"\n🚀 Training MFA model...")
         
         # Check for saved optimal parameters from hyperparameter optimization
-        model_metadata = self._data.get('model_metadata', {})
-        optimal_config = model_metadata.get('mfa_optimal_config', {})
+        model_metadata = self._data.get('model_metadata') or {}
+        optimal_config = model_metadata.get('mfa_optimal_config', {}) if model_metadata else {}
         
         if optimal_config:
             print(f"🔧 Using optimal parameters from previous optimization:")
@@ -3149,7 +3152,11 @@ Points: {metrics['n_points']}"""
                      sample_id: Optional[str] = None,
                      n_samples: int = 1000,
                      top_k_neighbors: int = 100,
-                     copula_type: str = 't') -> Dict[str, Any]:
+                     copula_type: str = 't',
+                     clayton_lower_threshold: float = 0.3,
+                     clayton_ratio_threshold: float = 1.5,
+                     gumbel_upper_threshold: float = 0.3,
+                     gumbel_ratio_threshold: float = 0.67) -> Dict[str, Any]:
         """
         Generate forecasts using MFA + local copula
         
@@ -3201,7 +3208,11 @@ Points: {metrics['n_points']}"""
             'conditioning_source': conditioning_source,
             'n_samples': n_samples,
             'top_k_neighbors': top_k_neighbors,
-            'copula_type': copula_type
+            'copula_type': copula_type,
+            'clayton_lower_threshold': clayton_lower_threshold,
+            'clayton_ratio_threshold': clayton_ratio_threshold,
+            'gumbel_upper_threshold': gumbel_upper_threshold,
+            'gumbel_ratio_threshold': gumbel_ratio_threshold
         }
         
         if conditioning_source == "inline":
@@ -3406,17 +3417,19 @@ Points: {metrics['n_points']}"""
         
         print(f"✅ Reconstructed all {len(all_reconstructions)} forecast samples")
         
-        # Also get ground truth from reference sample
-        print(f"\n🔍 Extracting ground truth from reference sample...")
-        ref_sample_response = self.http.get(
-            f'/api/v1/models/{self.id}/samples',
-            params={'split_type': split, 'limit': 100, 'include_data': 'true'}
-        )
-        ref_samples = ref_sample_response.get('samples', [])
-        ref_sample = next((s for s in ref_samples if s['id'] == reference_sample_id), None)
-        
+        # Extract ground truth from MFA forecast response (if available)
+        print(f"\n🔍 Extracting ground truth from forecast response...")
         ground_truth = None
-        if ref_sample:
+        
+        # Check if ground truth was included in forecast response
+        if mfa_forecasts.get('ground_truth'):
+            ref_sample = mfa_forecasts['ground_truth']
+            print(f"✅ Found ground truth in forecast response")
+        else:
+            print(f"⚠️  No ground truth in forecast response (unconditional forecast)")
+            ref_sample = None
+        
+        if ref_sample and ref_sample.get('conditioning_data'):
             # Get normalization params for denormalization
             norm_params = self._data.get('feature_normalization_params', {})
             
@@ -3439,7 +3452,8 @@ Points: {metrics['n_points']}"""
                     ref_windows.append({
                         'feature': feature,
                         'temporal_tag': 'past',
-                        'values': denormalized
+                        'values': denormalized,
+                        'dates': item.get('dates', [])
                     })
             
             # Process future target windows (target_data with normalized_residuals)
@@ -3475,7 +3489,8 @@ Points: {metrics['n_points']}"""
                     ref_windows.append({
                         'feature': feature,
                         'temporal_tag': 'future',
-                        'values': denormalized
+                        'values': denormalized,
+                        'dates': item.get('dates', [])
                     })
             
             ground_truth = {

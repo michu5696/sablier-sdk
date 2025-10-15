@@ -782,7 +782,15 @@ class Scenario:
         
         return synthetic_data
     
-    def generate_paths_mfa(self, n_samples: int = None, conditioning_features: List[str] = None, top_k_neighbors: int = None, copula_type: str = None) -> 'SyntheticData':
+    def generate_paths_mfa(self, 
+                          n_samples: int = None, 
+                          conditioning_features: List[str] = None, 
+                          top_k_neighbors: int = None, 
+                          copula_type: str = None,
+                          clayton_lower_threshold: float = None,
+                          clayton_ratio_threshold: float = None,
+                          gumbel_upper_threshold: float = None,
+                          gumbel_ratio_threshold: float = None) -> 'SyntheticData':
         """
         Generate synthetic market paths using MFA model
         
@@ -794,6 +802,10 @@ class Scenario:
             conditioning_features: Optional list of features to condition on (others marginalized)
             top_k_neighbors: Number of neighbors for local copula fitting (uses backend default if None)
             copula_type: Copula selection strategy (uses backend default if None)
+            clayton_lower_threshold: Minimum lower tail dependence for Clayton selection (uses backend default if None)
+            clayton_ratio_threshold: Minimum asymmetry ratio for Clayton selection (uses backend default if None)
+            gumbel_upper_threshold: Minimum upper tail dependence for Gumbel selection (uses backend default if None)
+            gumbel_ratio_threshold: Maximum asymmetry ratio for Gumbel selection (uses backend default if None)
         
         Returns:
             SyntheticData instance containing generated paths
@@ -850,6 +862,14 @@ class Scenario:
             payload['top_k_neighbors'] = top_k_neighbors
         if copula_type is not None:
             payload['copula_type'] = copula_type
+        if clayton_lower_threshold is not None:
+            payload['clayton_lower_threshold'] = clayton_lower_threshold
+        if clayton_ratio_threshold is not None:
+            payload['clayton_ratio_threshold'] = clayton_ratio_threshold
+        if gumbel_upper_threshold is not None:
+            payload['gumbel_upper_threshold'] = gumbel_upper_threshold
+        if gumbel_ratio_threshold is not None:
+            payload['gumbel_ratio_threshold'] = gumbel_ratio_threshold
         
         # Add conditioning_features for partial conditioning
         if conditioning_features:
