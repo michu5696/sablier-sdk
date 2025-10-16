@@ -694,97 +694,12 @@ class Scenario:
     # PATH GENERATION
     # ============================================
     
-    def generate_paths(self, n_samples: int = None, conditioning_features: List[str] = None) -> 'SyntheticData':
-        """
-        Generate synthetic market paths using the configured scenario
-        
-        Args:
-            n_samples: Number of paths to generate (default: scenario's n_scenarios)
-            conditioning_features: Optional list of feature names to condition on.
-                                  If provided, only these features are used (others are marginalized).
-                                  If None, all configured conditioning features are used.
-            
-        Returns:
-            SyntheticData instance containing generated paths
-        
-        Example:
-            >>> # Full conditioning (all features)
-            >>> synthetic_data = scenario.generate_paths(n_samples=1000)
-            
-            >>> # Partial conditioning (marginalized inference)
-            >>> synthetic_data = scenario.generate_paths(
-            ...     n_samples=1000,
-            ...     conditioning_features=['Fed Funds Rate', 'VIX']
-            ... )
-        """
-        from ..synthetic_data import SyntheticData
-        
-        if n_samples is None:
-            n_samples = self.n_scenarios
-        
-        # Verify scenario is configured
-        if self.current_step not in ['future-conditioning-configured', 'paths-generated']:
-            raise ValueError(
-                f"Scenario must be configured before generating paths. "
-                f"Current step: {self.current_step}. "
-                f"Call fetch_recent_past() and configure_future_conditioning() first."
-            )
-        
-        print(f"[Scenario] Generating {n_samples} synthetic paths...")
-        
-        # Show conditioning mode
-        if conditioning_features:
-            print(f"🔬 Partial conditioning: {len(conditioning_features)} features")
-            print(f"   Unmasked: {', '.join(conditioning_features)}")
-            print(f"   Others: MARGINALIZED")
-        else:
-            print(f"📊 Full conditioning: all configured features")
-        
-        # Call forecast endpoint with scenario mode
-        print("📊 Step 1/2: Generating forecast samples...")
-        
-        # Get user_id from model (always available)
-        if not self.model:
-            raise ValueError("Model not loaded. Cannot generate paths.")
-        
-        payload = {
-            'user_id': self.model._data.get('user_id'),
-            'model_id': self.model_id,
-            'conditioning_source': 'scenario',
-            'scenario_id': self.id,
-            'n_samples': n_samples
-        }
-        
-        # Add conditioning_features if specified (for partial conditioning)
-        if conditioning_features:
-            payload['conditioning_features'] = conditioning_features
-        
-        forecast_response = self.http.post('/api/v1/ml/forecast', payload)
-        
-        forecast_samples = forecast_response.get('forecast_samples', [])
-        print(f"  Generated {len(forecast_samples)} samples")
-        
-        # Reconstruct forecast samples using scenario's fetched past as reference
-        print("🔄 Step 2/2: Reconstructing to original scale...")
-        reconstructed_paths = self._reconstruct_scenario_forecast(forecast_samples)
-        
-        print(f"✅ Generated {len(reconstructed_paths)} synthetic paths")
-        
-        # Update scenario status
-        self._update_step('paths-generated')
-        
-        # Create SyntheticData instance
-        synthetic_data = SyntheticData(
-            paths=reconstructed_paths,
-            scenario=self,
-            model=self.model
-        )
-        
-        return synthetic_data
     
-    def generate_paths_mfa(self, 
+    
+    def generate_paths(self, 
                           n_samples: int = None, 
-                          conditioning_features: List[str] = None, 
+                          conditioning_features: List[str] = None,
+                          use_local_copula: bool = True,
                           top_k_neighbors: int = None, 
                           copula_type: str = None,
                           clayton_lower_threshold: float = None,
@@ -794,12 +709,10 @@ class Scenario:
         """
         Generate synthetic market paths using MFA model
         
-        This is a test method for MFA-based scenario generation.
-        If MFA works well, this will replace generate_paths().
-        
         Args:
             n_samples: Number of paths to generate (default: scenario's n_scenarios)
             conditioning_features: Optional list of features to condition on (others marginalized)
+            use_local_copula: Use local copula (True) or GMM conditionals (False) (default: True)
             top_k_neighbors: Number of neighbors for local copula fitting (uses backend default if None)
             copula_type: Copula selection strategy (uses backend default if None)
             clayton_lower_threshold: Minimum lower tail dependence for Clayton selection (uses backend default if None)
@@ -811,11 +724,14 @@ class Scenario:
             SyntheticData instance containing generated paths
         
         Example:
-            >>> # Full conditioning (all features)
-            >>> synthetic_data = scenario.generate_paths_mfa(n_samples=1000)
+            >>> # Full conditioning with local copula (tail dependence)
+            >>> synthetic_data = scenario.generate_paths(n_samples=1000, use_local_copula=True)
+            
+            >>> # GMM conditionals (faster, Gaussian tails)
+            >>> synthetic_data = scenario.generate_paths(n_samples=1000, use_local_copula=False)
             
             >>> # Partial conditioning (marginalized inference)
-            >>> synthetic_data = scenario.generate_paths_mfa(
+            >>> synthetic_data = scenario.generate_paths(
             ...     n_samples=1000,
             ...     conditioning_features=['Fed Funds Rate', 'VIX']
             ... )
@@ -854,7 +770,8 @@ class Scenario:
             'model_id': self.model_id,
             'conditioning_source': 'scenario',
             'scenario_id': self.id,
-            'n_samples': n_samples
+            'n_samples': n_samples,
+            'use_local_copula': use_local_copula
         }
         
         # Add optional parameters only if provided
@@ -876,14 +793,14 @@ class Scenario:
             payload['conditioning_features'] = conditioning_features
         
         # Call MFA-specific endpoint
-        forecast_response = self.http.post('/api/v1/ml/forecast-mfa', payload)
+        forecast_response = self.http.post('/api/v1/ml/forecast', payload)
         
         forecast_samples = forecast_response.get('forecasts', [])
         print(f"  Generated {len(forecast_samples)} MFA samples")
         
         # Reconstruct forecast samples
         print("🔄 Step 2/2: Reconstructing to original scale...")
-        reconstructed_paths = self._reconstruct_mfa_scenario_forecast(forecast_samples)
+        reconstructed_paths = self._reconstruct_scenario_forecast(forecast_samples)
         
         print(f"✅ Generated {len(reconstructed_paths)} synthetic paths")
         
@@ -899,183 +816,15 @@ class Scenario:
         
         return synthetic_data
     
-    def compute_conditioning_importance(self) -> Dict[str, Any]:
-        """
-        Compute SHAP-based feature importance for the conditioning scenario.
-        
-        This analyzes how much each conditioning feature (and their components) 
-        influences the model's predictions for this specific scenario.
-        
-        Returns:
-            dict: {
-                "feature_importance": Dict[str, float],  # Normalized importance by feature
-                "component_breakdown": Dict[str, List],  # Component-level details
-                "categories": Dict[str, List],  # Features grouped by category
-                "total_components": int
-            }
-        
-        Example:
-            >>> importance = scenario.compute_conditioning_importance()
-            >>> print(f"VIX importance: {importance['feature_importance']['VIX']:.1%}")
-            >>> # See component breakdown
-            >>> for comp in importance['component_breakdown']['VIX']:
-            ...     print(f"  {comp['component_name']}: {comp['importance']:.1%}")
-        """
-        # Verify scenario is configured
-        if self.current_step not in ['future-conditioning-configured', 'paths-generated']:
-            raise ValueError(
-                f"Scenario must be configured before computing importance. "
-                f"Current step: {self.current_step}. "
-                f"Call fetch_recent_past() and configure_future_conditioning() first."
-            )
-        
-        print(f"[Scenario] Computing SHAP-based conditioning importance...")
-        
-        # Call the conditioning importance endpoint
-        response = self.http.post('/api/v1/scenarios/conditioning-importance', {
-            'user_id': self.model._data.get('user_id'),
-            'model_id': self.model_id,
-            'scenario_id': self.id
-        })
-        
-        importance_data = response.get('importance', {})
-        
-        # Print summary
-        feature_importance = importance_data.get('feature_importance', {})
-        if feature_importance:
-            print(f"\n📊 Conditioning Feature Importance:")
-            print(f"{'='*60}")
-            sorted_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
-            for feature, importance in sorted_features[:10]:  # Top 10
-                print(f"  {feature:30s}: {importance:6.1%}")
-            print(f"{'='*60}\n")
-        
-        return importance_data
+    
     
     # ============================================
     # UTILITY METHODS
     # ============================================
     
-    def _reconstruct_scenario_forecast(self, forecast_samples: List[Dict]) -> List[Dict]:
-        """
-        Reconstruct forecast samples using the scenario's own fetched past as reference
-        
-        Args:
-            forecast_samples: Forecast outputs from QRF
-            
-        Returns:
-            List of reconstructed paths with dates and values
-        """
-        # Fetch the scenario's fetched_past_data for reference values
-        scenario = self.http.get(f'/api/v1/scenarios/{self.id}')
-        fetched_past = scenario.get('fetched_past_data', [])
-        
-        if not fetched_past:
-            raise ValueError("No fetched_past_data in scenario. Call fetch_recent_past() first.")
-        
-        # Build reference values dict from normalized fetched past (last normalized value for each feature)
-        reference_values = {}
-        normalized_fetched_past = self._data.get('normalized_fetched_past', [])
-        norm_params = self.model._data.get('feature_normalization_params', {})
-        
-        if normalized_fetched_past:
-            # Use normalized values directly
-            for item in normalized_fetched_past:
-                feature_name = item.get('feature_name') or item.get('feature')
-                normalized_series = item.get('normalized_series', [])
-                if feature_name and normalized_series:
-                    reference_values[feature_name] = normalized_series[-1]
-        else:
-            # Fallback: calculate from denormalized fetched_past
-            for point in fetched_past:
-                feature = point.get('feature')
-                if feature:
-                    # Keep updating - last one wins (most recent value)
-                    value = point['value']
-                    mean = norm_params.get(feature, {}).get('mean', 0)
-                    std = norm_params.get(feature, {}).get('std', 1)
-                    normalized_value = (value - mean) / std
-                    reference_values[feature] = normalized_value
-        
-        # Transform forecast samples to encoded_windows format for reconstruction
-        encoded_windows = []
-        
-        for sample_idx, sample in enumerate(forecast_samples):
-            for item in sample.get('encoded_target_data', []):
-                encoded_window = {
-                    "feature": item['feature'],
-                    "temporal_tag": item['temporal_tag'],
-                    "data_type": "encoded_normalized_residuals",
-                    "encoded_values": item['encoded_normalized_residuals'],
-                    "_sample_idx": sample_idx  # Track which forecast sample this belongs to
-                }
-                
-                # Preserve group metadata if present
-                if 'is_group' in item:
-                    encoded_window['is_group'] = item['is_group']
-                if 'is_multivariate' in item:
-                    encoded_window['is_multivariate'] = item['is_multivariate']
-                if 'group_features' in item:
-                    encoded_window['group_features'] = item['group_features']
-                if 'n_components' in item:
-                    encoded_window['n_components'] = item['n_components']
-                
-                encoded_windows.append(encoded_window)
-        
-        # Call reconstruct endpoint with inline reference
-        payload = {
-            "user_id": self.model._data.get("user_id"),
-            "model_id": self.model_id,
-            "encoded_source": "inline",
-            "encoded_windows": encoded_windows,
-            "reference_source": "inline",
-            "reference_values": reference_values,
-            "output_destination": "return"
-        }
-        
-        response = self.http.post('/api/v1/ml/reconstruct', payload)
-        reconstructions = response.get('reconstructions', [])
-        
-        # Group reconstructions by sample using _sample_idx
-        windows_by_sample = {}
-        for window in reconstructions:
-            sample_idx = window.get('_sample_idx', 0)  # Default to 0 if not found
-            if sample_idx not in windows_by_sample:
-                windows_by_sample[sample_idx] = []
-            windows_by_sample[sample_idx].append(window)
-        
-        # Generate dates for the forecast window
-        # Get future_window from model's sample config
-        sample_config = self.model._data.get('sample_config', {})
-        future_window = sample_config.get('futureWindow', 80)
-        
-        # Get last date from fetched past as starting point
-        from datetime import datetime, timedelta
-        last_date_str = max(point['date'] for point in fetched_past)
-        start_date = datetime.strptime(last_date_str, '%Y-%m-%d') + timedelta(days=1)
-        dates = [(start_date + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(future_window)]
-        
-        # Convert to structured format
-        reconstructed_samples = []
-        for sample_idx in sorted(windows_by_sample.keys()):
-            sample_reconstruction = {}
-            
-            for window in windows_by_sample[sample_idx]:
-                feature = window['feature']
-                values = window.get('reconstructed_values', [])
-                
-                sample_reconstruction[feature] = {
-                    'future': {
-                        'dates': dates[:len(values)],  # Match dates to values length
-                        'values': values
-                    }
-                }
-            
-            reconstructed_samples.append(sample_reconstruction)
-        
-        return reconstructed_samples
     
-    def _reconstruct_mfa_scenario_forecast(self, forecast_samples: List[Dict]) -> List[Dict]:
+    
+    def _reconstruct_scenario_forecast(self, forecast_samples: List[Dict]) -> List[Dict]:
         """
         Reconstruct MFA forecast samples using scenario's fetched past as reference
         

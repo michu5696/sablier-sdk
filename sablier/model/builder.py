@@ -848,404 +848,7 @@ class Model:
             "encoding_type": encoding_type
         }
     
-    # ============================================
-    # TRAINING
-    # ============================================
-    
-    def train(self, 
-            config: Optional[Dict[str, Any]] = None, 
-            confirm: Optional[bool] = None,
-            optimize_hyperparameters: bool = False,
-            n_optimization_trials: int = 30,
-            use_augmentation: bool = True,
-            n_augmentations_per_sample: int = 2,
-            fit_conditional_marginals: bool = False,
-            use_randomized_pit: bool = True,
-            parallel_samples: str = 'auto',
-            parallel_marginals: str = 'auto',
-            run_e2e_validation: bool = False,
-            e2e_validation_samples: int = None,
-            e2e_forecast_samples: int = 1000,
-            e2e_covariance_type: str = 'increment',
-            e2e_time_scales: List[int] = None) -> Dict[str, Any]:
-        """
-        Train the model on encoded samples
-        
-        This method:
-        1. Trains a Quantile Regression Forest on encoded conditioning/target data
-        2. Uses future feature augmentation for robustness
-        3. Computes SHAP feature importance
-        4. Saves trained model to storage
-        5. Optionally runs end-to-end validation
-        
-        Args:
-            config: Optional model configuration. Defaults to:
-                {
-                    'n_estimators': 200,
-                    'max_depth': 20,
-                    'min_samples_split': 5,
-                    'min_samples_leaf': 2,
-                    'random_state': 42
-                }
-            confirm: Explicit confirmation (None = prompt if needed)
-            optimize_hyperparameters: Enable Bayesian optimization with Optuna (default: False)
-            n_optimization_trials: Number of optimization trials (default: 30)
-            use_augmentation: Enable component masking augmentation (default: True)
-            n_augmentations_per_sample: Number of augmented copies per sample (default: 2)
-            fit_conditional_marginals: Fit GMM+EVT marginals (slow but accurate) vs empirical (fast) (default: False)
-            use_randomized_pit: Use randomized PIT for empirical mode (default: True)
-            parallel_samples: Outer parallelism for sample processing (default: 'auto')
-            parallel_marginals: Inner parallelism for marginal fitting (default: 'auto')
-            run_e2e_validation: Whether to run end-to-end validation (default: False)
-            e2e_validation_samples: Number of validation samples to use (None = use all, default: None)
-            e2e_forecast_samples: Forecast paths per validation sample (default: 1000)
-            e2e_covariance_type: 'increment' or 'level' (default: 'increment')
-            e2e_time_scales: List of time scales for increment covariance (default: [1, 3, 5, 10])
-            
-        Returns:
-            dict: {
-                "status": "success",
-                "model_id": str,
-                "training_metrics": {
-                    "train_mse": float,
-                    "val_mse": float,
-                    "augmented_training_samples": int,
-                    "augmented_validation_samples": int
-                },
-                "model_metadata": dict,
-                "feature_importance": dict,
-                "component_breakdown": dict,
-                "categories": dict
-            }
-            
-        Example:
-            >>> # Basic usage - train with default config
-            >>> result = model.train()
-            
-            >>> # Custom config
-            >>> result = model.train(config={
-            ...     'n_estimators': 500,
-            ...     'max_depth': 30
-            ... })
-        """
-        # Validate model status
-        if self.status != "samples_encoded":
-            print(f"❌ Model must be in 'samples_encoded' status to train (current: {self.status})")
-            print("   Run model.encode_samples() first")
-            return {"status": "error", "message": "Model not ready for training"}
-        
-        # Only send config if user provided one (let backend use adaptive defaults)
-        if config:
-            print(f"[Model {self.name}] Training model with custom config...")
-            print(f"  Config: n_estimators={config.get('n_estimators', 'default')}, "
-                  f"max_depth={config.get('max_depth', 'default')}, "
-                  f"min_samples_split={config.get('min_samples_split', 'default')}")
-        else:
-            print(f"[Model {self.name}] Training model with adaptive config...")
-            print(f"  Backend will auto-tune parameters based on training set size")
-        print()
-        
-        # Build payload
-        payload = {
-            "user_id": self._data.get("user_id"),
-            "model_id": self.id,
-            "optimize_hyperparameters": optimize_hyperparameters,
-            "n_optimization_trials": n_optimization_trials,
-            "use_augmentation": use_augmentation,
-            "n_augmentations_per_sample": n_augmentations_per_sample,
-            "fit_conditional_marginals": fit_conditional_marginals,
-            "use_randomized_pit": use_randomized_pit,
-            "parallel_samples": parallel_samples,
-            "parallel_marginals": parallel_marginals,
-            "run_e2e_validation": run_e2e_validation,
-            "e2e_validation_samples": e2e_validation_samples,
-            "e2e_forecast_samples": e2e_forecast_samples,
-            "e2e_covariance_type": e2e_covariance_type,
-            "e2e_time_scales": e2e_time_scales or [1, 3, 5, 10]
-        }
-        
-        # Only add qrf_config if user provided one (let backend use adaptive defaults)
-        # Note: If optimize_hyperparameters=True, this config will be ignored
-        if config:
-            payload["qrf_config"] = config
-        
-        # Call backend
-        print("📡 Step 1/2: Training model on encoded samples...")
-        try:
-            response = self.http.post('/api/v1/ml/train-model', payload)
-        except Exception as e:
-            print(f"  ❌ Training failed: {e}")
-            raise
-        
-        # Extract metrics
-        training_metrics = response.get('training_metrics', {})
-        
-        print("  ✅ Model training complete")
-        print(f"     Training MSE: {training_metrics.get('train_mse', 0):.6f}")
-        print(f"     Validation MSE: {training_metrics.get('val_mse', 0):.6f}")
-        print(f"     Augmented training samples: {training_metrics.get('augmented_training_samples', 0)}")
-        print(f"     Augmented validation samples: {training_metrics.get('augmented_validation_samples', 0)}")
-        print()
-        
-        print("📊 Step 2/2: Computing feature importance (SHAP)...")
-        feature_importance = response.get('feature_importance', {})
-        categories = response.get('categories', {})
-        
-        print("  ✅ Feature importance computed")
-        if categories:
-            total_features = sum(len(v) for v in categories.values())
-            print(f"     Total features analyzed: {total_features}")
-            print(f"     Categories: {', '.join(categories.keys())}")
-        print()
-        
-        # Update model status and metadata
-        self._data["status"] = "trained"
-        self._data["training_metrics"] = training_metrics
-        
-        # Refresh model data from database to get complete metadata
-        # This ensures we have the latest copula metadata
-        try:
-            refreshed_model = self.http.get(f'/api/v1/models/{self.id}')
-            if refreshed_model:
-                self._data["model_metadata"] = refreshed_model.get('model_metadata', {})
-                logger.info("Refreshed model metadata from database after training")
-            else:
-                print("⚠️  Could not refresh model metadata from database")
-        except Exception as e:
-            logger.warning(f"Could not refresh model metadata: {e}")
-            # Fallback to response metadata
-            self._data["model_metadata"] = response.get('model_metadata', {})
-        
-        # Display copula validation results if available (after refresh)
-        copula_metadata = self._data.get('model_metadata', {}).get('copula_metadata', {})
-        if copula_metadata:
-            print("🔗 Conditional Copula Validation Results (Uniform Space):")
-            validation_results = copula_metadata.get('validation_results', {})
-            
-            if validation_results:
-                # Display main metrics (new format)
-                import numpy as np
-                mean_log_lik = validation_results.get('mean_log_likelihood', None)
-                corr_of_corr = validation_results.get('correlation_of_correlations', None)
-                corr_mae = validation_results.get('correlation_mae', None)
-                tail_coexceedance = validation_results.get('tail_coexceedance', None)
-                
-                if mean_log_lik is not None:
-                    print(f"     Mean Log-Likelihood: {mean_log_lik:.3f}")
-                if corr_of_corr is not None:
-                    print(f"     Correlation of Correlations: {corr_of_corr:.3f}")
-                if corr_mae is not None:
-                    print(f"     Correlation MAE: {corr_mae:.3f}")
-                if tail_coexceedance is not None:
-                    print(f"     Tail Co-exceedance Rate: {tail_coexceedance:.3f}")
-                
-                # Quality assessment based on correlation of correlations
-                print()
-                if corr_of_corr is not None:
-                    if corr_of_corr >= 0.7:
-                        print("     🎉 Copula quality: EXCELLENT (Corr-of-Corr ≥ 0.7)")
-                    elif corr_of_corr >= 0.5:
-                        print("     ✅ Copula quality: GOOD (Corr-of-Corr ≥ 0.5)")
-                    elif corr_of_corr >= 0.3:
-                        print("     ⚠️  Copula quality: MODERATE (Corr-of-Corr ≥ 0.3)")
-                    else:
-                        print("     ❌ Copula quality: POOR (Corr-of-Corr < 0.3)")
-                else:
-                    print("     ⚠️  Copula quality: Unable to assess (no metrics available)")
-                
-                # Check for validation plot
-                plot_filename = validation_results.get('plot_filename')
-                if plot_filename:
-                    print(f"     📊 Validation plot: {plot_filename}")
-            else:
-                print("     ⚠️  No validation results available")
-        else:
-            print("🔗 No copula validation performed")
-        print()
-        
-        print(f"✅ Training complete - model saved to storage")
-        
-        return {
-            "status": "success",
-            "model_id": response.get('model_id'),
-            "training_metrics": training_metrics,
-            "model_metadata": self._data.get('model_metadata', {}),
-            "feature_importance": feature_importance,
-            "component_breakdown": response.get('component_breakdown', {}),
-            "categories": categories,
-            "per_sample_importance": response.get('per_sample_importance', {}),
-            "copula_metadata": copula_metadata
-        }
-    
-    def show_copula_validation(self) -> None:
-        """
-        Display copula validation results for a trained model
-        
-        Example:
-            >>> model.show_copula_validation()
-        """
-        # Check if model is trained
-        if self.status != "trained":
-            print(f"❌ Model must be trained to show copula validation (current status: {self.status})")
-            return
-        
-        # Get copula metadata from model
-        model_metadata = self._data.get('model_metadata') or {}
-        copula_metadata = model_metadata.get('copula_metadata', {})
-        
-        if not copula_metadata:
-            print("❌ No copula metadata found. Model may not have copula validation results.")
-            return
-        
-        print("🔗 Structural Copula Validation Results (Uniform Space):")
-        print("=" * 60)
-        
-        # Display basic copula info
-        n_samples = copula_metadata.get('n_samples', 0)
-        n_copula_dims = copula_metadata.get('n_copula_dimensions', 0)
-        n_total_dims = copula_metadata.get('n_total_dimensions', 0)
-        
-        print(f"Copula Structure:")
-        print(f"  Samples used for fitting: {n_samples}")
-        print(f"  Copula dimensions: {n_copula_dims}")
-        print(f"  Total dimensions: {n_total_dims}")
-        print(f"  Dimensionality reduction: {n_total_dims - n_copula_dims} components")
-        print()
-        
-        # Display validation results (conditional copula validation)
-        validation_results = copula_metadata.get('validation_results', {})
-        if validation_results:
-            print("Conditional Copula Validation Metrics (Uniform Space):")
-            
-            # Main metrics from conditional copula validation
-            log_lik = validation_results.get('mean_log_likelihood', None)
-            corr_of_corr = validation_results.get('correlation_of_correlations', 0.0)
-            corr_mae = validation_results.get('correlation_mae', 0.0)
-            tail_coexceed = validation_results.get('tail_coexceedance', 0.0)
-            
-            if log_lik is not None:
-                print(f"  Mean Log-Likelihood: {log_lik:.3f}")
-            else:
-                print(f"  Mean Log-Likelihood: N/A")
-            
-            print(f"  Correlation-of-Correlations: {corr_of_corr:.3f}")
-            print(f"  Correlation MAE: {corr_mae:.3f}")
-            print(f"  Tail Co-exceedance: {tail_coexceed:.3f}")
-            print()
-            
-            # Quality assessment based on conditional copula metrics
-            print("Quality Assessment:")
-            if corr_of_corr >= 0.7:
-                print("  🎉 EXCELLENT - Copula captures dependencies very well")
-            elif corr_of_corr >= 0.5:
-                print("  ✅ GOOD - Copula captures dependencies reasonably well")
-            elif corr_of_corr >= 0.3:
-                print("  ⚠️  MODERATE - Copula shows some dependency structure")
-            else:
-                print("  ❌ POOR - Copula fails to capture dependencies")
-            
-            print()
-        else:
-            print("⚠️  No validation results available")
-        
-        print("=" * 50)
-    
-    def show_e2e_validation(self) -> None:
-        """
-        Display end-to-end validation results for a trained model
-        
-        Example:
-            >>> model.show_e2e_validation()
-        """
-        # Check if model is trained
-        if self.status != "trained":
-            print(f"❌ Model must be trained to show E2E validation (current status: {self.status})")
-            return
-        
-        # Get E2E results from model metadata (nested in copula_metadata)
-        model_metadata = self._data.get('model_metadata') or {}
-        copula_metadata = model_metadata.get('copula_metadata', {})
-        e2e_results = copula_metadata.get('e2e_validation_results', {})
-        
-        if not e2e_results:
-            print("❌ No E2E validation results found. Model may not have been trained with run_e2e_validation=True")
-            return
-        
-        print("🎯 End-to-End Validation Results (Full Pipeline):")
-        print("=" * 70)
-        
-        # Overall score
-        overall_score = e2e_results.get('overall_score', 0.0)
-        print(f"Overall Score: {overall_score:.3f}")
-        print()
-        
-        # Calibration
-        calibration = e2e_results.get('calibration_metrics', {})
-        if calibration:
-            print("📊 Calibration (Coverage):")
-            cov_90 = calibration.get('mean_coverage_90', 0.0)
-            cov_50 = calibration.get('mean_coverage_50', 0.0)
-            well_cal_90 = calibration.get('well_calibrated_90', 0)
-            well_cal_50 = calibration.get('well_calibrated_50', 0)
-            total_comps = calibration.get('total_components', 0)
-            
-            print(f"  90% Coverage: {cov_90:.1%} (target: 90%)")
-            print(f"  50% Coverage: {cov_50:.1%} (target: 50%)")
-            print(f"  Well-calibrated components: {well_cal_90}/{total_comps} (90% CI)")
-            print()
-        
-        # Distribution similarity
-        distribution = e2e_results.get('distribution_metrics', {})
-        if distribution:
-            print("📈 Distribution Similarity:")
-            mean_ks = distribution.get('mean_ks', 0.0)
-            good_ks = distribution.get('good_ks_count', 0)
-            total_comps = distribution.get('total_components', 0)
-            
-            print(f"  Mean KS statistic: {mean_ks:.3f}")
-            print(f"  Components with KS<0.2: {good_ks}/{total_comps}")
-            print()
-        
-        # Correlation structure
-        correlation = e2e_results.get('correlation_metrics', {})
-        if correlation:
-            print("🔗 Correlation Structure (Reconstructed Space):")
-            
-            targets_only = correlation.get('targets_only', {})
-            if targets_only:
-                score = targets_only.get('correlation_similarity', targets_only.get('mean_score', 0.0))
-                std = targets_only.get('std_score', 0.0)
-                n_samples = targets_only.get('n_samples', 0)
-                metric = targets_only.get('metric', 'correlation_of_correlations')
-                print(f"  Targets Only:")
-                print(f"    Correlation Similarity: {score:.3f} ± {std:.3f}")
-                print(f"    Samples: {n_samples}")
-                print(f"    Metric: {metric}")
-            
-            targets_cond = correlation.get('targets_and_conditioning')
-            if targets_cond:
-                score = targets_cond.get('correlation_similarity', targets_cond.get('mean_score', 0.0))
-                std = targets_cond.get('std_score', 0.0)
-                n_samples = targets_cond.get('n_samples', 0)
-                metric = targets_cond.get('metric', 'cross_correlation_of_correlations')
-                print(f"  Targets + Conditioning:")
-                print(f"    Cross-Correlation Similarity: {score:.3f} ± {std:.3f}")
-                print(f"    Samples: {n_samples}")
-                print(f"    Metric: {metric}")
-            print()
-        
-        # Quality assessment
-        print("Quality Assessment:")
-        if overall_score >= 0.7:
-            print("  🎉 EXCELLENT - Model performs very well across all metrics")
-        elif overall_score >= 0.5:
-            print("  ✅ GOOD - Model performs reasonably well")
-        elif overall_score >= 0.3:
-            print("  ⚠️  MODERATE - Model shows acceptable performance")
-        else:
-            print("  ❌ POOR - Model needs improvement")
-        
-        print("=" * 70)
+
     
     # ============================================
     # SCENARIO CREATION
@@ -1294,125 +897,6 @@ class Model:
         print(f"✅ Scenario created: {response.get('name')} (ID: {response.get('id')[:8]}...)")
         
         return Scenario(self.http, response, self)
-    
-    # ============================================
-    # FORECASTING
-    # ============================================
-    
-    def generate_forecast(
-        self,
-        sample_id: Optional[str] = None,
-        test_sample_index: int = 0,
-        scenario = None,  # Scenario instance
-        conditioning_features: Optional[List[str]] = None,
-        n_samples: int = 100
-    ) -> Dict[str, Any]:
-        """
-        Generate forecast samples
-        
-        Two usage modes:
-        
-        1. Post-Training Validation (uses test samples):
-           >>> # Use specific test sample
-           >>> forecast = model.generate_forecast(
-           ...     sample_id="test_sample_123",
-           ...     conditioning_features=["Feature A"],  # Optional
-           ...     n_samples=100
-           ... )
-           
-           >>> # Auto-select first test sample
-           >>> forecast = model.generate_forecast(n_samples=100)
-        
-        2. Scenario-Based Generation (called by Scenario):
-           >>> forecast = model.generate_forecast(
-           ...     scenario=scenario_instance,
-           ...     n_samples=1000
-           ... )
-        
-        Args:
-            sample_id: Test sample ID (optional, auto-selects if None)
-            scenario: Scenario instance for scenario-based generation
-            conditioning_features: Which features to condition on (for sample mode only)
-            n_samples: Number of forecast samples to generate
-            
-        Returns:
-            dict: {
-                "status": "success",
-                "forecast_samples": List[Dict],
-                "distribution_params": dict,
-                "n_samples": int
-            }
-        """
-        # Validate model status
-        if self.status != "trained":
-            print(f"❌ Model must be trained to generate forecasts (current status: {self.status})")
-            print("   Run model.train() first")
-            return {"status": "error", "message": "Model not trained"}
-        
-        print(f"[Model {self.name}] Generating forecast...")
-        
-        # Determine mode and build payload
-        if scenario is not None:
-            # Scenario mode
-            print(f"  Mode: Scenario-based (scenario: {scenario.name})")
-            print(f"  Generating {n_samples} synthetic paths...")
-            
-            payload = {
-                "user_id": self._data.get("user_id"),
-                "model_id": self.id,
-                "conditioning_source": "scenario",
-                "scenario_id": scenario.id,
-                "n_samples": n_samples
-            }
-            
-        else:
-            # Sample validation mode
-            # Auto-select test sample if not provided
-            if sample_id is None:
-                print(f"  Auto-selecting test sample (index: {test_sample_index})...")
-                test_sample = self._get_test_sample(index=test_sample_index, include_data=False)
-                if not test_sample:
-                    print(f"❌ No test sample found at index {test_sample_index}")
-                    return {"status": "error", "message": f"No test sample at index {test_sample_index}"}
-                sample_id = test_sample['id']
-                print(f"  Selected sample: {sample_id}")
-            
-            print(f"  Mode: Sample validation")
-            print(f"  Sample: {sample_id}")
-            if conditioning_features:
-                print(f"  Conditioning on: {', '.join(conditioning_features)}")
-            else:
-                print(f"  Conditioning on: all future features")
-            print(f"  Generating {n_samples} forecast samples...")
-            
-            payload = {
-                "user_id": self._data.get("user_id"),
-                "model_id": self.id,
-                "conditioning_source": "sample",
-                "sample_id": sample_id,
-                "conditioning_features": conditioning_features,
-                "n_samples": n_samples
-            }
-        
-        # Call backend
-        try:
-            response = self.http.post('/api/v1/ml/forecast', payload)
-        except Exception as e:
-            print(f"  ❌ Forecast generation failed: {e}")
-            raise
-        
-        forecast_samples = response.get('forecast_samples', [])
-        
-        print(f"✅ Generated {len(forecast_samples)} forecast samples")
-        print(f"   Distribution: {response.get('distribution_params', {}).get('method', 'unknown')}")
-        
-        return {
-            "status": "success",
-            "forecast_samples": forecast_samples,
-            "distribution_params": response.get('distribution_params', {}),
-            "n_samples": len(forecast_samples),
-            "reference_sample_id": sample_id if scenario is None else None  # Include for plotting
-        }
     
     # ============================================
     # RECONSTRUCTION QUALITY CHECKING
@@ -1958,136 +1442,7 @@ Points: {metrics['n_points']}"""
         
         return result
     
-    def reconstruct_forecast(
-        self,
-        forecast_samples: List[Dict],
-        reference_sample_id: str
-    ) -> List[Dict[str, Dict[str, Any]]]:
-        """
-        Reconstruct forecast outputs back to original scale.
-        
-        Args:
-            forecast_samples: Output from generate_forecast() method
-            reference_sample_id: Sample ID used for forecast generation
-        
-        Returns:
-            List of reconstructed forecast samples, each with structure:
-            {
-                "feature_name": {
-                    "future": {"dates": [...], "values": [...]}
-                }
-            }
-        
-        Example:
-            >>> forecast_result = model.generate_forecast(n_samples=10)
-            >>> reconstructed = model.reconstruct_forecast(
-            ...     forecast_result['forecast_samples'],
-            ...     reference_sample_id="..."
-            ... )
-        """
-        import numpy as np
-        
-        print(f"[Reconstruction] Reconstructing {len(forecast_samples)} forecast samples...")
-        
-        # Transform forecast samples to encoded_windows format
-        # Track sample index in the window itself (since multivariate groups expand to multiple reconstructions)
-        encoded_windows = []
-        
-        for sample_idx, sample in enumerate(forecast_samples):
-            for item in sample.get('encoded_target_data', []):
-                encoded_window = {
-                    "feature": item['feature'],
-                    "temporal_tag": item['temporal_tag'],
-                    "data_type": "encoded_normalized_residuals",
-                    "encoded_values": item['encoded_normalized_residuals'],  # API expects "encoded_values"
-                    "_sample_idx": sample_idx  # Track which forecast sample this belongs to
-                }
-                # Preserve group metadata if present
-                if 'is_group' in item:
-                    encoded_window['is_group'] = item['is_group']
-                if 'is_multivariate' in item:
-                    encoded_window['is_multivariate'] = item['is_multivariate']
-                if 'group_features' in item:
-                    encoded_window['group_features'] = item['group_features']
-                if 'n_components' in item:
-                    encoded_window['n_components'] = item['n_components']
-                
-                encoded_windows.append(encoded_window)
-        
-        # Call reconstruct endpoint
-        payload = {
-            "user_id": self._data.get("user_id"),
-            "model_id": self.id,
-            
-            # Encoded windows provided inline (forecast outputs)
-            "encoded_source": "inline",
-            "encoded_windows": encoded_windows,
-            
-            # Reference values from database (sample used for forecast)
-            "reference_source": "database",
-            "reference_table": "samples",
-            "reference_column": "conditioning_data",
-            "reference_sample_id": reference_sample_id,
-            
-            "output_destination": "return"
-        }
-        
-        try:
-            response = self.http.post('/api/v1/ml/reconstruct', payload)
-        except Exception as e:
-            print(f"  ❌ Reconstruction failed: {e}")
-            raise
-        
-        reconstructions = response.get('reconstructions', [])
-        print(f"✅ Reconstructed {len(reconstructions)} windows")
-        
-        # Fetch reference sample with full data (for dates)
-        # Most common case: it's a test sample, so fetch test samples
-        response = self.http.get(
-            f'/api/v1/models/{self.id}/samples',
-            params={'split_type': 'test', 'limit': 100, 'include_data': 'true'}
-        )
-        samples = response.get('samples', [])
-        reference_sample = next((s for s in samples if s['id'] == reference_sample_id), None)
-        
-        if not reference_sample:
-            raise ValueError(f"Reference sample {reference_sample_id} not found in test samples")
-        
-        # Group reconstructions back into samples
-        # Use _sample_idx from window metadata (preserved through reconstruction)
-        reconstructed_samples = []
-        windows_by_sample = {}
-        
-        for window in reconstructions:
-            # Get sample index from window metadata (added during encoding)
-            sample_idx = window.get('_sample_idx', 0)  # Default to 0 if not found
-            if sample_idx not in windows_by_sample:
-                windows_by_sample[sample_idx] = []
-            windows_by_sample[sample_idx].append(window)
-        
-        # Convert to structured format
-        for sample_idx in sorted(windows_by_sample.keys()):
-            sample_reconstruction = {}
-            
-            for window in windows_by_sample[sample_idx]:
-                feature = window['feature']
-                temporal_tag = window['temporal_tag']
-                reconstructed_values = window['reconstructed_values']
-                
-                if feature not in sample_reconstruction:
-                    sample_reconstruction[feature] = {}
-                
-                # Get dates from reference sample
-                dates = self._extract_dates_from_sample(reference_sample, feature, temporal_tag)
-                
-                sample_reconstruction[feature][temporal_tag] = {
-                    "dates": np.array(dates) if dates else None,
-                    "values": np.array(reconstructed_values)
-                }
-            
-            reconstructed_samples.append(sample_reconstruction)
-        
-        return reconstructed_samples
+    
     
     def _get_original_past_data(self, sample: Dict, feature: str) -> tuple:
         """
@@ -2480,73 +1835,7 @@ Points: {metrics['n_points']}"""
         else:
             plt.close()
     
-    def plot_feature_importance(
-        self,
-        top_n: int = 20,
-        save_path: str = None,
-        show: bool = True
-    ):
-        """
-        Plot feature importance from trained QRF model (SHAP values).
-        
-        Args:
-            top_n: Show only top N features (None = show all)
-            save_path: Path to save plot (e.g., "feature_importance.png")
-            show: Whether to display the plot
-        
-        Example:
-            >>> model.plot_feature_importance(top_n=15)
-            >>> model.plot_feature_importance(save_path="plots/importance.png")
-        """
-        from ..visualization import TimeSeriesPlotter, _check_matplotlib
-        import matplotlib.pyplot as plt
-        
-        _check_matplotlib()
-        
-        # Check if model is trained
-        if self.status != "trained":
-            raise ValueError("Model must be trained before plotting feature importance. Call model.train() first.")
-        
-        # Get feature importance from model_metadata (nested structure)
-        model_metadata = self._data.get('model_metadata') or {}
-        
-        # Feature importance is nested: model_metadata -> feature_importance -> feature_importance
-        feature_importance_wrapper = model_metadata.get('feature_importance', {})
-        feature_importance = feature_importance_wrapper.get('feature_importance', {})
-        
-        if not feature_importance:
-            # Print debug info to help user
-            print(f"  Model metadata keys: {list(model_metadata.keys())}")
-            if feature_importance_wrapper:
-                print(f"  Feature importance wrapper keys: {list(feature_importance_wrapper.keys())}")
-            raise ValueError("No feature importance data found. Model may not have been trained with SHAP values.")
-        
-        # Extract feature names and importance values
-        feature_names = list(feature_importance.keys())
-        importance_values = list(feature_importance.values())
-        
-        print(f"[Plotting] Feature importance for {len(feature_names)} features...")
-        
-        # Create plot
-        fig, ax = plt.subplots(figsize=(10, max(6, min(len(feature_names), top_n or len(feature_names)) * 0.4)))
-        
-        TimeSeriesPlotter.plot_feature_importance(
-            feature_names=feature_names,
-            importance_values=importance_values,
-            top_n=top_n,
-            ax=ax
-        )
-        
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            print(f"📊 Plot saved to {save_path}")
-        
-        if show:
-            plt.show()
-        else:
-            plt.close()    
+    
     # ============================================
     # DATA EXTRACTION FOR VALIDATION
     # ============================================
@@ -2685,7 +1974,7 @@ Points: {metrics['n_points']}"""
     # MFA METHODS
     # ============================================
     
-    def optimize_mfa_hyperparameters(self,
+    def optimize(self,
                                     n_trials: int = 50,
                                     n_components_range: tuple = (2, 6),
                                     n_factors_range: tuple = (15, 50),
@@ -2748,7 +2037,7 @@ Points: {metrics['n_points']}"""
         }
         
         # Call optimization endpoint
-        response = self.http.post('/api/v1/ml/optimize-mfa', payload)
+        response = self.http.post('/api/v1/ml/optimize', payload)
         
         if response.get('status') == 'success':
             optimal_params = response.get('optimal_parameters', {})
@@ -2765,19 +2054,15 @@ Points: {metrics['n_points']}"""
                 print(f"   • Best validation LL: {best_score:.2f}")
             
             print(f"\n💡 These parameters are now saved and will be used automatically")
-            print(f"   when you call model.train_mfa() without specifying parameters.")
+            print(f"   when you call model.train() without specifying parameters.")
         else:
             print(f"❌ Optimization failed: {response.get('error', 'Unknown error')}")
         
         return response
     
-    def train_mfa(self,
+    def train(self,
                   n_components: int = 5,
                   n_factors: int = 10,
-                  use_t_distribution: bool = False,
-                  tail_quantile: float = 0.95,
-                  lower_tail_quantile: Optional[float] = None,
-                  upper_tail_quantile: Optional[float] = None,
                   covariance_type: str = 'diag',
                   split: str = 'training',
                   compute_validation_ll: bool = False,
@@ -2785,16 +2070,16 @@ Points: {metrics['n_points']}"""
         """
         Train MFA (Mixture of Factor Analyzers) model
         
-        This is an alternative to the QRF approach that uses:
-        - EVT-spliced marginals for heavy tails
-        - MFA/t-MFA for joint distribution structure
-        - Local copulas for conditional inference
+        Train MFA model with factor-structured covariances.
+        
+        Pipeline:
+        - Empirical marginals (smoothed CDF + exponential tails)
+        - Factor-structured Gaussian mixture (Σ_k = Λ_k @ Λ_k^T + Ψ_k)
+        - Local copulas for conditional tail dependence
         
         Args:
             n_components: Number of mixture components (default: 5)
             n_factors: Number of latent factors per component (default: 10)
-            use_t_distribution: Use t-MFA instead of MFA for heavier tails (default: False)
-            tail_quantile: Quantile threshold for EVT tails (default: 0.95)
             covariance_type: 'diag' or 'full' covariance (default: 'diag')
             split: Data split to use ('training', 'validation', or 'training+validation')
             confirm: Skip confirmation prompt if True
@@ -2804,10 +2089,9 @@ Points: {metrics['n_points']}"""
             
         Example:
             >>> # Train MFA model
-            >>> result = model.train_mfa(
+            >>> result = model.train(
             ...     n_components=5,
             ...     n_factors=10,
-            ...     use_t_distribution=True
             ... )
             >>> print(f"BIC: {result['training_metrics']['bic']}")
         """
@@ -2819,7 +2103,7 @@ Points: {metrics['n_points']}"""
             print(f"\n🤖 Training MFA Model")
             print(f"   Components: {n_components}")
             print(f"   Factors: {n_factors}")
-            print(f"   Type: {'t-MFA' if use_t_distribution else 'MFA'}")
+            print(f"   Type: MFA (Factor-structured Gaussian mixture)")
             print(f"   Split: {split}")
             response = input("\nProceed with MFA training? (y/n): ")
             if response.lower() != 'y':
@@ -2836,12 +2120,8 @@ Points: {metrics['n_points']}"""
             print(f"🔧 Using optimal parameters from previous optimization:")
             n_components = optimal_config.get('n_components', n_components)
             n_factors = optimal_config.get('n_factors', n_factors)
-            lower_tail_quantile = optimal_config.get('lower_tail_quantile', lower_tail_quantile)
-            upper_tail_quantile = optimal_config.get('upper_tail_quantile', upper_tail_quantile)
             print(f"   • n_components: {n_components}")
             print(f"   • n_factors: {n_factors}")
-            if lower_tail_quantile: print(f"   • lower_tail_quantile: {lower_tail_quantile}")
-            if upper_tail_quantile: print(f"   • upper_tail_quantile: {upper_tail_quantile}")
         else:
             print(f"📝 Using provided/default parameters (no optimization found)")
         
@@ -2851,16 +2131,12 @@ Points: {metrics['n_points']}"""
             'model_id': self.id,
             'n_components': n_components,
             'n_factors': n_factors,
-            'use_t_distribution': use_t_distribution,
-            'tail_quantile': tail_quantile,
-            'lower_tail_quantile': lower_tail_quantile,
-            'upper_tail_quantile': upper_tail_quantile,
             'covariance_type': covariance_type,
             'split': split,
             'compute_validation_ll': compute_validation_ll
         }
         
-        result = self.http.post('/api/v1/ml/train-mfa', payload)
+        result = self.http.post('/api/v1/ml/train', payload)
         
         print(f"✅ MFA training completed!")
         print(f"   Samples used: {result['n_samples_used']}")
@@ -2886,7 +2162,7 @@ Points: {metrics['n_points']}"""
         
         return result
     
-    def validate_mfa(self,
+    def validate(self,
                      n_forecast_samples: int = 100,
                      run_on_training: bool = True,
                      run_on_validation: bool = True,
@@ -2908,7 +2184,7 @@ Points: {metrics['n_points']}"""
             Dict with validation metrics
             
         Example:
-            >>> validation = model.validate_mfa(n_forecast_samples=100)
+            >>> validation = model.validate(n_forecast_samples=100)
             >>> print(f"Validation log-likelihood: {validation['validation_metrics']['per_sample_log_likelihood']}")
         """
         print(f"\n🔍 Validating MFA model...")
@@ -2916,7 +2192,7 @@ Points: {metrics['n_points']}"""
         print(f"   Validation set: {run_on_validation}")
         print(f"   Forecast samples per validation sample: {n_forecast_samples}")
         
-        result = self.http.post('/api/v1/ml/validate-mfa', {
+        result = self.http.post('/api/v1/ml/validate', {
             'user_id': self._data.get("user_id"),
             'model_id': self.id,
             'n_forecast_samples': n_forecast_samples,
@@ -3145,12 +2421,13 @@ Points: {metrics['n_points']}"""
         
         return result
     
-    def forecast_mfa(self,
+    def forecast(self,
                      observed_components: Optional[List[Dict[str, Any]]] = None,
                      split: str = 'validation',
                      sample_index: int = 0,
                      sample_id: Optional[str] = None,
                      n_samples: int = 1000,
+                     use_local_copula: bool = True,
                      top_k_neighbors: int = 100,
                      copula_type: str = 't',
                      clayton_lower_threshold: float = 0.3,
@@ -3158,11 +2435,19 @@ Points: {metrics['n_points']}"""
                      gumbel_upper_threshold: float = 0.3,
                      gumbel_ratio_threshold: float = 0.67) -> Dict[str, Any]:
         """
-        Generate forecasts using MFA + local copula
+        Generate forecasts using MFA (with optional local copula)
         
         Two modes:
         1. Sample-based (default): Condition on a validation/test sample
         2. Inline: Provide observed_components manually
+        
+        Two conditional methods:
+        1. GMM conditionals (use_local_copula=False): Direct Gaussian conditional formulas
+           - Faster, simpler
+           - Gaussian tail dependence
+        2. Local copula (use_local_copula=True): Fit copula on K nearest neighbors
+           - Adaptive tail dependence (t-copula df parameter)
+           - Supports Clayton (lower tail), Gumbel (upper tail), t-copula
         
         Args:
             observed_components: List of observed components for inline conditioning (optional)
@@ -3170,22 +2455,22 @@ Points: {metrics['n_points']}"""
             sample_index: Index of sample in split (default: 0)
             sample_id: Specific sample ID to use (overrides split/sample_index)
             n_samples: Number of forecast samples to generate (default: 1000)
-            top_k_neighbors: Number of neighbors for local copula (default: 100)
-            copula_type: 't' for t-copula or 'skew-t' for skew-t copula
+            use_local_copula: Use local copula (True) or GMM conditionals (False) (default: True)
+            top_k_neighbors: Number of neighbors for local copula (default: 100, ignored if use_local_copula=False)
+            copula_type: 't', 'adaptive', 'gaussian', 'clayton', 'gumbel' (default: 't')
             
         Returns:
             Dict with forecasts and conditioning info
             
         Examples:
-            >>> # Sample-based conditioning (default)
-            >>> forecasts = model.forecast_mfa(split='validation', sample_index=0, n_samples=50)
+            >>> # Local copula (adaptive tail dependence)
+            >>> forecasts = model.forecast(split='validation', n_samples=50, use_local_copula=True)
+            >>> 
+            >>> # GMM conditionals (faster, Gaussian tails)
+            >>> forecasts = model.forecast(split='validation', n_samples=50, use_local_copula=False)
             >>> 
             >>> # Unconditional forecast
-            >>> forecasts = model.forecast_mfa(observed_components=[], n_samples=1000)
-            >>> 
-            >>> # Inline conditioning
-            >>> observed = [{"source": "conditioning", "feature": "VIX", ...}]
-            >>> forecasts = model.forecast_mfa(observed_components=observed)
+            >>> forecasts = model.forecast(observed_components=[], n_samples=1000)
         """
         print(f"\n🎲 Generating MFA forecasts...")
         
@@ -3200,6 +2485,9 @@ Points: {metrics['n_points']}"""
             print(f"   Split: {split}, Index: {sample_index}")
         
         print(f"   Samples: {n_samples}")
+        print(f"   Method: {'Local copula' if use_local_copula else 'GMM conditionals'}")
+        if use_local_copula:
+            print(f"   Copula type: {copula_type}, Top-K: {top_k_neighbors}")
         
         # Call forecasting endpoint
         payload = {
@@ -3207,6 +2495,7 @@ Points: {metrics['n_points']}"""
             'model_id': self.id,
             'conditioning_source': conditioning_source,
             'n_samples': n_samples,
+            'use_local_copula': use_local_copula,
             'top_k_neighbors': top_k_neighbors,
             'copula_type': copula_type,
             'clayton_lower_threshold': clayton_lower_threshold,
@@ -3223,7 +2512,7 @@ Points: {metrics['n_points']}"""
             if sample_id:
                 payload['sample_id'] = sample_id
         
-        result = self.http.post('/api/v1/ml/forecast-mfa', payload)
+        result = self.http.post('/api/v1/ml/forecast', payload)
         
         print(f"✅ Forecasting completed!")
         print(f"   Generated {result['n_samples']} samples")
@@ -3232,7 +2521,7 @@ Points: {metrics['n_points']}"""
         
         return result
     
-    def reconstruct_mfa_forecasts(self,
+    def reconstruct_forecasts(self,
                                    mfa_forecasts: Dict[str, Any],
                                    reference_sample_id: Optional[str] = None,
                                    split: str = 'validation') -> Dict[str, Any]:
@@ -3240,7 +2529,7 @@ Points: {metrics['n_points']}"""
         Reconstruct MFA forecasts to original feature space
         
         Args:
-            mfa_forecasts: Output from forecast_mfa()
+            mfa_forecasts: Output from forecast()
             reference_sample_id: Sample ID to use for reference values (for residuals)
                                 If None, uses first validation sample
             split: Data split to get reference sample from (default: 'validation')

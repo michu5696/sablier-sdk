@@ -175,58 +175,6 @@ class TimeSeriesPlotter:
         
         return ax
     
-    @staticmethod
-    def plot_feature_importance(
-        feature_names: List[str],
-        importance_values: List[float],
-        title: str = "Feature Importance (SHAP Values)",
-        top_n: int = None,
-        ax = None
-    ):
-        """
-        Plot feature importance as a horizontal bar chart.
-        
-        Args:
-            feature_names: List of feature names
-            importance_values: List of importance values (SHAP values)
-            title: Plot title
-            top_n: Show only top N features (None = show all)
-            ax: Optional matplotlib axis
-        """
-        _check_matplotlib()
-        
-        if ax is None:
-            fig, ax = plt.subplots(figsize=(10, max(6, len(feature_names) * 0.3)))
-        
-        # Sort by importance
-        sorted_indices = np.argsort(importance_values)[::-1]
-        
-        # Limit to top_n if specified
-        if top_n is not None and top_n < len(sorted_indices):
-            sorted_indices = sorted_indices[:top_n]
-        
-        sorted_names = [feature_names[i] for i in sorted_indices]
-        sorted_values = [importance_values[i] for i in sorted_indices]
-        
-        # Create horizontal bar chart
-        colors = plt.cm.RdYlGn_r(np.linspace(0.3, 0.8, len(sorted_values)))
-        bars = ax.barh(range(len(sorted_values)), sorted_values, color=colors, alpha=0.8)
-        
-        # Formatting
-        ax.set_yticks(range(len(sorted_values)))
-        ax.set_yticklabels(sorted_names, fontsize=10)
-        ax.set_xlabel('Mean Absolute SHAP Value', fontsize=11)
-        ax.set_title(title, fontsize=13, fontweight='bold')
-        ax.grid(True, alpha=0.3, axis='x')
-        
-        # Add value labels on bars
-        for i, (bar, value) in enumerate(zip(bars, sorted_values)):
-            ax.text(value, i, f' {value:.4f}', va='center', fontsize=9)
-        
-        # Invert y-axis to show highest at top
-        ax.invert_yaxis()
-        
-        return ax
 
 
 def create_date_array(start_date: str, length: int, freq: str = 'D') -> np.ndarray:
