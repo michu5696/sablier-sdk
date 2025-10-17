@@ -749,7 +749,7 @@ class Scenario:
                 f"Call fetch_recent_past() and configure_future_conditioning() first."
             )
         
-        print(f"[Scenario] Generating {n_samples} synthetic paths using MFA...")
+        print(f"[Scenario] Generating {n_samples} synthetic paths...")
         
         # Show conditioning mode
         if conditioning_features:

@@ -2061,35 +2061,60 @@ Points: {metrics['n_points']}"""
         return response
     
     def train(self,
+                  model_type: str = 'vine_copula',
                   n_components: int = 5,
                   n_factors: int = 10,
                   covariance_type: str = 'diag',
+                  top_pair_percent: float = 0.3,
+                  copula_family: str = 'mixed',
+                  trunc_lvl: int = 3,
+                  num_threads: int = 4,
                   split: str = 'training',
                   compute_validation_ll: bool = False,
                   confirm: Optional[bool] = None) -> Dict[str, Any]:
         """
-        Train MFA (Mixture of Factor Analyzers) model
+        Train model (Vine Copula or MFA)
         
-        Train MFA model with factor-structured covariances.
+        Two model types available:
+        1. Vine Copula (default): EM mixture of vine copulas with cross-window pair selection
+        2. MFA: Mixture of Factor Analyzers with Gaussian mixtures
         
         Pipeline:
         - Empirical marginals (smoothed CDF + exponential tails)
-        - Factor-structured Gaussian mixture (Σ_k = Λ_k @ Λ_k^T + Ψ_k)
-        - Local copulas for conditional tail dependence
+        - [Vine Copula] EM algorithm with regime-specific vine copulas
+        - [MFA] Factor-structured Gaussian mixture (Σ_k = Λ_k @ Λ_k^T + Ψ_k)
+        - [MFA] Local copulas for conditional tail dependence
         
         Args:
-            n_components: Number of mixture components (default: 5)
-            n_factors: Number of latent factors per component (default: 10)
-            covariance_type: 'diag' or 'full' covariance (default: 'diag')
+            model_type: 'vine_copula' or 'mfa' (default: 'vine_copula')
+            n_components: Number of mixture components/regimes (default: 5)
+            n_factors: [MFA only] Number of latent factors per component (default: 10)
+            covariance_type: [MFA only] 'diag' or 'full' covariance (default: 'diag')
+            top_pair_percent: [Vine Copula] Fraction of cross-window pairs to model (default: 0.3)
+            copula_family: [Vine Copula] 'gaussian', 't', 'clayton', 'gumbel', 'mixed' (default: 'mixed')
+            trunc_lvl: [Vine Copula] Truncation level - fit first L trees fully (default: 3)
+            num_threads: [Vine Copula] Number of threads for parallel fitting (default: 4)
             split: Data split to use ('training', 'validation', or 'training+validation')
+            compute_validation_ll: Also compute validation log-likelihood (default: False)
             confirm: Skip confirmation prompt if True
             
         Returns:
-            Dict with training results including BIC, AIC, and model path
+            Dict with training results including metrics and model path
             
         Example:
+            >>> # Train Vine Copula model (default)
+            >>> result = model.train(
+            ...     model_type='vine_copula',
+            ...     n_components=2,
+            ...     top_pair_percent=0.3,
+            ...     copula_family='mixed',  # Auto-select best copula per pair
+            ...     trunc_lvl=3,  # Fit first 3 trees (10x speedup)
+            ...     num_threads=4  # Use 4 cores
+            ... )
+            
             >>> # Train MFA model
             >>> result = model.train(
+            ...     model_type='mfa',
             ...     n_components=5,
             ...     n_factors=10,
             ... )
@@ -2129,20 +2154,35 @@ Points: {metrics['n_points']}"""
         payload = {
             'user_id': self._data.get("user_id"),  # For API key auth
             'model_id': self.id,
+            'model_type': model_type,
             'n_components': n_components,
             'n_factors': n_factors,
             'covariance_type': covariance_type,
+            'top_pair_percent': top_pair_percent,
+            'copula_family': copula_family,
+            'trunc_lvl': trunc_lvl,
+            'num_threads': num_threads,
             'split': split,
             'compute_validation_ll': compute_validation_ll
         }
         
         result = self.http.post('/api/v1/ml/train', payload)
         
-        print(f"✅ MFA training completed!")
+        train_metrics = result['training_metrics']
+        model_type_str = train_metrics.get('model_type', model_type).upper()
+        
+        print(f"✅ {model_type_str} training completed!")
         print(f"   Samples used: {result['n_samples_used']}")
         print(f"   Dimensions: {result['n_dimensions']}")
-        print(f"   BIC: {result['training_metrics']['bic']:.2f}")
-        print(f"   AIC: {result['training_metrics']['aic']:.2f}")
+        
+        if model_type == 'vine_copula':
+            print(f"   Cross-window pairs: {train_metrics.get('n_cross_window_pairs', 'N/A')}")
+            print(f"   Pairs per regime: {train_metrics.get('regime_n_pairs', 'N/A')}")
+            print(f"   Regime weights: {train_metrics.get('regime_weights', 'N/A')}")
+        else:
+            print(f"   BIC: {train_metrics.get('bic', 0):.2f}")
+            print(f"   AIC: {train_metrics.get('aic', 0):.2f}")
+        
         print(f"   Model saved to: {result['mfa_path']}")
         
         if result.get('validation_metrics'):
