@@ -33,15 +33,7 @@ class AuthHandler:
             'Content-Type': 'application/json'
         }
         
-        # Add Supabase URL if available
-        if self._supabase_url:
-            headers['x-supabase-url'] = self._supabase_url
-        
         return headers
-    
-    def set_supabase_url(self, supabase_url: str):
-        """Set Supabase URL for backend communication"""
-        self._supabase_url = supabase_url
     
     def validate(self) -> bool:
         """

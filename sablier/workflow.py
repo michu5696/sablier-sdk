@@ -24,7 +24,7 @@ class WorkflowConflict:
             "training_data": "Training data rows",
             "samples": "Generated samples",
             "encoding_models": "Encoding models (PCA-ICA)",
-            "trained_model": "Trained MFA model (in storage)",
+            "trained_model": "Trained model (in storage)",
             "feature_importance": "Feature importance data"
         }
         
@@ -45,33 +45,33 @@ class WorkflowValidator:
     2. data_collected -> training_data fetched
     3. samples_generated -> samples created
     4. samples_encoded -> encoding done
-    5. mfa_trained -> MFA model trained
+    5. model_trained -> Vine Copula model trained
     """
     
     # Define workflow rules
     WORKFLOW_RULES = {
         "add_features": {
-            "conflicts_with": ["data_collected", "samples_generated", "samples_encoded", "mfa_trained"],
+            "conflicts_with": ["data_collected", "samples_generated", "samples_encoded", "model_trained"],
             "deletes": ["training_data", "samples", "encoding_models", "trained_model", "feature_importance"],
             "message": "Adding/removing features requires re-fetching data and regenerating all dependent artifacts."
         },
         "set_training_period": {
-            "conflicts_with": ["data_collected", "samples_generated", "samples_encoded", "mfa_trained"],
+            "conflicts_with": ["data_collected", "samples_generated", "samples_encoded", "model_trained"],
             "deletes": ["training_data", "samples", "encoding_models", "trained_model", "feature_importance"],
             "message": "Changing the training period requires re-fetching data."
         },
         "fetch_data": {
-            "conflicts_with": ["samples_generated", "samples_encoded", "mfa_trained"],
+            "conflicts_with": ["samples_generated", "samples_encoded", "model_trained"],
             "deletes": ["samples", "encoding_models", "trained_model", "feature_importance"],
             "message": "Re-fetching data will invalidate existing samples and models."
         },
         "generate_samples": {
-            "conflicts_with": ["samples_encoded", "mfa_trained"],
+            "conflicts_with": ["samples_encoded", "model_trained"],
             "deletes": ["encoding_models", "trained_model", "feature_importance"],
             "message": "Regenerating samples will invalidate encoding and training."
         },
         "encode_samples": {
-            "conflicts_with": ["mfa_trained"],
+            "conflicts_with": ["model_trained"],
             "deletes": ["trained_model", "feature_importance"],
             "message": "Re-encoding samples will invalidate the trained model."
         }
@@ -114,6 +114,6 @@ class WorkflowValidator:
             "fetch_data": "data_collected",
             "generate_samples": "samples_generated",
             "encode_samples": "samples_encoded",
-            "train": "mfa_trained"
+            "train": "model_trained"
         }
         return status_map.get(operation)

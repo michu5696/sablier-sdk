@@ -28,7 +28,6 @@ class SablierClient:
         self,
         api_url: str,
         api_key: str,
-        supabase_url: str = "https://ttlahhqhtmqwyeqvbmbp.supabase.co",
         fred_api_key: Optional[str] = None,
         interactive: bool = True
     ):
@@ -36,18 +35,19 @@ class SablierClient:
         Initialize Sablier client
         
         Args:
-            api_url: Base URL of the Sablier backend API
-            api_key: API key for authentication (starts with sk_)
-            supabase_url: Supabase URL (default: optimized schema branch)
+            api_url: Base URL of the Sablier backend API (e.g., https://api.sablier.ai or http://localhost:8000)
+            api_key: API key for authentication (format: sk_live_...)
             fred_api_key: Optional FRED API key for data searching and fetching
             interactive: Enable interactive prompts for confirmations (default: True)
         """
         if not api_key:
             raise AuthenticationError("API key is required")
         
+        if not api_key.startswith("sk_"):
+            raise AuthenticationError("Invalid API key format. API keys should start with 'sk_'")
+        
         # Initialize authentication
         self.auth = AuthHandler(api_url, api_key)
-        self.auth.set_supabase_url(supabase_url)
         
         # Initialize HTTP client
         self.http = HTTPClient(api_url, self.auth)

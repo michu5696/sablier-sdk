@@ -698,37 +698,20 @@ class Scenario:
     
     def generate_paths(self, 
                           n_samples: int = None, 
-                          conditioning_features: List[str] = None,
-                          use_local_copula: bool = True,
-                          top_k_neighbors: int = None, 
-                          copula_type: str = None,
-                          clayton_lower_threshold: float = None,
-                          clayton_ratio_threshold: float = None,
-                          gumbel_upper_threshold: float = None,
-                          gumbel_ratio_threshold: float = None) -> 'SyntheticData':
+                          conditioning_features: List[str] = None) -> 'SyntheticData':
         """
-        Generate synthetic market paths using MFA model
+        Generate synthetic market paths using Vine Copula model
         
         Args:
             n_samples: Number of paths to generate (default: scenario's n_scenarios)
             conditioning_features: Optional list of features to condition on (others marginalized)
-            use_local_copula: Use local copula (True) or GMM conditionals (False) (default: True)
-            top_k_neighbors: Number of neighbors for local copula fitting (uses backend default if None)
-            copula_type: Copula selection strategy (uses backend default if None)
-            clayton_lower_threshold: Minimum lower tail dependence for Clayton selection (uses backend default if None)
-            clayton_ratio_threshold: Minimum asymmetry ratio for Clayton selection (uses backend default if None)
-            gumbel_upper_threshold: Minimum upper tail dependence for Gumbel selection (uses backend default if None)
-            gumbel_ratio_threshold: Maximum asymmetry ratio for Gumbel selection (uses backend default if None)
         
         Returns:
             SyntheticData instance containing generated paths
         
         Example:
-            >>> # Full conditioning with local copula (tail dependence)
-            >>> synthetic_data = scenario.generate_paths(n_samples=1000, use_local_copula=True)
-            
-            >>> # GMM conditionals (faster, Gaussian tails)
-            >>> synthetic_data = scenario.generate_paths(n_samples=1000, use_local_copula=False)
+            >>> # Full conditioning
+            >>> synthetic_data = scenario.generate_paths(n_samples=1000)
             
             >>> # Partial conditioning (marginalized inference)
             >>> synthetic_data = scenario.generate_paths(
@@ -759,8 +742,8 @@ class Scenario:
         else:
             print(f"📊 Full conditioning: all configured features")
         
-        # Call MFA forecast endpoint with scenario mode
-        print("📊 Step 1/2: Generating MFA forecast samples...")
+        # Call forecast endpoint with scenario mode
+        print("📊 Step 1/2: Generating forecast samples...")
         
         if not self.model:
             raise ValueError("Model not loaded. Cannot generate paths.")
@@ -770,33 +753,18 @@ class Scenario:
             'model_id': self.model_id,
             'conditioning_source': 'scenario',
             'scenario_id': self.id,
-            'n_samples': n_samples,
-            'use_local_copula': use_local_copula
+            'n_samples': n_samples
         }
-        
-        # Add optional parameters only if provided
-        if top_k_neighbors is not None:
-            payload['top_k_neighbors'] = top_k_neighbors
-        if copula_type is not None:
-            payload['copula_type'] = copula_type
-        if clayton_lower_threshold is not None:
-            payload['clayton_lower_threshold'] = clayton_lower_threshold
-        if clayton_ratio_threshold is not None:
-            payload['clayton_ratio_threshold'] = clayton_ratio_threshold
-        if gumbel_upper_threshold is not None:
-            payload['gumbel_upper_threshold'] = gumbel_upper_threshold
-        if gumbel_ratio_threshold is not None:
-            payload['gumbel_ratio_threshold'] = gumbel_ratio_threshold
         
         # Add conditioning_features for partial conditioning
         if conditioning_features:
             payload['conditioning_features'] = conditioning_features
         
-        # Call MFA-specific endpoint
+        # Call forecast endpoint
         forecast_response = self.http.post('/api/v1/ml/forecast', payload)
         
         forecast_samples = forecast_response.get('forecasts', [])
-        print(f"  Generated {len(forecast_samples)} MFA samples")
+        print(f"  Generated {len(forecast_samples)} samples")
         
         # Reconstruct forecast samples
         print("🔄 Step 2/2: Reconstructing to original scale...")
