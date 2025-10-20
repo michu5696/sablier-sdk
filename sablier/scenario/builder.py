@@ -794,14 +794,14 @@ class Scenario:
     
     def _reconstruct_scenario_forecast(self, forecast_samples: List[Dict]) -> List[Dict]:
         """
-        Reconstruct MFA forecast samples using scenario's fetched past as reference
+        Reconstruct forecast samples using scenario's fetched past as reference
         
         IMPORTANT: For scenarios, we use the REAL fetched past data as reference,
         not the historical sample. This simulates "what if the historical scenario
         happened starting from today".
         
         Args:
-            forecast_samples: MFA forecast outputs (raw format with component keys)
+            forecast_samples: Forecast outputs (raw format with component keys)
         
         Returns:
             List of reconstructed paths with dates and values
@@ -839,8 +839,8 @@ class Scenario:
             normalized_value = (value - mean) / std
             reference_values[feature] = normalized_value
         
-        # Parse MFA forecast samples and group by sample_idx
-        # MFA returns keys like "target_group_1_future_normalized_residuals_0"
+        # Parse forecast samples and group by sample_idx
+        # Returns keys like "target_feature_name_future_normalized_residuals_0"
         samples_by_idx = {}
         
         for sample_idx, forecast_sample in enumerate(forecast_samples):

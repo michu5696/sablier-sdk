@@ -1971,7 +1971,7 @@ Points: {metrics['n_points']}"""
         }
     
     # ============================================
-    # MFA METHODS
+    # Vine Copula METHODS
     # ============================================
     
     def optimize(self,
@@ -1985,10 +1985,10 @@ Points: {metrics['n_points']}"""
                                     split: str = 'training',
                                     confirm: Optional[bool] = None) -> Dict[str, Any]:
         """
-        Optimize MFA hyperparameters using Optuna
+        Optimize Vine Copula hyperparameters using Optuna
         
         This method runs Bayesian optimization to find the best hyperparameters
-        for the MFA model and automatically saves them for use in training.
+        for the Vine Copula model and automatically saves them for use in training.
         
         Args:
             n_trials: Number of optimization trials
@@ -2008,7 +2008,7 @@ Points: {metrics['n_points']}"""
             confirm = True
         
         if confirm:
-            print(f"\n🔧 MFA Hyperparameter Optimization")
+            print(f"\n🔧 Vine Copula Hyperparameter Optimization")
             print(f"   Trials: {n_trials}")
             print(f"   Objectives: {objectives}")
             print(f"   Data split: {split}")
@@ -2020,7 +2020,7 @@ Points: {metrics['n_points']}"""
                 print("❌ Optimization cancelled")
                 return {"status": "cancelled"}
         
-        print(f"\n🚀 Starting MFA hyperparameter optimization...")
+        print(f"\n🚀 Starting Vine Copula hyperparameter optimization...")
         
         # Prepare optimization payload
         payload = {
@@ -2073,23 +2073,23 @@ Points: {metrics['n_points']}"""
                   compute_validation_ll: bool = False,
                   confirm: Optional[bool] = None) -> Dict[str, Any]:
         """
-        Train model (Vine Copula or MFA)
+        Train model (Vine Copula or Vine Copula)
         
         Two model types available:
         1. Vine Copula (default): EM mixture of vine copulas with cross-window pair selection
-        2. MFA: Mixture of Factor Analyzers with Gaussian mixtures
+        2. Vine Copula: Mixture of Factor Analyzers with Gaussian mixtures
         
         Pipeline:
         - Empirical marginals (smoothed CDF + exponential tails)
         - [Vine Copula] EM algorithm with regime-specific vine copulas
-        - [MFA] Factor-structured Gaussian mixture (Σ_k = Λ_k @ Λ_k^T + Ψ_k)
-        - [MFA] Local copulas for conditional tail dependence
+        - [Vine Copula] Factor-structured Gaussian mixture (Σ_k = Λ_k @ Λ_k^T + Ψ_k)
+        - [Vine Copula] Local copulas for conditional tail dependence
         
         Args:
-            model_type: 'vine_copula' or 'mfa' (default: 'vine_copula')
+            model_type: Model type (default: 'vine_copula')
             n_components: Number of mixture components/regimes (default: 5)
-            n_factors: [MFA only] Number of latent factors per component (default: 10)
-            covariance_type: [MFA only] 'diag' or 'full' covariance (default: 'diag')
+            n_factors: [Vine Copula only] Number of latent factors per component (default: 10)
+            covariance_type: [Vine Copula only] 'diag' or 'full' covariance (default: 'diag')
             top_pair_percent: [Vine Copula] Fraction of cross-window pairs to model (default: 0.3)
             copula_family: [Vine Copula] 'gaussian', 't', 'clayton', 'gumbel', 'mixed' (default: 'mixed')
             trunc_lvl: [Vine Copula] Truncation level - fit first L trees fully (default: 3)
@@ -2112,9 +2112,9 @@ Points: {metrics['n_points']}"""
             ...     num_threads=4  # Use 4 cores
             ... )
             
-            >>> # Train MFA model
+            >>> # Train Vine Copula model
             >>> result = model.train(
-            ...     model_type='mfa',
+            ...     model_type='vine_copula',
             ...     n_components=5,
             ...     n_factors=10,
             ... )
@@ -2125,21 +2125,17 @@ Points: {metrics['n_points']}"""
             confirm = not self.interactive
         
         if not confirm and self.interactive:
-            print(f"\n🤖 Training MFA Model")
-            print(f"   Components: {n_components}")
-            print(f"   Factors: {n_factors}")
-            print(f"   Type: MFA (Factor-structured Gaussian mixture)")
+            print(f"\n🤖 Training Vine Copula Model")
+            print(f"   Regimes: {n_components}")
+            print(f"   Copula family: {copula_family}")
+            print(f"   Truncation level: {trunc_lvl}")
             print(f"   Split: {split}")
-            response = input("\nProceed with MFA training? (y/n): ")
-            if response.lower() != 'y':
-                print("❌ Training cancelled")
-                return {'status': 'cancelled'}
         
-        print(f"\n🚀 Training MFA model...")
+        print(f"\n🚀 Training Vine Copula model...")
         
         # Check for saved optimal parameters from hyperparameter optimization
         model_metadata = self._data.get('model_metadata') or {}
-        optimal_config = model_metadata.get('mfa_optimal_config', {}) if model_metadata else {}
+        optimal_config = model_metadata.get('vine_copula_optimal_config', {}) if model_metadata else {}
         
         if optimal_config:
             print(f"🔧 Using optimal parameters from previous optimization:")
@@ -2176,14 +2172,14 @@ Points: {metrics['n_points']}"""
         print(f"   Dimensions: {result['n_dimensions']}")
         
         if model_type == 'vine_copula':
-            print(f"   Cross-window pairs: {train_metrics.get('n_cross_window_pairs', 'N/A')}")
-            print(f"   Pairs per regime: {train_metrics.get('regime_n_pairs', 'N/A')}")
             print(f"   Regime weights: {train_metrics.get('regime_weights', 'N/A')}")
         else:
             print(f"   BIC: {train_metrics.get('bic', 0):.2f}")
             print(f"   AIC: {train_metrics.get('aic', 0):.2f}")
         
-        print(f"   Model saved to: {result['mfa_path']}")
+        model_path = result.get('vine_copula_path')
+        if model_path and model_path != 'N/A':
+            print(f"   Model saved to: {model_path}")
         
         if result.get('validation_metrics'):
             val_metrics = result['validation_metrics']
@@ -2209,7 +2205,7 @@ Points: {metrics['n_points']}"""
                      copula_type: str = 'adaptive',
                      top_k_neighbors: int = 100) -> Dict[str, Any]:
         """
-        Validate MFA model on held-out data
+        Validate Vine Copula model on held-out data
         
         Computes:
         - Validation log-likelihood (out-of-sample fit)
@@ -2227,7 +2223,7 @@ Points: {metrics['n_points']}"""
             >>> validation = model.validate(n_forecast_samples=100)
             >>> print(f"Validation log-likelihood: {validation['validation_metrics']['per_sample_log_likelihood']}")
         """
-        print(f"\n🔍 Validating MFA model...")
+        print(f"\n🔍 Validating Vine Copula model...")
         print(f"   Training set: {run_on_training}")
         print(f"   Validation set: {run_on_validation}")
         print(f"   Forecast samples per validation sample: {n_forecast_samples}")
@@ -2244,7 +2240,7 @@ Points: {metrics['n_points']}"""
         
         # Display results
         print(f"\n" + "="*70)
-        print(f"✅ MFA Model Validation Complete")
+        print(f"✅ Vine Copula Model Validation Complete")
         print(f"="*70)
         
         # Summary table for unconditional metrics
@@ -2467,6 +2463,7 @@ Points: {metrics['n_points']}"""
                      sample_index: int = 0,
                      sample_id: Optional[str] = None,
                      n_samples: int = 1000,
+                     return_format: str = 'reconstructed',  # NEW: Default to reconstructed
                      use_local_copula: bool = True,
                      top_k_neighbors: int = 100,
                      copula_type: str = 't',
@@ -2475,14 +2472,14 @@ Points: {metrics['n_points']}"""
                      gumbel_upper_threshold: float = 0.3,
                      gumbel_ratio_threshold: float = 0.67) -> Dict[str, Any]:
         """
-        Generate forecasts using MFA (with optional local copula)
+        Generate forecasts using Vine Copula (with optional local copula)
         
         Two modes:
         1. Sample-based (default): Condition on a validation/test sample
         2. Inline: Provide observed_components manually
         
         Two conditional methods:
-        1. GMM conditionals (use_local_copula=False): Direct Gaussian conditional formulas
+        1. Vine Copula conditionals (use_local_copula=False): Direct Gaussian conditional formulas
            - Faster, simpler
            - Gaussian tail dependence
         2. Local copula (use_local_copula=True): Fit copula on K nearest neighbors
@@ -2495,7 +2492,7 @@ Points: {metrics['n_points']}"""
             sample_index: Index of sample in split (default: 0)
             sample_id: Specific sample ID to use (overrides split/sample_index)
             n_samples: Number of forecast samples to generate (default: 1000)
-            use_local_copula: Use local copula (True) or GMM conditionals (False) (default: True)
+            use_local_copula: Use local copula (True) or Vine Copula conditionals (False) (default: True)
             top_k_neighbors: Number of neighbors for local copula (default: 100, ignored if use_local_copula=False)
             copula_type: 't', 'adaptive', 'gaussian', 'clayton', 'gumbel' (default: 't')
             
@@ -2506,13 +2503,13 @@ Points: {metrics['n_points']}"""
             >>> # Local copula (adaptive tail dependence)
             >>> forecasts = model.forecast(split='validation', n_samples=50, use_local_copula=True)
             >>> 
-            >>> # GMM conditionals (faster, Gaussian tails)
+            >>> # Vine Copula conditionals (faster, Gaussian tails)
             >>> forecasts = model.forecast(split='validation', n_samples=50, use_local_copula=False)
             >>> 
             >>> # Unconditional forecast
             >>> forecasts = model.forecast(observed_components=[], n_samples=1000)
         """
-        print(f"\n🎲 Generating MFA forecasts...")
+        print(f"\n🎲 Generating Vine Copula forecasts...")
         
         # Determine conditioning source
         if observed_components is not None:
@@ -2525,9 +2522,7 @@ Points: {metrics['n_points']}"""
             print(f"   Split: {split}, Index: {sample_index}")
         
         print(f"   Samples: {n_samples}")
-        print(f"   Method: {'Local copula' if use_local_copula else 'GMM conditionals'}")
-        if use_local_copula:
-            print(f"   Copula type: {copula_type}, Top-K: {top_k_neighbors}")
+        # Method info removed - always uses Vine Copula conditionals with hoeffd criterion
         
         # Call forecasting endpoint
         payload = {
@@ -2562,14 +2557,16 @@ Points: {metrics['n_points']}"""
         return result
     
     def reconstruct_forecasts(self,
-                                   mfa_forecasts: Dict[str, Any],
+                                   forecasts: Dict[str, Any] = None,
+                                   mfa_forecasts: Dict[str, Any] = None,  # Deprecated, for backward compatibility
                                    reference_sample_id: Optional[str] = None,
                                    split: str = 'validation') -> Dict[str, Any]:
         """
-        Reconstruct MFA forecasts to original feature space
+        Reconstruct forecasts to original feature space
         
         Args:
-            mfa_forecasts: Output from forecast()
+            forecasts: Output from forecast() (preferred parameter name)
+            mfa_forecasts: [DEPRECATED] Use 'forecasts' instead
             reference_sample_id: Sample ID to use for reference values (for residuals)
                                 If None, uses first validation sample
             split: Data split to get reference sample from (default: 'validation')
@@ -2579,10 +2576,17 @@ Points: {metrics['n_points']}"""
         """
         import numpy as np
         
-        print(f"\n🔄 Reconstructing {len(mfa_forecasts['forecasts'])} MFA forecast samples...")
+        # Handle backward compatibility
+        if forecasts is None and mfa_forecasts is not None:
+            forecasts = mfa_forecasts
+        elif forecasts is None:
+            raise ValueError("forecasts parameter is required")
         
-        # Get reference sample if needed
-        if reference_sample_id is None:
+        print(f"\n🔄 Reconstructing {len(forecasts['forecasts'])} forecast samples...")
+        
+        # Get reference sample if needed (only if reference_values not available)
+        # With Cloud SQL, reference values come directly from forecast response
+        if reference_sample_id is None and not (forecasts.get('ground_truth') and forecasts['ground_truth'].get('reference_values')):
             print(f"  Fetching reference sample from {split} split...")
             sample_response = self.http.get(
                 f'/api/v1/models/{self.id}/samples',
@@ -2593,23 +2597,44 @@ Points: {metrics['n_points']}"""
                 raise ValueError(f"No {split} samples found")
             reference_sample_id = samples[0]['id']
             print(f"  Using reference sample: {reference_sample_id}")
+        elif forecasts.get('ground_truth') and forecasts['ground_truth'].get('sample_id'):
+            # Use sample_id from ground_truth
+            reference_sample_id = forecasts['ground_truth']['sample_id']
+            print(f"  Using reference sample from forecast ground_truth: {reference_sample_id}")
         
         # Extract group metadata from forecasts (if available)
         feature_metadata = {}
-        if mfa_forecasts['forecasts']:
-            first_sample = mfa_forecasts['forecasts'][0]
+        if forecasts['forecasts']:
+            first_sample = forecasts['forecasts'][0]
             if '_group_metadata' in first_sample:
                 feature_metadata = first_sample['_group_metadata']
                 print(f"  Found group metadata for {len(feature_metadata)} features")
         
+        # Get feature_groups for mapping group_ids to individual features
+        feature_groups = forecasts.get('conditioning_info', {}).get('feature_groups', {})
+        group_id_to_features = {}
+        
+        if feature_groups:
+            for group in feature_groups.get('target_groups', []):
+                group_id_to_features[group['id']] = {
+                    'features': group['features'],
+                    'is_multivariate': group['is_multivariate']
+                }
+            for group in feature_groups.get('conditioning_groups', []):
+                group_id_to_features[group['id']] = {
+                    'features': group['features'],
+                    'is_multivariate': group['is_multivariate']
+                }
+            print(f"  Loaded {len(group_id_to_features)} feature groups for reconstruction")
+        
         # BATCH RECONSTRUCTION: Collect all encoded windows from all forecast samples
-        print(f"  Collecting encoded windows from all {len(mfa_forecasts['forecasts'])} forecast samples...")
+        print(f"  Collecting encoded windows from all {len(forecasts['forecasts'])} forecast samples...")
         all_encoded_windows = []
         sample_window_mapping = {}  # Track which windows belong to which sample
         
-        for i, forecast_sample in enumerate(mfa_forecasts['forecasts']):
+        for i, forecast_sample in enumerate(forecasts['forecasts']):
             if (i + 1) % 10 == 0:
-                print(f"  Processing sample {i+1}/{len(mfa_forecasts['forecasts'])}...")
+                print(f"  Processing sample {i+1}/{len(forecasts['forecasts'])}...")
             
             # Group components by (source, feature, temporal_tag, data_type)
             windows = {}
@@ -2701,6 +2726,13 @@ Points: {metrics['n_points']}"""
                     encoded_window['is_multivariate'] = metadata['is_multivariate']
                     encoded_window['group_features'] = metadata['group_features']
                     encoded_window['is_group'] = metadata['is_group']
+                elif feature in group_id_to_features:
+                    # Use feature_groups mapping from forecast response
+                    group_info = group_id_to_features[feature]
+                    encoded_window['group_features'] = group_info['features']
+                    encoded_window['is_multivariate'] = group_info['is_multivariate']
+                    encoded_window['is_group'] = True
+                    encoded_window['n_components'] = len(sorted_components)
                 
                 sample_windows.append(encoded_window)
             
@@ -2712,15 +2744,23 @@ Points: {metrics['n_points']}"""
         
         # SINGLE BATCH API CALL: Reconstruct all windows at once
         print(f"  Making single batch reconstruction call...")
+        
+        # Check if reference_values are available in ground_truth
+        reference_values = None
+        if forecasts.get('ground_truth') and forecasts['ground_truth'].get('reference_values'):
+            reference_values = forecasts['ground_truth']['reference_values']
+            print(f"  Using {len(reference_values)} reference values from forecast ground_truth")
+        
         payload = {
             "user_id": self._data.get("user_id"),
             "model_id": self.id,
             "encoded_source": "inline",
             "encoded_windows": all_encoded_windows,
-            "reference_source": "database",
-            "reference_table": "samples",
-            "reference_column": "conditioning_data",
-            "reference_sample_id": reference_sample_id,
+            "reference_source": "inline" if reference_values else "database",
+            "reference_values": reference_values if reference_values else None,
+            "reference_table": "samples_normalized" if not reference_values else None,  # Cloud SQL table name
+            "reference_column": "normalized_past" if not reference_values else None,  # Not actually used, but required
+            "reference_sample_id": reference_sample_id if not reference_values else None,
             "output_destination": "return"
         }
         
@@ -2734,7 +2774,7 @@ Points: {metrics['n_points']}"""
         all_reconstructions = []
         current_idx = 0
         
-        for sample_idx in range(len(mfa_forecasts['forecasts'])):
+        for sample_idx in range(len(forecasts['forecasts'])):
             n_windows = sample_window_mapping[sample_idx]
             sample_reconstructions = all_reconstructions_raw[current_idx:current_idx + n_windows]
             current_idx += n_windows
@@ -2746,81 +2786,92 @@ Points: {metrics['n_points']}"""
         
         print(f"✅ Reconstructed all {len(all_reconstructions)} forecast samples")
         
-        # Extract ground truth from MFA forecast response (if available)
+        # Extract ground truth from forecast response (if available)
         print(f"\n🔍 Extracting ground truth from forecast response...")
         ground_truth = None
         
         # Check if ground truth was included in forecast response
-        if mfa_forecasts.get('ground_truth'):
-            ref_sample = mfa_forecasts['ground_truth']
+        if forecasts.get('ground_truth'):
+            ref_sample = forecasts['ground_truth']
             print(f"✅ Found ground truth in forecast response")
         else:
             print(f"⚠️  No ground truth in forecast response (unconditional forecast)")
             ref_sample = None
         
-        if ref_sample and ref_sample.get('conditioning_data'):
-            # Get normalization params for denormalization
+        # Extract ground truth from normalized_sample in array format
+        if ref_sample and ref_sample.get('normalized_sample'):
+            normalized_sample = ref_sample['normalized_sample']
             norm_params = self._data.get('feature_normalization_params', {})
             
             ref_windows = []
             
-            # Process past windows (conditioning_data with normalized_series)
-            for item in ref_sample.get('conditioning_data', []):
-                if item.get('temporal_tag') == 'past' and 'normalized_series' in item:
-                    feature = item.get('feature')
-                    normalized_series = item['normalized_series']
-                    
-                    # Denormalize
-                    if feature in norm_params:
-                        mean = norm_params[feature].get('mean', 0.0)
-                        std = norm_params[feature].get('std', 1.0)
-                        denormalized = [val * std + mean for val in normalized_series]
-                    else:
-                        denormalized = normalized_series  # No norm params, use as-is
-                    
-                    ref_windows.append({
-                        'feature': feature,
-                        'temporal_tag': 'past',
-                        'values': denormalized,
-                        'dates': item.get('dates', [])
-                    })
+            # Get metadata for feature orders
+            metadata = normalized_sample.get('metadata', {})
+            feature_order_past = metadata.get('feature_order_past', [])
+            feature_order_target = metadata.get('feature_order_target', [])
             
-            # Process future target windows (target_data with normalized_residuals)
-            # Need to add reference value from past window
-            past_refs = {}
-            for item in ref_sample.get('conditioning_data', []):
-                if item.get('temporal_tag') == 'past' and 'normalized_series' in item:
-                    feature = item.get('feature')
-                    normalized_series = item['normalized_series']
-                    if normalized_series:
-                        past_refs[feature] = normalized_series[-1]  # Last value as reference
+            # Process past windows (all features)
+            normalized_past = normalized_sample.get('normalized_past')
+            if normalized_past is not None and feature_order_past:
+                import numpy as np
+                past_arr = np.array(normalized_past)
+                
+                for i, feature in enumerate(feature_order_past):
+                    if i < len(past_arr):
+                        normalized_series = past_arr[i].tolist()
+                        
+                        # Denormalize
+                        if feature in norm_params:
+                            mean = norm_params[feature].get('mean', 0.0)
+                            std = norm_params[feature].get('std', 1.0)
+                            denormalized = [val * std + mean for val in normalized_series]
+                        else:
+                            denormalized = normalized_series
+                        
+                        ref_windows.append({
+                            'feature': feature,
+                            'temporal_tag': 'past',
+                            'values': denormalized
+                        })
             
-            for item in ref_sample.get('target_data', []):
-                if 'normalized_residuals' in item:
-                    feature = item.get('feature')
-                    normalized_residuals = item['normalized_residuals']
-                    
-                    # Convert residuals to series by adding reference
-                    if feature in past_refs:
-                        ref_value = past_refs[feature]
-                        normalized_series = [ref_value + res for res in normalized_residuals]
-                    else:
-                        normalized_series = normalized_residuals  # No reference, use as-is
-                    
-                    # Denormalize
-                    if feature in norm_params:
-                        mean = norm_params[feature].get('mean', 0.0)
-                        std = norm_params[feature].get('std', 1.0)
-                        denormalized = [val * std + mean for val in normalized_series]
-                    else:
-                        denormalized = normalized_series  # No norm params, use as-is
-                    
-                    ref_windows.append({
-                        'feature': feature,
-                        'temporal_tag': 'future',
-                        'values': denormalized,
-                        'dates': item.get('dates', [])
-                    })
+            # Process future target windows (residuals)
+            normalized_future_target = normalized_sample.get('normalized_future_target_series')
+            if normalized_future_target is not None and feature_order_target:
+                import numpy as np
+                target_arr = np.array(normalized_future_target)
+                
+                # Get past reference values for each target feature
+                past_refs = {}
+                if normalized_past is not None and feature_order_past:
+                    past_arr = np.array(normalized_past)
+                    for i, feature in enumerate(feature_order_past):
+                        if feature in feature_order_target and i < len(past_arr):
+                            past_refs[feature] = past_arr[i][-1]  # Last value
+                
+                for i, feature in enumerate(feature_order_target):
+                    if i < len(target_arr):
+                        normalized_residuals = target_arr[i].tolist()
+                        
+                        # Convert residuals to series by adding reference
+                        if feature in past_refs:
+                            ref_value = past_refs[feature]
+                            normalized_series = [ref_value + res for res in normalized_residuals]
+                        else:
+                            normalized_series = normalized_residuals
+                        
+                        # Denormalize
+                        if feature in norm_params:
+                            mean = norm_params[feature].get('mean', 0.0)
+                            std = norm_params[feature].get('std', 1.0)
+                            denormalized = [val * std + mean for val in normalized_series]
+                        else:
+                            denormalized = normalized_series
+                        
+                        ref_windows.append({
+                            'feature': feature,
+                            'temporal_tag': 'future',
+                            'values': denormalized
+                        })
             
             ground_truth = {
                 'sample_id': reference_sample_id,
@@ -2828,7 +2879,7 @@ Points: {metrics['n_points']}"""
             }
             print(f"✅ Extracted ground truth: {len(ref_windows)} windows")
         else:
-            print(f"⚠️  Reference sample not found")
+            print(f"⚠️  No normalized sample in ground truth")
         
         return {
             'reconstructions': all_reconstructions,

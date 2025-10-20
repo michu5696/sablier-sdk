@@ -129,4 +129,27 @@ class ModelManager:
                 return model
         
         return None
+    
+    def delete(self, model_id: str):
+        """
+        Delete a model and all related data
+        
+        Deletes:
+        - Model metadata
+        - Training data
+        - Generated samples (normalized and encoded)
+        - Normalization parameters
+        - Encoding models (database metadata and Cloud Storage files)
+        - Vine Copula model (Cloud Storage file)
+        
+        Args:
+            model_id: Model ID to delete
+            
+        Example:
+            >>> client.models.delete("model-id-123")
+        """
+        # Call API to delete model
+        response = self.http.delete(f'/api/v1/models/{model_id}')
+        print(f"✅ Model deleted: {model_id}")
+        return response
 
