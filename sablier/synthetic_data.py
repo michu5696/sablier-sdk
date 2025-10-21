@@ -278,6 +278,11 @@ class SyntheticData:
                 future_t = np.arange(n_timesteps)
                 use_dates = False
             
+            # Align ground truth future with forecast length (truncate if longer, use what's available if shorter)
+            if future_gt_values and len(future_gt_values) != n_timesteps:
+                print(f"[DEBUG] Aligning ground truth: {len(future_gt_values)} → {n_timesteps} to match forecast")
+                future_gt_values = future_gt_values[:n_timesteps]  # Truncate to forecast length
+            
             if past_values and len(past_t) > 0:
                 
                 # Plot ground truth past (black line with markers)
@@ -285,8 +290,10 @@ class SyntheticData:
                        markersize=4, alpha=0.8, label='Historical', zorder=5)
                 
                 # Plot ground truth future (green line with markers)
-                if future_gt_values:
-                    ax.plot(future_t, future_gt_values, 'o-', color='green', linewidth=2.5, 
+                if future_gt_values and len(future_gt_values) > 0:
+                    # Use only the portion of future_t that matches ground truth length
+                    future_t_gt = future_t[:len(future_gt_values)]
+                    ax.plot(future_t_gt, future_gt_values, 'o-', color='green', linewidth=2.5, 
                            markersize=5, alpha=0.9, label='Ground Truth', zorder=6)
                 
                 # Vertical line at forecast start (red dotted)
