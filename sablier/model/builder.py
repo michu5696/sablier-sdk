@@ -1762,163 +1762,6 @@ Points: {metrics['n_points']}"""
         else:
             plt.close()
     
-    def plot_forecasts(
-        self,
-        forecast_result: Dict,
-        reference_sample_id: str = None,
-        target_feature: str = None,
-        n_paths: int = 10,
-        show_ci: bool = True,
-        ci_levels: List[float] = [0.68, 0.95],
-        save_path: str = None,
-        show: bool = True
-    ):
-        """
-        Plot forecast samples overlaid on the reference sample.
-        
-        Args:
-            forecast_result: Output from generate_forecast() method
-            reference_sample_id: Sample ID used for forecast (auto-detects if None)
-            target_feature: Target feature to plot (uses first target if None)
-            n_paths: Number of individual forecast paths to show
-            show_ci: Whether to show confidence interval bands
-            ci_levels: Confidence levels for intervals (e.g., [0.68, 0.95])
-            save_path: Path to save plot (e.g., "forecast.png")
-            show: Whether to display the plot
-        
-        Example:
-            >>> forecast_result = model.generate_forecast(n_samples=100)
-            >>> model.plot_forecasts(
-            ...     forecast_result,
-            ...     target_feature="Gold Price",
-            ...     show_ci=True,
-            ...     ci_levels=[0.68, 0.95]
-            ... )
-        """
-        from ..visualization import TimeSeriesPlotter, _check_matplotlib
-        import matplotlib.pyplot as plt
-        from datetime import datetime
-        import numpy as np
-        
-        _check_matplotlib()
-        
-        forecast_samples = forecast_result['forecast_samples']
-        
-        # Auto-detect reference_sample_id from forecast_samples if not provided
-        if reference_sample_id is None:
-            # Try to get from first forecast sample metadata
-            if forecast_samples and 'metadata' in forecast_samples[0]:
-                reference_sample_id = forecast_samples[0]['metadata'].get('reference_sample_id')
-            
-            if not reference_sample_id:
-                raise ValueError("reference_sample_id must be provided or detectable from forecast_samples")
-        
-        print(f"[Plotting] Reconstructing forecast samples...")
-        
-        # Reconstruct forecast samples
-        reconstructed_forecasts = self.reconstruct_forecast(forecast_samples, reference_sample_id)
-        
-        # Determine target feature
-        if target_feature is None:
-            # Use first feature that has future data in forecasts
-            for feat in reconstructed_forecasts[0].keys():
-                if 'future' in reconstructed_forecasts[0][feat]:
-                    target_feature = feat
-                    break
-        
-        if not target_feature:
-            raise ValueError("No target feature found in forecast samples")
-        
-        print(f"[Plotting] Reconstructed {len(reconstructed_forecasts)} forecast samples")
-        print(f"[Plotting] Target feature: '{target_feature}'")
-        print(f"[Plotting] Will plot {n_paths} paths with CI bands: {show_ci}")
-        
-        # Get reference sample with FULL data (for original past values)
-        # Fetch test sample by index with full data
-        reference_sample = self._get_test_sample(index=0, include_data=True)
-        if not reference_sample or reference_sample['id'] != reference_sample_id:
-            # Fallback: fetch all test samples and find by ID
-            print(f"  Note: Fetching test samples to find reference...")
-            response = self.http.get(
-                f'/api/v1/models/{self.id}/samples',
-                params={'split_type': 'test', 'limit': 100, 'include_data': 'true'}
-            )
-            samples = response.get('samples', [])
-            reference_sample = next((s for s in samples if s['id'] == reference_sample_id), None)
-            if not reference_sample:
-                raise ValueError(f"Reference sample {reference_sample_id} not found in test samples")
-        
-        # Get ORIGINAL past data (not reconstructed) to align with forecast reference
-        # Forecasts are anchored to the original reference value, not the reconstructed one
-        past_dates, past_values = self._get_original_past_data(reference_sample, target_feature)
-        
-        # Get GROUND TRUTH future data from the reference sample (test sample has actual future values)
-        ground_truth_dates, ground_truth_values = self._get_ground_truth_future_data(reference_sample, target_feature)
-        
-        if ground_truth_values is not None:
-            print(f"  ✅ Found ground truth: {len(ground_truth_values)} future values")
-        else:
-            print(f"  ⚠️  No ground truth data found for {target_feature}")
-        
-        # Extract future data from forecasts
-        future_dates = reconstructed_forecasts[0][target_feature]['future']['dates']
-        forecast_paths = [
-            sample[target_feature]['future']['values']
-            for sample in reconstructed_forecasts
-        ]
-        
-        print(f"[Plotting] Extracted {len(forecast_paths)} forecast paths from reconstructions")
-        
-        # Check if dates are available
-        if past_dates is None or future_dates is None:
-            print("  ⚠️  Warning: Dates not found in sample data, generating synthetic dates")
-            # Generate synthetic dates for visualization
-            past_dates = list(range(len(past_values)))
-            future_dates = list(range(len(past_values), len(past_values) + len(forecast_paths[0])))
-            # Convert to datetime objects
-            from datetime import datetime, timedelta
-            base_date = datetime(2024, 1, 1)
-            past_date_objects = [base_date + timedelta(days=i) for i in past_dates]
-            future_date_objects = [base_date + timedelta(days=i) for i in future_dates]
-        else:
-            # Convert dates to datetime
-            past_date_objects = [datetime.strptime(d, '%Y-%m-%d') if isinstance(d, str) else d for d in past_dates]
-            future_date_objects = [datetime.strptime(d, '%Y-%m-%d') if isinstance(d, str) else d for d in future_dates]
-        
-        # Handle ground truth dates
-        if ground_truth_dates is not None:
-            ground_truth_date_objects = [datetime.strptime(d, '%Y-%m-%d') if isinstance(d, str) else d for d in ground_truth_dates]
-        else:
-            ground_truth_date_objects = None
-            print("  ⚠️  Warning: Ground truth dates not found")
-        
-        # Create plot
-        fig, ax = plt.subplots(figsize=(14, 6))
-        
-        TimeSeriesPlotter.plot_forecasts(
-            past_dates=np.array(past_date_objects),
-            past_values=np.array(past_values),
-            future_dates=np.array(future_date_objects),
-            forecast_paths=forecast_paths,
-            feature_name=target_feature,
-            n_paths=n_paths,
-            show_ci=show_ci,
-            ci_levels=ci_levels,
-            ground_truth_dates=np.array(ground_truth_date_objects) if ground_truth_date_objects else None,
-            ground_truth_values=np.array(ground_truth_values) if ground_truth_values else None,
-            ax=ax
-        )
-        
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            print(f"📊 Plot saved to {save_path}")
-        
-        if show:
-            plt.show()
-        else:
-            plt.close()
     
     
     # ============================================
@@ -2653,7 +2496,11 @@ Points: {metrics['n_points']}"""
                 'n_observed': result['n_observed'],
                 'n_predicted': result['n_predicted'],
                 'model_id': result['model_id'],
-                'conditioning_info': result.get('conditioning_info', {})
+                'conditioning_info': result.get('conditioning_info', {}),
+                # Date information for plotting
+                'past_dates': result.get('past_dates', []),
+                'future_dates': result.get('future_dates', []),
+                'reference_date': result.get('reference_date')
             },
             model=self
         )

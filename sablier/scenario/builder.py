@@ -1545,7 +1545,11 @@ class Scenario:
                 'model_id': result['model_id'],
                 'scenario_id': self.id,
                 'simulation_date': simulation_date,
-                'conditioning_info': result.get('conditioning_info', {})
+                'conditioning_info': result.get('conditioning_info', {}),
+                # Date information for plotting
+                'past_dates': result.get('past_dates', []),
+                'future_dates': result.get('future_dates', []),
+                'reference_date': result.get('reference_date')
             },
             scenario=self,
             model=self.model

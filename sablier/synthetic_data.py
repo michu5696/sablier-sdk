@@ -63,6 +63,13 @@ class SyntheticData:
         self.model = model
         self.metadata = forecast_metadata or {}
         
+        # Date information for plotting
+        self.past_dates = self.metadata.get('past_dates', [])
+        self.future_dates = self.metadata.get('future_dates', [])
+        self.reference_date = self.metadata.get('reference_date', None)
+        
+        print(f"[DEBUG] Date info: past={len(self.past_dates)}, future={len(self.future_dates)}, ref={self.reference_date}")
+        
         # Organize windows by type
         self.conditioning_past = {}      # {feature: values}
         self.conditioning_future = {}    # {feature: values}
@@ -72,6 +79,13 @@ class SyntheticData:
         # Parse reconstructed windows
         # Windows with sample_idx=0 are conditioning/ground truth
         # Windows with sample_idx>0 are forecast paths
+        
+        # Debug: Count window types
+        past_count = 0
+        future_cond_count = 0
+        future_gt_count = 0
+        forecast_count = 0
+        
         for window in reconstructed_windows:
             feature = window.get('feature')
             temporal_tag = window.get('temporal_tag')
@@ -85,6 +99,7 @@ class SyntheticData:
                 if temporal_tag == 'past':
                     # Past conditioning: what we observed (today's data or sample's past)
                     self.conditioning_past[feature] = values
+                    past_count += 1
                 elif temporal_tag == 'future':
                     # Future windows with sample_idx=0 could be:
                     # 1. Ground truth target (for validation forecasts)
@@ -92,21 +107,50 @@ class SyntheticData:
                     # 3. Historical pattern (for scenario reference)
                     
                     if is_historical or data_type == 'ground_truth':
-                        # Ground truth: actual outcome (validation) or historical pattern (scenario)
-                        self.ground_truth_target[feature] = values
+                        # For historical patterns, check if it's a target feature
+                        # Target features go to ground_truth_target, conditioning features go to conditioning_future
+                        if hasattr(self.model, '_data') and self.model._data.get('target_features'):
+                            # Handle both dict and string formats
+                            target_features_raw = self.model._data['target_features']
+                            if target_features_raw and isinstance(target_features_raw[0], dict):
+                                target_features = [f.get('name') for f in target_features_raw]
+                            else:
+                                target_features = target_features_raw  # Already strings
+                            
+                            if feature in target_features:
+                                # Historical target: actual outcome (validation) or historical pattern (scenario)
+                                self.ground_truth_target[feature] = values
+                                future_gt_count += 1
+                                logger.debug(f"Added to ground_truth_target: {feature} (target feature)")
+                            else:
+                                # Historical conditioning: used to condition the forecast
+                                self.conditioning_future[feature] = values
+                                future_cond_count += 1
+                                logger.debug(f"Added to conditioning_future: {feature} (conditioning feature)")
+                        else:
+                            # Fallback: treat as ground truth if we can't determine target features
+                            self.ground_truth_target[feature] = values
+                            future_gt_count += 1
+                            logger.debug(f"Added to ground_truth_target: {feature} (fallback)")
                     else:
                         # Future conditioning: observed and used to condition the forecast
                         self.conditioning_future[feature] = values
+                        future_cond_count += 1
             else:
                 # Forecasts (sample_idx >= 1): generated predictions
                 if feature not in self.forecasts:
                     self.forecasts[feature] = []
                 self.forecasts[feature].append(values)
+                forecast_count += 1
         
         self.n_paths = max(len(paths) for paths in self.forecasts.values()) if self.forecasts else 0
         self.features = list(set(list(self.conditioning_past.keys()) + 
                                  list(self.conditioning_future.keys()) + 
                                  list(self.forecasts.keys())))
+        
+        # Debug logging
+        print(f"[DEBUG] Parsed {len(reconstructed_windows)} windows:")
+        print(f"  Past: {past_count}, Future Cond: {future_cond_count}, Future GT: {future_gt_count}, Forecasts: {forecast_count}")
         
         print(f"✅ Forecast data loaded:")
         print(f"   Features: {len(self.features)}")
@@ -114,7 +158,9 @@ class SyntheticData:
         print(f"   Past conditioning: {len(self.conditioning_past)} features")
         print(f"   Future conditioning: {len(self.conditioning_future)} features")
         if self.ground_truth_target:
-            print(f"   Ground truth: {len(self.ground_truth_target)} features")
+            print(f"   Ground truth: {len(self.ground_truth_target)} features ({list(self.ground_truth_target.keys())})")
+        else:
+            print(f"   Ground truth: None")
     
     def to_dataframe(self) -> 'pd.DataFrame':
         """
@@ -199,8 +245,7 @@ class SyntheticData:
             axes = [axes]
         
         # Main title
-        scenario_name = self.metadata.get('scenario_name', 'Forecast')
-        fig.suptitle(f'Vine Copula Conditional Forecast: {scenario_name}', 
+        fig.suptitle('Conditional Forecasts', 
                      fontsize=16, fontweight='bold', y=0.995)
         
         for idx, feature_name in enumerate(features):
@@ -215,10 +260,25 @@ class SyntheticData:
             past_values = self.conditioning_past.get(feature_name)
             future_gt_values = self.ground_truth_target.get(feature_name)
             
-            # Setup time axis
-            if past_values:
+            # Setup time axis with dates (if available)
+            if self.past_dates and self.future_dates:
+                # Use actual dates from forecast response
+                past_t = self.past_dates
+                future_t = self.future_dates
+                use_dates = True
+                print(f"[DEBUG] Using dates for {feature_name}: {len(past_t)} past + {len(future_t)} future")
+            elif past_values:
+                # Fallback to numeric indices if dates not available
                 past_t = np.arange(len(past_values))
                 future_t = np.arange(len(past_values), len(past_values) + n_timesteps)
+                use_dates = False
+            else:
+                # No past data, just use future indices
+                past_t = []
+                future_t = np.arange(n_timesteps)
+                use_dates = False
+            
+            if past_values and len(past_t) > 0:
                 
                 # Plot ground truth past (black line with markers)
                 ax.plot(past_t, past_values, 'o-', color='black', linewidth=2, 
@@ -267,10 +327,23 @@ class SyntheticData:
                    linewidth=2.5, alpha=0.9, label='Median Forecast', zorder=7)
             
             # Formatting
-            ax.set_title(f'{feature_name} - Conditional Vine Copula Forecast', 
-                        fontsize=14, fontweight='bold')
-            ax.set_xlabel('Time Step', fontsize=12)
-            ax.set_ylabel(f'{feature_name.split()[-1]} Treasury (%)', fontsize=12)
+            ax.set_title(feature_name, fontsize=14, fontweight='bold')
+            
+            if use_dates:
+                # Format x-axis for dates
+                ax.set_xlabel('Date', fontsize=12)
+                # Rotate labels and show every Nth date to avoid crowding
+                n_dates = len(past_t) + len(future_t)
+                tick_interval = max(1, n_dates // 10)  # Show ~10 ticks
+                all_dates = list(past_t) + list(future_t)
+                tick_indices = range(0, n_dates, tick_interval)
+                ax.set_xticks([all_dates[i] for i in tick_indices if i < len(all_dates)])
+                ax.tick_params(axis='x', rotation=45)
+            else:
+                # Numeric time steps
+                ax.set_xlabel('Time Step', fontsize=12)
+            
+            ax.set_ylabel(f'{feature_name} Value', fontsize=12)
             ax.legend(loc='best', fontsize=10, framealpha=0.95)
             ax.grid(True, alpha=0.3, linestyle='--')
             
@@ -308,15 +381,16 @@ class SyntheticData:
         if not HAS_MATPLOTLIB:
             raise ImportError("matplotlib required. Install with: pip install matplotlib")
         
-        # Get all conditioning features
-        all_conditioning_features = set(self.conditioning_past.keys()) | set(self.conditioning_future.keys())
+        # Get only features that have future conditioning (not target features)
+        # Target features should only appear in forecast plots, not conditioning plots
+        future_conditioning_features = set(self.conditioning_future.keys())
         
         # Select features to plot
         if features is None:
-            features = list(all_conditioning_features)
+            features = list(future_conditioning_features)
         
-        # Filter to only features that have conditioning data
-        features = [f for f in features if f in all_conditioning_features]
+        # Filter to only features that have future conditioning data
+        features = [f for f in features if f in future_conditioning_features]
         
         if not features:
             raise ValueError("No conditioning features available to plot")
@@ -336,8 +410,7 @@ class SyntheticData:
         axes_flat = axes.flatten() if n_features > 1 else axes
         
         # Main title
-        scenario_name = self.metadata.get('scenario_name', 'Conditioning Scenario')
-        fig.suptitle(f'Conditioning Scenario: Past + Future', 
+        fig.suptitle('Conditioning Scenario', 
                      fontsize=16, fontweight='bold', y=0.995)
         
         for idx, feature_name in enumerate(features):
@@ -350,9 +423,15 @@ class SyntheticData:
             if not past_values and not future_values:
                 continue
             
-            # Create time axis
-            past_t = np.arange(len(past_values)) if past_values else []
-            future_t = np.arange(len(past_values), len(past_values) + len(future_values)) if future_values else []
+            # Create time axis with dates (if available)
+            if self.past_dates and self.future_dates:
+                past_t = self.past_dates if past_values else []
+                future_t = self.future_dates if future_values else []
+                use_dates = True
+            else:
+                past_t = np.arange(len(past_values)) if past_values else []
+                future_t = np.arange(len(past_values), len(past_values) + len(future_values)) if future_values else []
+                use_dates = False
             
             # Plot past conditioning (blue line)
             if past_values:
@@ -364,23 +443,37 @@ class SyntheticData:
                 ax.plot(future_t, future_values, '-', color='orange', linewidth=2, 
                        alpha=0.8, label='Future (Conditioning)', zorder=3)
             
-            # Add boundary line (dashed vertical line)
+            # Add boundary line (dashed vertical line at reference date)
             if past_values and future_values:
-                boundary_x = len(past_values)
+                if use_dates and self.reference_date:
+                    # Use actual reference date for boundary
+                    boundary_x = self.reference_date
+                else:
+                    # Use numeric index
+                    boundary_x = len(past_values)
                 ax.axvline(x=boundary_x, color='red', linestyle='--', 
                           linewidth=2, alpha=0.7, label='Boundary', zorder=4)
             
             # Formatting
             ax.set_title(feature_name, fontsize=12, fontweight='bold')
-            ax.set_xlabel('Date', fontsize=10)
+            
+            if use_dates:
+                # Format x-axis for dates
+                ax.set_xlabel('Date', fontsize=10)
+                # Rotate labels and show every Nth date
+                n_dates = len(past_t) + len(future_t)
+                tick_interval = max(1, n_dates // 8)  # Show ~8 ticks
+                all_dates = list(past_t) + list(future_t)
+                tick_indices = range(0, n_dates, tick_interval)
+                ax.set_xticks([all_dates[i] for i in tick_indices if i < len(all_dates)])
+                ax.tick_params(axis='x', rotation=45, labelsize=8)
+            else:
+                # Numeric time steps
+                ax.set_xlabel('Time Step', fontsize=10)
+            
             ax.set_ylabel('Value', fontsize=10)
             ax.legend(loc='best', fontsize=9, framealpha=0.95)
             ax.grid(True, alpha=0.3, linestyle='--')
-            
-            # Set x-axis to show dates if we have enough data
-            if len(past_values) + len(future_values) > 20:
-                # Show fewer tick labels for readability
-                ax.tick_params(axis='x', rotation=45, labelsize=8)
         
         # Hide unused subplots
         for idx in range(n_features, len(axes_flat)):
