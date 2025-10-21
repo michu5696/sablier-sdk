@@ -311,27 +311,103 @@ class Model:
         return self
     
     # ============================================
+    # DATA COLLECTORS
+    # ============================================
+    
+    def add_data_collector(
+        self,
+        source: str,
+        api_key: Optional[str] = None,
+        **config
+    ):
+        """
+        Add a data collector to this model
+        
+        Data collectors handle fetching data from external sources (FRED, Yahoo, etc.)
+        Each collector provides a source-specific interface for adding features.
+        
+        Args:
+            source: Data source name ('fred', 'yahoo', etc.)
+            api_key: API key for authentication (if required by source)
+            **config: Additional source-specific configuration
+        
+        Returns:
+            Collector wrapper with add_features() method
+        
+        Example:
+            >>> # FRED collector - uses series_id
+            >>> fred = model.add_data_collector('fred', api_key='your_key')
+            >>> fred.add_features([
+            >>>     {'series_id': 'DGS30', 'display_name': 'US Treasury 30Y', 'type': 'target'}
+            >>> ])
+            >>> 
+            >>> # Yahoo collector - uses symbol
+            >>> yahoo = model.add_data_collector('yahoo')
+            >>> yahoo.add_features([
+            >>>     {'symbol': '^GSPC', 'display_name': 'S&P 500', 'type': 'conditioning'}
+            >>> ])
+        """
+        from ..data_collector import create_collector_wrapper
+        
+        if 'data_collectors' not in self._data:
+            self._data['data_collectors'] = []
+        
+        # Check if collector already exists
+        existing = [c for c in self._data['data_collectors'] if c['source'] == source.lower()]
+        if existing:
+            print(f"⚠️  Data collector '{source}' already exists, updating...")
+            self._data['data_collectors'] = [c for c in self._data['data_collectors'] if c['source'] != source.lower()]
+        
+        collector_config = {
+            'source': source.lower(),
+            'api_key': api_key,
+            'config': config
+        }
+        
+        self._data['data_collectors'].append(collector_config)
+        
+        # Save to backend immediately
+        response = self.http.patch(f'/api/v1/models/{self.id}', {
+            'data_collectors': self._data['data_collectors']
+        })
+        
+        # Update local data with response
+        self._data = response.get('model', {})
+        
+        print(f"✅ Added {source} data collector")
+        
+        # Return collector wrapper for adding features
+        return create_collector_wrapper(self, source, api_key, **config)
+    
+    def list_data_collectors(self) -> List[str]:
+        """List configured data collectors"""
+        return [c['source'] for c in self._data.get('data_collectors', [])]
+    
+    # ============================================
     # DATA FETCHING
     # ============================================
     
     def fetch_data(
         self, 
-        max_gap_days: int = 7,
+        max_gap_days: Optional[int] = None,
         interpolation_method: str = "linear",
-        fred_api_key: Optional[str] = None,
         confirm: Optional[bool] = None
     ) -> Dict[str, Any]:
         """
-        Fetch and process training data from FRED and Yahoo Finance
+        Fetch and process training data using configured data collectors
         
-        This method handles EVERYTHING:
-        1. Fetches raw data from APIs
-        2. Applies interpolation with specified gap limit
-        3. Saves both raw and processed data to database
-        4. Updates model status to 'data_collected'
+        This method uses the data collectors you've configured with add_data_collector().
+        It handles EVERYTHING:
+        1. Uses configured collectors (with their API keys)
+        2. Fetches raw data with automatic frequency detection
+        3. Auto-generates interpolation settings based on data frequency
+        4. Saves processing config and data to database
+        5. Updates model status to 'data_collected'
         
         Args:
-            max_gap_days: Maximum gap (in days) to fill via interpolation (default: 7)
+            max_gap_days: Optional override for max gap (default: auto-detect from frequency)
+                         If None, uses frequency-aware defaults:
+                         - Daily: 7 days, Monthly: 35 days, etc.
             interpolation_method: "linear", "forward_fill", or "backward_fill" (default: "linear")
             confirm: Explicit confirmation (None = prompt if needed)
             
@@ -339,21 +415,35 @@ class Model:
             dict: Fetch statistics with keys: status, features_fetched, total_raw_points, total_processed_points
             
         Example:
-            >>> # Simple - just fetch with default 7-day linear interpolation
+            >>> # First, add data collectors
+            >>> model.add_data_collector('fred', api_key='your_key')
+            >>> model.add_data_collector('yahoo')
+            >>> 
+            >>> # Then fetch data (auto frequency detection)
             >>> model.fetch_data()
-            
-            >>> # Custom - 30-day forward fill
-            >>> model.fetch_data(max_gap_days=30, interpolation_method="forward_fill")
+            >>> 
+            >>> # Or with manual max_gap override
+            >>> model.fetch_data(max_gap_days=60)
         
         Note:
-            FRED API key is taken from the client initialization.
-            Yahoo Finance doesn't require an API key.
+            You must call add_data_collector() before fetch_data()!
         """
         # Check for conflicts
         if not self._check_and_handle_conflict("fetch_data", confirm):
             return {"status": "cancelled"}
         
         print(f"[Model {self.name}] Fetching data...")
+        
+        # Check for data collectors
+        data_collectors = self._data.get('data_collectors', [])
+        if not data_collectors:
+            print("❌ No data collectors configured!")
+            print("   Add collectors first:")
+            print("   model.add_data_collector('fred', api_key='your_key')")
+            print("   model.add_data_collector('yahoo')")
+            return {"status": "error", "message": "No data collectors configured"}
+        
+        print(f"  Using {len(data_collectors)} data collectors: {', '.join([c['source'] for c in data_collectors])}")
         
         # Get features and training period from model
         features = self.input_features
@@ -366,16 +456,36 @@ class Model:
             print("❌ Training period not set. Call model.set_training_period() first.")
             return {"status": "error", "message": "Training period not set"}
         
-        # Build processing config - apply same max_gap to all features
-        processing_config = {
-            "interpolation": {
-                "method": interpolation_method,
-                "maxGapLength": {
-                    feature.get("name", feature.get("display_name", "")): max_gap_days
-                    for feature in features
+        # Extract API keys from data collectors for backward compatibility
+        # (Backend still expects fred_api_key in payload, will be refactored)
+        fred_api_key = None
+        for collector in data_collectors:
+            if collector['source'] == 'fred':
+                fred_api_key = collector.get('api_key')
+                break
+        
+        # Build processing config
+        if max_gap_days is not None:
+            # Manual max_gap override - apply to all features
+            print(f"  Using manual max_gap: {max_gap_days} days for all features")
+            processing_config = {
+                "interpolation": {
+                    "method": interpolation_method,
+                    "maxGapLength": {
+                        feature.get("name", feature.get("display_name", "")): max_gap_days
+                        for feature in features
+                    }
                 }
             }
-        }
+        else:
+            # Auto-detect max_gap from frequency (backend will auto-generate)
+            print(f"  Using auto frequency detection (backend will set appropriate max_gap for each feature)")
+            processing_config = {
+                "interpolation": {
+                    "method": interpolation_method,
+                    "maxGapLength": {}  # Empty = auto-detect
+                }
+            }
         
         # Build request payload
         payload = {
@@ -389,7 +499,7 @@ class Model:
         
         print(f"  Features: {len(features)}")
         print(f"  Period: {training_period[0]} to {training_period[1]}")
-        print(f"  Interpolation: {interpolation_method} (max {max_gap_days} day gaps)")
+        print(f"  Interpolation method: {interpolation_method}")
         
         # Call backend
         print("📡 Fetching from APIs and processing...")
@@ -540,28 +650,22 @@ class Model:
     # FEATURE GROUPING
     # ============================================
     
-    def auto_group_features(
+    def group_correlated_features(
         self,
-        min_correlation: float = 0.75,
-        min_correlation_target: float = None,
-        min_correlation_conditioning: float = None,
-        method: str = 'hierarchical',
-        auto_apply: bool = False
+        correlation_threshold: float = 0.75,
+        method: str = 'hierarchical'
     ) -> Dict[str, Any]:
         """
-        Analyze feature correlations and suggest groupings for multivariate encoding
+        Auto-detect and apply feature groupings based on correlations
         
-        This should be called after generate_samples() and before encode_samples().
-        It analyzes correlations within target and conditioning features separately
-        and suggests groups of highly correlated features that should be encoded together.
+        This identifies highly correlated features and groups them for joint encoding,
+        which captures dependencies more effectively. Automatically applies the groupings.
+        
+        Call after generate_samples() and before train().
         
         Args:
-            min_correlation: Minimum correlation threshold for both target and conditioning (default: 0.75)
-                           Ignored if min_correlation_target or min_correlation_conditioning are specified
-            min_correlation_target: Minimum correlation threshold for target features (overrides min_correlation)
-            min_correlation_conditioning: Minimum correlation threshold for conditioning features (overrides min_correlation)
+            correlation_threshold: Minimum correlation to group features (default: 0.75)
             method: Clustering method ('hierarchical' or 'threshold', default: 'hierarchical')
-            auto_apply: If True, automatically apply suggested groups without confirmation
             
         Returns:
             dict: {
@@ -570,43 +674,30 @@ class Model:
                 "conditioning_groups": List[Dict],
                 "correlation_matrices": Dict
             }
-            
+        
         Example:
-            >>> # Analyze and review groups
-            >>> groups = model.auto_group_features(min_correlation=0.8)
-            >>> 
-            >>> # Review suggested groups
-            >>> for group in groups['target_groups']:
-            >>>     print(f"{group['name']}: {group['features']}")
-            >>>     print(f"  Avg correlation: {group['avg_correlation']:.3f}")
-            >>> 
-            >>> # Rename a group (optional)
-            >>> model.rename_group('target_group_1', 'Treasury Yield Curve')
-            >>> 
-            >>> # Groups are automatically used in encode_samples()
+            >>> model.generate_samples(...)
+            >>> groups = model.group_correlated_features(correlation_threshold=0.8)
+            >>> model.train(...)  # Will use the detected groups
+            
         """
         # Check status
         if self.status not in ['samples_generated', 'encoding_fitted', 'samples_encoded', 'trained']:
             raise ValueError(
-                f"Cannot analyze feature groups. Model status: {self.status}. "
+                f"Cannot group features. Model status: {self.status}. "
                 f"Call generate_samples() first."
             )
         
-        # Determine thresholds
-        target_threshold = min_correlation_target if min_correlation_target is not None else min_correlation
-        conditioning_threshold = min_correlation_conditioning if min_correlation_conditioning is not None else min_correlation
-        
-        print(f"[Model {self.name}] Analyzing feature correlations...")
-        print(f"  Target correlation threshold: {target_threshold}")
-        print(f"  Conditioning correlation threshold: {conditioning_threshold}")
-        print(f"  Clustering method: {method}")
+        print(f"\n📊 Detecting correlated features...")
+        print(f"   Correlation threshold: {correlation_threshold}")
+        print(f"   Method: {method}")
         
         # Call backend
         payload = {
             "user_id": self._data.get("user_id"),
             "model_id": self.id,
-            "min_correlation_target": target_threshold,
-            "min_correlation_conditioning": conditioning_threshold,
+            "min_correlation_target": correlation_threshold,
+            "min_correlation_conditioning": correlation_threshold,
             "method": method
         }
         
@@ -640,15 +731,10 @@ class Model:
         
         print("\n" + "=" * 70)
         
-        # Apply groups if auto_apply or prompt user
-        if auto_apply:
-            print("\n🔄 Auto-applying suggested groups...")
-            self.apply_feature_groups(response)
-        else:
-            print("\n💡 TIP: Review the groups above. You can:")
-            print("   - Rename groups: model.rename_group('target_group_1', 'New Name')")
-            print("   - Apply groups: model.apply_feature_groups(groups)")
-            print("   - Or they will be automatically applied when you call encode_samples()")
+        # Always auto-apply groups
+        print("\n🔄 Applying groups...")
+        self.apply_feature_groups(response)
+        print("✅ Groups applied and saved to model")
         
         return response
     
@@ -1083,7 +1169,7 @@ class Model:
             original_values_denorm = [(v * std) + mean for v in original_values]
         
         print(f"  ✅ Original: {len(original_values)} points (denormalized)")
-        print(f"  ✅ Encoded: {len(encoded_values)} components")
+        print(f"  ✅ Encoded successfully")
         
         # Reconstruct
         print(f"\n🔄 Reconstructing...")
@@ -1215,7 +1301,6 @@ class Model:
         print(f"  MAE:       {mae:.6f}")
         print(f"  R²:        {r_squared:.6f}")
         print(f"  Max Error: {max_error:.6f}")
-        print(f"  Components: {len(encoded_values)}")
         
         # Plot
         if plot:
@@ -2008,7 +2093,7 @@ Points: {metrics['n_points']}"""
             confirm = True
         
         if confirm:
-            print(f"\n🔧 Vine Copula Hyperparameter Optimization")
+            print(f"\n🔧 Model Hyperparameter Optimization")
             print(f"   Trials: {n_trials}")
             print(f"   Objectives: {objectives}")
             print(f"   Data split: {split}")
@@ -2020,7 +2105,7 @@ Points: {metrics['n_points']}"""
                 print("❌ Optimization cancelled")
                 return {"status": "cancelled"}
         
-        print(f"\n🚀 Starting Vine Copula hyperparameter optimization...")
+        print(f"\n🚀 Starting hyperparameter optimization...")
         
         # Prepare optimization payload
         payload = {
@@ -2125,13 +2210,11 @@ Points: {metrics['n_points']}"""
             confirm = not self.interactive
         
         if not confirm and self.interactive:
-            print(f"\n🤖 Training Vine Copula Model")
+            print(f"\n🤖 Training Model")
             print(f"   Regimes: {n_components}")
-            print(f"   Copula family: {copula_family}")
-            print(f"   Truncation level: {trunc_lvl}")
             print(f"   Split: {split}")
         
-        print(f"\n🚀 Training Vine Copula model...")
+        print(f"\n🚀 Training model...")
         
         # Check for saved optimal parameters from hyperparameter optimization
         model_metadata = self._data.get('model_metadata') or {}
@@ -2223,7 +2306,7 @@ Points: {metrics['n_points']}"""
             >>> validation = model.validate(n_forecast_samples=100)
             >>> print(f"Validation log-likelihood: {validation['validation_metrics']['per_sample_log_likelihood']}")
         """
-        print(f"\n🔍 Validating Vine Copula model...")
+        print(f"\n🔍 Validating model...")
         print(f"   Training set: {run_on_training}")
         print(f"   Validation set: {run_on_validation}")
         print(f"   Forecast samples per validation sample: {n_forecast_samples}")
@@ -2240,7 +2323,7 @@ Points: {metrics['n_points']}"""
         
         # Display results
         print(f"\n" + "="*70)
-        print(f"✅ Vine Copula Model Validation Complete")
+        print(f"✅ Model Validation Complete")
         print(f"="*70)
         
         # Summary table for unconditional metrics
@@ -2347,7 +2430,7 @@ Points: {metrics['n_points']}"""
             n_assigned = regime['n_samples_assigned']
             print(f"   Component {k}: weight={weight:.3f}, assigned={n_assigned} samples")
         
-        print(f"\n📈 Conditional Forecasting Metrics (with Local Copula)")
+        print(f"\n📈 Conditional Forecasting Metrics")
         print(f"{'─'*70}")
         calib = result['calibration_metrics']['calibration']
         forecast_quality = result['calibration_metrics']['forecast_quality']
@@ -2509,13 +2592,13 @@ Points: {metrics['n_points']}"""
             >>> # Unconditional forecast
             >>> forecasts = model.forecast(observed_components=[], n_samples=1000)
         """
-        print(f"\n🎲 Generating Vine Copula forecasts...")
+        print(f"\n🎲 Generating forecasts...")
         
         # Determine conditioning source
         if observed_components is not None:
             conditioning_source = "inline"
             print(f"   Mode: Inline conditioning")
-            print(f"   Conditioning on {len(observed_components)} components")
+            print(f"   Conditioning on {len(observed_components)} observations")
         else:
             conditioning_source = "sample"
             print(f"   Mode: Sample-based conditioning")
@@ -2554,7 +2637,26 @@ Points: {metrics['n_points']}"""
         print(f"   Observed: {result['n_observed']} dimensions")
         print(f"   Predicted: {result['n_predicted']} dimensions")
         
-        return result
+        # Return SyntheticData instance with all reconstructed windows
+        from ..synthetic_data import SyntheticData
+        reconstructed_windows = result.get('conditioning_info', {}).get('reconstructed', [])
+        
+        if not reconstructed_windows:
+            # Fallback for old API (shouldn't happen with new backend)
+            logger.warning("No auto-reconstructed data found, returning raw result")
+            return result
+        
+        return SyntheticData(
+            reconstructed_windows=reconstructed_windows,
+            forecast_metadata={
+                'n_samples': result['n_samples'],
+                'n_observed': result['n_observed'],
+                'n_predicted': result['n_predicted'],
+                'model_id': result['model_id'],
+                'conditioning_info': result.get('conditioning_info', {})
+            },
+            model=self
+        )
     
     def reconstruct_forecasts(self,
                                    forecasts: Dict[str, Any] = None,

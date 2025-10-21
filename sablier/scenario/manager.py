@@ -29,8 +29,7 @@ class ScenarioManager:
         name: str,
         model = None,
         model_id: str = None,
-        description: str = "",
-        n_scenarios: int = 100
+        description: str = ""
     ) -> Scenario:
         """
         Create a new scenario
@@ -40,8 +39,6 @@ class ScenarioManager:
             model: Model instance to use (either this or model_id required)
             model_id: Model ID to use (either this or model required)
             description: Optional scenario description
-            n_scenarios: Number of synthetic paths to generate (default: 100)
-        
         Returns:
             Scenario instance
         
@@ -49,8 +46,7 @@ class ScenarioManager:
             >>> model = client.models.get("model-id")
             >>> scenario = client.scenarios.create(
             ...     name="Bull Market 2025",
-            ...     model=model,
-            ...     n_scenarios=1000
+            ...     model=model
             ... )
         """
         # Determine model_id
@@ -61,14 +57,12 @@ class ScenarioManager:
         
         print(f"[Scenario] Creating scenario: {name}")
         print(f"  Model ID: {model_id}")
-        print(f"  Target paths: {n_scenarios}")
         
         # Create via API
         response = self.http.post('/api/v1/scenarios', {
             'model_id': model_id,
             'name': name,
-            'description': description,
-            'n_scenarios': n_scenarios
+            'description': description
         })
         
         print(f"✅ Scenario created: {response.get('id')}")

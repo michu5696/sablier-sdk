@@ -44,7 +44,7 @@ class Scenario:
         self.name = scenario_data.get('name')
         self.description = scenario_data.get('description', '')
         self.model_id = scenario_data.get('model_id')
-        self.n_scenarios = scenario_data.get('n_scenarios', 100)
+        # n_scenarios removed - number of paths is specified per forecast request
         self.current_step = scenario_data.get('current_step', 'model-selection')
     
     @property
@@ -157,11 +157,9 @@ class Scenario:
         
         print(f"  Fetched {len(processed_data)} data points")
         
-        # Store fetched data in scenario (not in model's training_data)
-        self.http.patch(f'/api/v1/scenarios/{self.id}', {
-            'fetched_past_data': processed_data
-        })
-        print(f"  ✓ Stored in scenario")
+        # Data will be stored in recent_past_data table (separate from scenarios table)
+        # No need to update scenario record here
+        print(f"  ✓ Data fetched")
         
         # Step 2: Normalize using model's normalization parameters
         print("🔢 Step 2/3: Normalizing data...")
@@ -237,7 +235,7 @@ class Scenario:
         # It's just an intermediate step. We store raw (fetched_past_data) and encoded (encoded_fetched_past)
         
         # Step 3: Encode using model's encoding models
-        print("🔐 Step 3/3: Encoding with PCA-ICA...")
+        print("🔐 Step 3/3: Encoding recent data...")
         
         sample_data = {
             'conditioning_data': conditioning_data,
@@ -268,13 +266,9 @@ class Scenario:
         if missing_count > 0:
             print(f"  ⚠️  {missing_count}/{len(past_feature_availability)} features have incomplete past data")
         
-        # Update scenario in database with encoded data and feature availability
-        self.http.patch(f'/api/v1/scenarios/{self.id}', {
-            'encoded_fetched_past': encoded_fetched_past,
-            'past_feature_availability': past_feature_availability,
-            'current_step': 'past-data-fetched'  # Valid DB constraint value
-        })
-        print(f"  ✓ Stored encoded data and availability in scenario")
+        # Don't update scenario in DB yet - data will be stored when forecast() is called
+        # For now, just keep in memory
+        print(f"  ✓ Data ready for forecasting")
         
         # Update local data
         self._data['encoded_fetched_past'] = encoded_fetched_past
@@ -561,7 +555,7 @@ class Scenario:
         # ====================================================================
         # ENCODE: normalized_series → encoded_normalized_series
         # ====================================================================
-        print(f"  🔄 Encoding reconstructed series to components...")
+        print(f"  🔄 Encoding reconstructed series...")
         
         # Get encoding type from model metadata
         model_metadata = self.model._data.get('model_metadata', {})
@@ -602,7 +596,7 @@ class Scenario:
         if not encoded_conditioning_data_new:
             raise ValueError("Encoding failed - no encoded data returned")
         
-        print(f"  ✓ Encoded {len(encoded_conditioning_data_new)} features to components")
+        print(f"  ✓ Encoded {len(encoded_conditioning_data_new)} features")
         
         # ====================================================================
         # BUILD MODEL INPUT: Use NEW encodings (not historical!)
@@ -722,7 +716,7 @@ class Scenario:
         from ..synthetic_data import SyntheticData
         
         if n_samples is None:
-            n_samples = self.n_scenarios
+            n_samples = 100  # Default number of forecast paths
         
         # Verify scenario is configured
         if self.current_step not in ['future-conditioning-configured', 'paths-generated']:
@@ -1480,12 +1474,89 @@ class Scenario:
         except Exception as e:
             logger.warning(f"Could not update scenario step: {e}")
     
+    def forecast(self, 
+                 simulation_date: str,
+                 n_samples: int = 100):
+        """
+        Generate forecasts for this scenario (ONE-CALL SIMPLIFIED API)
+        
+        This method automatically:
+        1. Fetches recent market data using model's configured data collectors
+        2. Selects historical sample matching simulation_date
+        3. Generates conditional forecasts
+        4. Reconstructs everything to denormalized scale
+        5. Returns ready-to-use SyntheticData
+        
+        Args:
+            simulation_date: Historical date to simulate (e.g., '2020-03-15' for COVID)
+            n_samples: Number of forecast paths to generate (default: 100)
+        
+        Returns:
+            SyntheticData instance with conditioning, forecasts, and ground truth
+        
+        Example:
+            >>> # Data collectors are already configured in the model
+            >>> scenario = model.create_scenario("COVID Crisis")
+            >>> forecasts = scenario.forecast(simulation_date='2020-03-15', n_samples=100)
+            >>> forecasts.plot_forecasts()
+        
+        Note:
+            API keys are stored with the model's data collectors.
+            No need to pass them here!
+        """
+        from ..synthetic_data import SyntheticData
+        
+        print(f"\n🎯 Generating scenario forecast...")
+        print(f"   Simulation: {simulation_date}")
+        print(f"   Paths: {n_samples}")
+        print(f"   (Using model's configured data collectors)")
+        
+        print(f"\n🎲 Generating forecasts...")
+        print(f"   (Backend will auto-fetch recent data using model's collectors)")
+        
+        payload = {
+            'user_id': self.model._data.get('user_id'),
+            'model_id': self.model.id,
+            'scenario_id': self.id,
+            'conditioning_source': 'scenario',
+            'simulation_date': simulation_date,
+            'n_samples': n_samples
+            # Note: API keys are stored with model's data_collectors, not passed in request
+        }
+        
+        result = self.http.post('/api/v1/ml/forecast', payload)
+        
+        print(f"✅ Forecasting completed!")
+        print(f"   Generated {result['n_samples']} samples")
+        
+        # Step 3: Return SyntheticData with all reconstructed windows
+        reconstructed_windows = result.get('conditioning_info', {}).get('reconstructed', [])
+        
+        if not reconstructed_windows:
+            logger.warning("No auto-reconstructed data found")
+            raise ValueError("Backend did not return reconstructed data")
+        
+        return SyntheticData(
+            reconstructed_windows=reconstructed_windows,
+            forecast_metadata={
+                'n_samples': result['n_samples'],
+                'n_observed': result['n_observed'],
+                'n_predicted': result['n_predicted'],
+                'model_id': result['model_id'],
+                'scenario_id': self.id,
+                'simulation_date': simulation_date,
+                'conditioning_info': result.get('conditioning_info', {})
+            },
+            scenario=self,
+            model=self.model
+        )
+    
     def refresh(self):
         """Refresh scenario data from database"""
         response = self.http.get(f'/api/v1/scenarios/{self.id}')
         self._data = response
         self.current_step = response.get('current_step', 'model-selection')
-        self.n_scenarios = response.get('n_scenarios', 100)
+        # n_scenarios removed - number of paths is specified per forecast request
     
     def delete(self, confirm: bool = False) -> Dict[str, Any]:
         """
