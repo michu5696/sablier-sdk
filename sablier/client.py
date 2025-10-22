@@ -37,14 +37,15 @@ class SablierClient:
         
         Args:
             api_url: Base URL of the Sablier backend API (e.g., https://api.sablier.ai or http://localhost:8000)
-            api_key: API key for authentication (format: sk_live_...)
+            api_key: API key for authentication (format: sk_live_...) or dummy key for registration
             fred_api_key: Optional FRED API key for data searching and fetching
             interactive: Enable interactive prompts for confirmations (default: True)
         """
         if not api_key:
             raise AuthenticationError("API key is required")
         
-        if not api_key.startswith("sk_"):
+        # Allow dummy keys for registration
+        if not api_key.startswith("sk_") and not api_key.startswith("dummy_"):
             raise AuthenticationError("Invalid API key format. API keys should start with 'sk_'")
         
         # Initialize authentication
@@ -77,3 +78,40 @@ class SablierClient:
                 "status": "unhealthy",
                 "error": str(e)
             }
+    
+    async def register_user(
+        self,
+        email: str,
+        name: str,
+        company: str,
+        api_key_name: str = "Default API Key"
+    ) -> dict:
+        """
+        Register a new user and get an API key
+        
+        Args:
+            email: User's email address
+            name: User's full name
+            company: Company name
+            api_key_name: Name for the API key
+            
+        Returns:
+            dict: Registration response with user details and API key
+            
+        Example:
+            >>> response = await client.register_user(
+            ...     email="user@company.com",
+            ...     name="John Doe",
+            ...     company="Acme Corp"
+            ... )
+            >>> print(f"API Key: {response['api_key']}")
+        """
+        payload = {
+            "email": email,
+            "name": name,
+            "company": company,
+            "api_key_name": api_key_name
+        }
+        
+        response = self.http.post('/api/v1/auth/register', payload)
+        return response
