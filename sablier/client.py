@@ -5,6 +5,7 @@ Main Sablier SDK client
 from typing import Optional
 from .auth import AuthHandler
 from .http_client import HTTPClient
+from .project.manager import ProjectManager
 from .model.manager import ModelManager
 from .scenario.manager import ScenarioManager
 from .exceptions import AuthenticationError
@@ -56,6 +57,7 @@ class SablierClient:
         self.fred_api_key = fred_api_key
         
         # Initialize managers
+        self.projects = ProjectManager(self.http, interactive=interactive)
         self.models = ModelManager(self.http, interactive=interactive)
         self.scenarios = ScenarioManager(self.http, self.models)
     

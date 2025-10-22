@@ -16,17 +16,17 @@ class DataCollectorWrapper:
     Features are added to the parent model with standardized format.
     """
     
-    def __init__(self, model, source: str, api_key: Optional[str] = None, **config):
+    def __init__(self, feature_set, source: str, api_key: Optional[str] = None, **config):
         """
         Initialize collector wrapper
         
         Args:
-            model: Parent Model instance
+            feature_set: Parent FeatureSet instance
             source: Data source name ('fred', 'yahoo', etc.)
             api_key: API key for authentication
             **config: Additional configuration
         """
-        self.model = model
+        self.feature_set = feature_set
         self.source = source.lower()
         self.api_key = api_key
         self.config = config
@@ -39,14 +39,16 @@ class DataCollectorWrapper:
         """
         raise NotImplementedError(f"Collector {self.source} must implement add_features()")
     
-    def _add_to_model(self, features: List[Dict[str, Any]]):
-        """Add features to parent model with source annotation"""
+    def _add_to_feature_set(self, features: List[Dict[str, Any]]):
+        """Add features to parent feature_set with source annotation"""
         # Annotate each feature with this collector's source
         for feature in features:
             feature['source'] = self.source
         
-        # Add to model
-        self.model.add_features(features)
+        # Add to feature_set
+        current_features = self.feature_set.features.copy()
+        current_features.extend(features)
+        self.feature_set._update_features(current_features)
 
 
 class FREDCollectorWrapper(DataCollectorWrapper):
@@ -60,12 +62,13 @@ class FREDCollectorWrapper(DataCollectorWrapper):
             features: List of dicts with:
                 - series_id: FRED series ID (e.g., 'DGS30', 'FEDFUNDS')
                 - display_name: User-friendly name (e.g., 'US Treasury 30Y')
-                - type: 'target' or 'conditioning'
+        
+        Note: The 'type' field is automatically determined from the FeatureSet type.
         
         Example:
             >>> fred.add_features([
-            >>>     {'series_id': 'DGS30', 'display_name': 'US Treasury 30Y', 'type': 'target'},
-            >>>     {'series_id': 'FEDFUNDS', 'display_name': 'Fed Funds Rate', 'type': 'conditioning'}
+            >>>     {'series_id': 'DGS30', 'display_name': 'US Treasury 30Y'},
+            >>>     {'series_id': 'FEDFUNDS', 'display_name': 'Fed Funds Rate'}
             >>> ])
         """
         standardized_features = []
@@ -75,17 +78,14 @@ class FREDCollectorWrapper(DataCollectorWrapper):
                 raise ValueError(f"FRED features must have 'series_id': {feature}")
             if 'display_name' not in feature:
                 raise ValueError(f"FRED features must have 'display_name': {feature}")
-            if 'type' not in feature:
-                raise ValueError(f"FRED features must have 'type' ('target' or 'conditioning'): {feature}")
             
             standardized_features.append({
                 'name': feature['series_id'],  # FRED uses series_id as name
                 'display_name': feature['display_name'],
-                'type': feature['type'],
                 'source': 'fred'
             })
         
-        self._add_to_model(standardized_features)
+        self._add_to_feature_set(standardized_features)
         print(f"✅ Added {len(features)} FRED features")
         
         return self
@@ -102,12 +102,13 @@ class YahooCollectorWrapper(DataCollectorWrapper):
             features: List of dicts with:
                 - symbol: Ticker symbol (e.g., '^GSPC', 'GLD', '^VIX')
                 - display_name: User-friendly name (e.g., 'S&P 500', 'Gold ETF')
-                - type: 'target' or 'conditioning'
+        
+        Note: The 'type' field is automatically determined from the FeatureSet type.
         
         Example:
             >>> yahoo.add_features([
-            >>>     {'symbol': '^GSPC', 'display_name': 'S&P 500', 'type': 'conditioning'},
-            >>>     {'symbol': 'GLD', 'display_name': 'Gold ETF', 'type': 'conditioning'}
+            >>>     {'symbol': '^GSPC', 'display_name': 'S&P 500'},
+            >>>     {'symbol': 'GLD', 'display_name': 'Gold ETF'}
             >>> ])
         """
         standardized_features = []
@@ -117,30 +118,27 @@ class YahooCollectorWrapper(DataCollectorWrapper):
                 raise ValueError(f"Yahoo features must have 'symbol': {feature}")
             if 'display_name' not in feature:
                 raise ValueError(f"Yahoo features must have 'display_name': {feature}")
-            if 'type' not in feature:
-                raise ValueError(f"Yahoo features must have 'type' ('target' or 'conditioning'): {feature}")
             
             standardized_features.append({
                 'name': feature['display_name'],  # Yahoo uses display_name as name
                 'symbol': feature['symbol'],
                 'display_name': feature['display_name'],
-                'type': feature['type'],
                 'source': 'yahoo'
             })
         
-        self._add_to_model(standardized_features)
+        self._add_to_feature_set(standardized_features)
         print(f"✅ Added {len(features)} Yahoo features")
         
         return self
 
 
 # Factory function for creating collector wrappers
-def create_collector_wrapper(model, source: str, api_key: Optional[str] = None, **config) -> DataCollectorWrapper:
+def create_collector_wrapper(feature_set, source: str, api_key: Optional[str] = None, **config) -> DataCollectorWrapper:
     """Create appropriate collector wrapper based on source"""
     if source.lower() == 'fred':
-        return FREDCollectorWrapper(model, source, api_key, **config)
+        return FREDCollectorWrapper(feature_set, source, api_key, **config)
     elif source.lower() == 'yahoo':
-        return YahooCollectorWrapper(model, source, api_key, **config)
+        return YahooCollectorWrapper(feature_set, source, api_key, **config)
     else:
         # Generic wrapper for future collectors
-        return DataCollectorWrapper(model, source, api_key, **config)
+        return DataCollectorWrapper(feature_set, source, api_key, **config)
