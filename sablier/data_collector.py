@@ -80,7 +80,8 @@ class FREDCollectorWrapper(DataCollectorWrapper):
                 raise ValueError(f"FRED features must have 'display_name': {feature}")
             
             standardized_features.append({
-                'name': feature['series_id'],  # FRED uses series_id as name
+                'name': feature['display_name'],  # Use display_name as the primary name
+                'series_id': feature['series_id'],  # Store original FRED code separately
                 'display_name': feature['display_name'],
                 'source': 'fred'
             })

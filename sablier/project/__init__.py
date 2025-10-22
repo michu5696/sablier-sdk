@@ -1,7 +1,6 @@
 """Project-based modular architecture"""
 
 from .builder import Project
-from .feature_set import FeatureSet
-from .model import Model
+from ..feature_set import FeatureSet
 
-__all__ = ["Project", "FeatureSet", "Model"]
+__all__ = ["Project", "FeatureSet"]

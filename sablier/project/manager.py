@@ -84,4 +84,6 @@ class ProjectManager:
             "offset": offset
         })
         
-        return [Project(self.http, data, interactive=self.interactive) for data in response]
+        # Handle the response format from backend: {"projects": [...], "total": ..., "limit": ..., "offset": ...}
+        projects_data = response.get('projects', []) if isinstance(response, dict) else response
+        return [Project(self.http, data, interactive=self.interactive) for data in projects_data]

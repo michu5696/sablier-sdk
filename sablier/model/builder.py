@@ -85,6 +85,21 @@ class Model:
         """Get input features"""
         return self._data.get('input_features', [])
     
+    @property
+    def conditioning_set_id(self) -> Optional[str]:
+        """Get conditioning set ID (for modular architecture)"""
+        return self._data.get('conditioning_set_id')
+    
+    @property
+    def target_set_id(self) -> Optional[str]:
+        """Get target set ID (for modular architecture)"""
+        return self._data.get('target_set_id')
+    
+    @property
+    def project_id(self) -> Optional[str]:
+        """Get project ID (for modular architecture)"""
+        return self._data.get('project_id')
+    
     def refresh(self):
         """Refresh model data from API"""
         response = self.http.get(f'/api/v1/models/{self.id}')
@@ -521,42 +536,33 @@ class Model:
         self,
         past_window: int,
         future_window: int,
-        target_features: List[str],
         stride: int = 10,
-        conditioning_features: Optional[List[str]] = None,
-        splits: Optional[Dict[str, Dict[str, str]]] = None,
-        confirm: Optional[bool] = None
+        splits: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Generate training samples from processed data
+        Generate training samples from processed data using model's feature sets
         
         Args:
             past_window: Past window size (days)
             future_window: Future window size (days)
-            target_features: Features to predict (REQUIRED, must be subset of input features)
             stride: Stride between samples (days, default: 10)
-            conditioning_features: Features for conditioning (optional, defaults to all non-target features)
-            splits: Train/validation/test date ranges (optional, auto-calculated if not provided)
-                Example: {
-                    "training": {"start": "2020-01-01", "end": "2023-12-31"},
-                    "validation": {"start": "2024-01-01", "end": "2024-06-30"},
-                    "test": {"start": "2024-07-01", "end": "2024-12-31"}
-                }
-            confirm: Explicit confirmation (None = prompt if needed)
+            splits: Train/validation splits (optional, auto-calculated if not provided)
+                Can be percentages: {"training": 80, "validation": 20}
+                Or date ranges: {"training": {"start": "2020-01-01", "end": "2023-03-31"}, "validation": {"start": "2023-04-01", "end": "2023-12-31"}}
             
         Returns:
             dict: Generation statistics with keys: status, samples_generated, split_counts
             
         Example:
             >>> model.generate_samples(
-            ...     past_window=90,
-            ...     future_window=30,
-            ...     target_features=["Gold Price"],
-            ...     stride=10
+            ...     past_window=30,
+            ...     future_window=10,
+            ...     stride=5,
+            ...     splits={"training": 80, "validation": 20}
             ... )
         """
         # Check for conflicts
-        if not self._check_and_handle_conflict("generate_samples", confirm):
+        if not self._check_and_handle_conflict("generate_samples", True):
             return {"status": "cancelled"}
         
         print(f"[Model {self.name}] Generating samples...")
@@ -564,26 +570,25 @@ class Model:
         print(f"  Future window: {future_window} days")
         print(f"  Stride: {stride} days")
         
-        # Validate inputs
-        validate_sample_generation_inputs(
-            self.input_features,
-            past_window, 
-            future_window, 
-            target_features, 
-            conditioning_features
-        )
-        
-        # Auto-assign conditioning features if not provided
-        all_feature_names = [f.get('display_name', f.get('name')) for f in self.input_features]
-        if conditioning_features is None:
-            conditioning_features = [f for f in all_feature_names if f not in target_features]
-            print(f"  Auto-assigned {len(conditioning_features)} conditioning features")
+        # For modular architecture, features come from the model's feature sets
+        # The backend will automatically determine conditioning and target features
+        # based on the model's conditioning_set_id and target_set_id
         
         # Auto-generate splits if not provided or if percentage-based
         if splits is None or (isinstance(splits, dict) and isinstance(list(splits.values())[0], (int, float))):
             sample_size = past_window + future_window
+            
+            # Get training dates from project if not available on model
             start = self._data.get('training_start_date')
             end = self._data.get('training_end_date')
+            
+            if not start or not end:
+                # Get project data to get training dates
+                project_id = self.project_id
+                if project_id:
+                    project_response = self.http.get(f'/api/v1/projects/{project_id}')
+                    start = project_response.get('training_start_date')
+                    end = project_response.get('training_end_date')
             
             # If percentage splits provided, use them; otherwise use defaults
             if splits and isinstance(list(splits.values())[0], (int, float)):
@@ -603,19 +608,18 @@ class Model:
         # Validate splits
         validate_splits(splits, past_window, future_window)
         
-        # Build sample config
+        # Build sample config (features will be determined by backend from model's feature sets)
         sample_config = {
             "pastWindow": past_window,
             "futureWindow": future_window,
             "stride": stride,
             "splits": splits,
-            "conditioningFeatures": conditioning_features,
-            "targetFeatures": target_features
+            "conditioningFeatures": [],  # Will be populated by backend from conditioning_set_id
+            "targetFeatures": []  # Will be populated by backend from target_set_id
         }
         
         # Build request payload
         payload = {
-            "user_id": self._data.get("user_id"),  # For backend
             "model_id": self.id,
             "sample_config": sample_config
         }
@@ -628,21 +632,10 @@ class Model:
         self._data["status"] = "samples_generated"
         self._data["sample_config"] = sample_config
         
-        # Update input_features with types
-        updated_features = update_feature_types(
-            self.http, 
-            self.id, 
-            self.input_features, 
-            conditioning_features, 
-            target_features
-        )
-        self._data['input_features'] = updated_features
-        
         split_counts = response.get('split_counts', {})
         print(f"✅ Generated {response.get('samples_generated', 0)} samples")
         print(f"   Training: {split_counts.get('training', 0)}")
         print(f"   Validation: {split_counts.get('validation', 0)}")
-        print(f"   Test: {split_counts.get('test', 0)}")
         
         return response
     

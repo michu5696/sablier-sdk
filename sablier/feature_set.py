@@ -3,7 +3,7 @@
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date
-from ..http_client import HTTPClient
+from .http_client import HTTPClient
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +220,7 @@ class FeatureSet:
         print(f"✅ Added data collector: {source}")
         
         # Return a collector wrapper for adding features
-        from ..data_collector import create_collector_wrapper
+        from .data_collector import create_collector_wrapper
         return create_collector_wrapper(self, source, api_key, **config or {})
     
     def _update_data_collectors(self, collectors: List[Dict[str, Any]]) -> None:

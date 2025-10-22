@@ -87,7 +87,7 @@ class Project:
             ...     description="Key economic indicators for conditioning"
             ... )
         """
-        from .feature_set import FeatureSet
+        from ..feature_set import FeatureSet
         
         response = self.http.post('/api/v1/feature-sets', {
             "project_id": self.id,
@@ -118,7 +118,7 @@ class Project:
             ...     description="Treasury yield curve for prediction"
             ... )
         """
-        from .feature_set import FeatureSet
+        from ..feature_set import FeatureSet
         
         response = self.http.post('/api/v1/feature-sets', {
             "project_id": self.id,
@@ -140,7 +140,7 @@ class Project:
         Returns:
             FeatureSet: Conditioning feature set
         """
-        from .feature_set import FeatureSet
+        from ..feature_set import FeatureSet
         
         response = self.http.get(f'/api/v1/feature-sets/{set_id}')
         return FeatureSet(self.http, response, self.id, self.interactive)
@@ -155,7 +155,7 @@ class Project:
         Returns:
             FeatureSet: Target feature set
         """
-        from .feature_set import FeatureSet
+        from ..feature_set import FeatureSet
         
         response = self.http.get(f'/api/v1/feature-sets/{set_id}')
         return FeatureSet(self.http, response, self.id, self.interactive)
@@ -167,7 +167,7 @@ class Project:
         Returns:
             List[FeatureSet]: All conditioning feature sets
         """
-        from .feature_set import FeatureSet
+        from ..feature_set import FeatureSet
         
         response = self.http.get(f'/api/v1/projects/{self.id}/conditioning-sets')
         return [FeatureSet(self.http, data, self.id, self.interactive) for data in response]
@@ -179,7 +179,7 @@ class Project:
         Returns:
             List[FeatureSet]: All target feature sets
         """
-        from .feature_set import FeatureSet
+        from ..feature_set import FeatureSet
         
         response = self.http.get(f'/api/v1/projects/{self.id}/target-sets')
         return [FeatureSet(self.http, data, self.id, self.interactive) for data in response]
@@ -213,7 +213,7 @@ class Project:
             ...     description="Predicts treasury yields from economic indicators"
             ... )
         """
-        from .model import Model
+        from ..model.builder import Model
         
         # Validate feature sets
         if conditioning_set.set_type != 'conditioning':
@@ -247,7 +247,7 @@ class Project:
         Returns:
             Model: Model instance
         """
-        from .model import Model
+        from ..model.builder import Model
         
         response = self.http.get(f'/api/v1/models/{model_id}')
         return Model(self.http, response, self.interactive)
@@ -259,10 +259,12 @@ class Project:
         Returns:
             List[Model]: All models
         """
-        from .model import Model
+        from ..model.builder import Model
         
         response = self.http.get(f'/api/v1/projects/{self.id}/models')
-        return [Model(self.http, data, self.interactive) for data in response]
+        # Handle response format - could be list directly or wrapped in response object
+        models_data = response.get('models', []) if isinstance(response, dict) else response
+        return [Model(self.http, data, self.interactive) for data in models_data]
     
     # ============================================
     # UTILITY METHODS
