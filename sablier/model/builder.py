@@ -1891,119 +1891,60 @@ Points: {metrics['n_points']}"""
         return response
     
     def train(self,
-                  model_type: str = 'vine_copula',
-                  n_components: int = 5,
-                  n_factors: int = 10,
-                  covariance_type: str = 'diag',
-                  top_pair_percent: float = 0.3,
-                  copula_family: str = 'mixed',
-                  trunc_lvl: int = 3,
-                  num_threads: int = 4,
-                  split: str = 'training',
-                  compute_validation_ll: bool = False,
-                  confirm: Optional[bool] = None) -> Dict[str, Any]:
+                  n_regimes: int = 3,
+                  compute_validation_ll: bool = False) -> Dict[str, Any]:
         """
-        Train model (Vine Copula or Vine Copula)
-        
-        Two model types available:
-        1. Vine Copula (default): EM mixture of vine copulas with cross-window pair selection
-        2. Vine Copula: Mixture of Factor Analyzers with Gaussian mixtures
+        Train Vine Copula model on encoded samples
         
         Pipeline:
         - Empirical marginals (smoothed CDF + exponential tails)
-        - [Vine Copula] EM algorithm with regime-specific vine copulas
-        - [Vine Copula] Factor-structured Gaussian mixture (Σ_k = Λ_k @ Λ_k^T + Ψ_k)
-        - [Vine Copula] Local copulas for conditional tail dependence
+        - EM algorithm with regime-specific vine copulas
+        - Mixed copula families (student, clayton, gumbel, frank, joe)
+        - Optimal truncation level and thread count for performance
         
         Args:
-            model_type: Model type (default: 'vine_copula')
-            n_components: Number of mixture components/regimes (default: 5)
-            n_factors: [Vine Copula only] Number of latent factors per component (default: 10)
-            covariance_type: [Vine Copula only] 'diag' or 'full' covariance (default: 'diag')
-            top_pair_percent: [Vine Copula] Fraction of cross-window pairs to model (default: 0.3)
-            copula_family: [Vine Copula] 'gaussian', 't', 'clayton', 'gumbel', 'mixed' (default: 'mixed')
-            trunc_lvl: [Vine Copula] Truncation level - fit first L trees fully (default: 3)
-            num_threads: [Vine Copula] Number of threads for parallel fitting (default: 4)
-            split: Data split to use ('training', 'validation', or 'training+validation')
+            n_regimes: Number of mixture components/regimes (default: 3)
             compute_validation_ll: Also compute validation log-likelihood (default: False)
-            confirm: Skip confirmation prompt if True
             
         Returns:
             Dict with training results including metrics and model path
             
         Example:
-            >>> # Train Vine Copula model (default)
-            >>> result = model.train(
-            ...     model_type='vine_copula',
-            ...     n_components=2,
-            ...     top_pair_percent=0.3,
-            ...     copula_family='mixed',  # Auto-select best copula per pair
-            ...     trunc_lvl=3,  # Fit first 3 trees (10x speedup)
-            ...     num_threads=4  # Use 4 cores
-            ... )
+            >>> # Train Vine Copula model with default settings
+            >>> result = model.train()
+            >>> print(f"Model trained with {result['training_metrics']['n_components']} regimes")
             
-            >>> # Train Vine Copula model
-            >>> result = model.train(
-            ...     model_type='vine_copula',
-            ...     n_components=5,
-            ...     n_factors=10,
-            ... )
-            >>> print(f"BIC: {result['training_metrics']['bic']}")
+            >>> # Train with custom number of regimes
+            >>> result = model.train(n_regimes=5)
+            >>> print(f"Model trained with {result['training_metrics']['n_components']} regimes")
+            
+            >>> # Train with validation log-likelihood
+            >>> result = model.train(n_regimes=3, compute_validation_ll=True)
         """
-        # Confirmation
-        if confirm is None:
-            confirm = not self.interactive
-        
-        if not confirm and self.interactive:
-            print(f"\n🤖 Training Model")
-            print(f"   Regimes: {n_components}")
-            print(f"   Split: {split}")
+        print(f"\n🤖 Training Vine Copula Model")
+        print(f"   Regimes: {n_regimes}")
+        print(f"   Copula family: mixed (optimized)")
+        print(f"   Truncation level: 3 (optimal)")
+        print(f"   Threads: auto-detected")
         
         print(f"\n🚀 Training model...")
-        
-        # Check for saved optimal parameters from hyperparameter optimization
-        model_metadata = self._data.get('model_metadata') or {}
-        optimal_config = model_metadata.get('vine_copula_optimal_config', {}) if model_metadata else {}
-        
-        if optimal_config:
-            print(f"🔧 Using optimal parameters from previous optimization:")
-            n_components = optimal_config.get('n_components', n_components)
-            n_factors = optimal_config.get('n_factors', n_factors)
-            print(f"   • n_components: {n_components}")
-            print(f"   • n_factors: {n_factors}")
-        else:
-            print(f"📝 Using provided/default parameters (no optimization found)")
         
         # Call training endpoint
         payload = {
             'user_id': self._data.get("user_id"),  # For API key auth
             'model_id': self.id,
-            'model_type': model_type,
-            'n_components': n_components,
-            'n_factors': n_factors,
-            'covariance_type': covariance_type,
-            'top_pair_percent': top_pair_percent,
-            'copula_family': copula_family,
-            'trunc_lvl': trunc_lvl,
-            'num_threads': num_threads,
-            'split': split,
+            'n_regimes': n_regimes,
             'compute_validation_ll': compute_validation_ll
         }
         
         result = self.http.post('/api/v1/ml/train', payload)
         
         train_metrics = result['training_metrics']
-        model_type_str = train_metrics.get('model_type', model_type).upper()
         
-        print(f"✅ {model_type_str} training completed!")
+        print(f"✅ Vine Copula training completed!")
         print(f"   Samples used: {result['n_samples_used']}")
         print(f"   Dimensions: {result['n_dimensions']}")
-        
-        if model_type == 'vine_copula':
-            print(f"   Regime weights: {train_metrics.get('regime_weights', 'N/A')}")
-        else:
-            print(f"   BIC: {train_metrics.get('bic', 0):.2f}")
-            print(f"   AIC: {train_metrics.get('aic', 0):.2f}")
+        print(f"   Regime weights: {train_metrics.get('regime_weights', 'N/A')}")
         
         model_path = result.get('vine_copula_path')
         if model_path and model_path != 'N/A':
