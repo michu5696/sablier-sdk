@@ -1970,9 +1970,7 @@ Points: {metrics['n_points']}"""
     def validate(self,
                      n_forecast_samples: int = 100,
                      run_on_training: bool = True,
-                     run_on_validation: bool = True,
-                     copula_type: str = 'adaptive',
-                     top_k_neighbors: int = 100) -> Dict[str, Any]:
+                     run_on_validation: bool = True) -> Dict[str, Any]:
         """
         Validate Vine Copula model on held-out data
         
@@ -1980,19 +1978,23 @@ Points: {metrics['n_points']}"""
         - Validation log-likelihood (out-of-sample fit)
         - Regime analysis (component assignments)
         - Calibration metrics (forecast quality)
+        - Coverage metrics (68% and 95% confidence intervals)
+        - KS p-value for calibration testing
         
         Args:
             n_forecast_samples: Number of forecast samples per validation sample (default: 100)
-            validation_split: Split to validate on (default: 'validation')
+            run_on_training: Also run validation on training set (default: True)
+            run_on_validation: Run validation on validation set (default: True)
             
         Returns:
             Dict with validation metrics
             
         Example:
             >>> validation = model.validate(n_forecast_samples=100)
-            >>> print(f"Validation log-likelihood: {validation['validation_metrics']['per_sample_log_likelihood']}")
+            >>> print(f"Validation log-likelihood: {validation['validation_metrics']['log_likelihood']['per_sample_log_likelihood']}")
+            >>> print(f"Coverage 95%: {validation['calibration_metrics']['calibration']['coverage_95']}")
         """
-        print(f"\n🔍 Validating model...")
+        print(f"\n🔍 Validating Vine Copula model...")
         print(f"   Training set: {run_on_training}")
         print(f"   Validation set: {run_on_validation}")
         print(f"   Forecast samples per validation sample: {n_forecast_samples}")
@@ -2002,9 +2004,7 @@ Points: {metrics['n_points']}"""
             'model_id': self.id,
             'n_forecast_samples': n_forecast_samples,
             'run_on_training': run_on_training,
-            'run_on_validation': run_on_validation,
-            'copula_type': copula_type,
-            'top_k_neighbors': top_k_neighbors
+            'run_on_validation': run_on_validation
         })
         
         # Display results
@@ -2012,217 +2012,140 @@ Points: {metrics['n_points']}"""
         print(f"✅ Model Validation Complete")
         print(f"="*70)
         
-        # Summary table for unconditional metrics
-        if result.get('training_metrics') and result.get('validation_metrics'):
+        # Training metrics
+        if result.get('training_metrics'):
             train_metrics = result['training_metrics']
+            train_ll = train_metrics.get('log_likelihood', {})
+            print(f"\n📊 Training Set Metrics:")
+            print(f"   Log-likelihood: {train_ll.get('per_sample_log_likelihood', 'N/A'):.4f}")
+            print(f"   BIC: {train_ll.get('bic', 'N/A'):.2f}")
+            print(f"   AIC: {train_ll.get('aic', 'N/A'):.2f}")
+            print(f"   Samples: {train_metrics.get('n_samples', 'N/A')}")
+        
+        # Validation metrics
+        if result.get('validation_metrics'):
             val_metrics = result['validation_metrics']
-            train_ll = train_metrics['per_sample_log_likelihood']
-            val_ll = val_metrics['per_sample_log_likelihood']
-            gap = val_ll - train_ll
+            val_ll = val_metrics.get('log_likelihood', {})
+            print(f"\n📊 Validation Set Metrics:")
+            print(f"   Log-likelihood: {val_ll.get('per_sample_log_likelihood', 'N/A'):.4f}")
+            print(f"   BIC: {val_ll.get('bic', 'N/A'):.2f}")
+            print(f"   AIC: {val_ll.get('aic', 'N/A'):.2f}")
+            print(f"   Samples: {val_metrics.get('n_samples', 'N/A')}")
             
-            print(f"\n📊 Unconditional Log-Likelihood (Joint Distribution Fit)")
-            print(f"{'─'*70}")
-            print(f"{'Metric':<30} {'Training':<20} {'Validation':<20}")
-            print(f"{'─'*70}")
-            print(f"{'Log-likelihood (per sample)':<30} {train_ll:<20.2f} {val_ll:<20.2f}")
-            print(f"{'BIC':<30} {train_metrics['bic']:<20.2f} {val_metrics['bic']:<20.2f}")
-            print(f"{'AIC':<30} {train_metrics['aic']:<20.2f} {val_metrics['aic']:<20.2f}")
-            print(f"{'N Samples':<30} {train_metrics['n_samples']:<20} {val_metrics['n_samples']:<20}")
-            print(f"{'─'*70}")
-            print(f"{'Generalization Gap (absolute)':<30} {gap:.2f}")
-            
-            # Compute relative gap
-            relative_gap = abs(gap / train_ll) * 100 if train_ll != 0 else 0
-            print(f"{'Generalization Gap (relative)':<30} {relative_gap:.1f}%")
-            
-            # Gaussian baseline reference
-            n_dims = train_metrics.get('n_dims', 0)
-            if n_dims > 0:
-                gaussian_baseline = -n_dims/2 * np.log(2 * np.pi) - n_dims/2
-                train_excess = train_ll - gaussian_baseline
-                val_excess = val_ll - gaussian_baseline
-                print(f"{'─'*70}")
-                print(f"{'Gaussian baseline LL':<30} {gaussian_baseline:.2f}")
-                print(f"{'Training excess (vs Gaussian)':<30} {train_excess:.2f}")
-                print(f"{'Validation excess (vs Gaussian)':<30} {val_excess:.2f}")
-                
-                # Interpret training fit quality
-                print(f"{'─'*70}")
-                print(f"{'Training Fit Quality:':<30}")
-                if train_excess > -20:
-                    print(f"{'  Status':<30} ⚠️  Suspiciously good (check for data leakage)")
-                elif train_excess > -50:
-                    print(f"{'  Status':<30} ✅ Excellent (captures complexity well)")
-                elif train_excess > -80:
-                    print(f"{'  Status':<30} ✅ Good (reasonable for financial data)")
-                elif train_excess > -120:
-                    print(f"{'  Status':<30} ⚠️  Moderate (model may be underfitting)")
-                else:
-                    print(f"{'  Status':<30} ❌ Poor (model struggling to fit)")
-            
-            print(f"{'─'*70}")
-            print(f"{'Generalization Quality:':<30}")
-            if relative_gap < 10:
-                print(f"{'  Status':<30} ✅ Excellent (minimal overfitting)")
-                print(f"{'  Interpretation':<30} Model generalizes very well")
-            elif relative_gap < 30:
-                print(f"{'  Status':<30} ✅ Good (acceptable overfitting)")
-                print(f"{'  Interpretation':<30} Model is reliable for new data")
-            elif relative_gap < 50:
-                print(f"{'  Status':<30} ⚠️  Moderate (some overfitting)")
-                print(f"{'  Interpretation':<30} Model may be memorizing training data")
-            elif relative_gap < 100:
-                print(f"{'  Status':<30} ⚠️  Significant (notable overfitting)")
-                print(f"{'  Interpretation':<30} Likely regime shift or insufficient data")
-            else:
-                print(f"{'  Status':<30} ❌ Severe (extreme overfitting)")
-                print(f"{'  Interpretation':<30} Major regime shift between train/val periods")
-            
-            # BIC/AIC interpretation
-            print(f"{'─'*70}")
-            print(f"{'Model Complexity (BIC/AIC):':<30}")
-            bic_diff = val_metrics['bic'] - train_metrics['bic']
-            if bic_diff < 0:
-                print(f"{'  BIC comparison':<30} ⚠️  Validation BIC lower (unusual)")
-            else:
-                print(f"{'  BIC comparison':<30} ✅ Validation BIC higher (expected)")
-            print(f"{'  Note':<30} Lower BIC = better model")
-            print(f"{'       ':<30} (penalizes complexity)")
-            
-            print(f"{'─'*70}")
-        
-        elif result.get('training_metrics'):
-            train_metrics = result['training_metrics']
-            print(f"\n📊 Training Metrics (In-Sample):")
-            print(f"   Log-likelihood (per sample): {train_metrics['per_sample_log_likelihood']:.2f}")
-            print(f"   BIC: {train_metrics['bic']:.2f}")
-            print(f"   AIC: {train_metrics['aic']:.2f}")
-            print(f"   Samples: {train_metrics['n_samples']}")
-        
-        elif result.get('validation_metrics'):
-            val_metrics = result['validation_metrics']
-            print(f"\n📊 Validation Metrics (Out-of-Sample):")
-            print(f"   Log-likelihood (per sample): {val_metrics['per_sample_log_likelihood']:.2f}")
-            print(f"   BIC: {val_metrics['bic']:.2f}")
-            print(f"   AIC: {val_metrics['aic']:.2f}")
-            print(f"   Samples: {val_metrics['n_samples']}")
-        
-        print(f"\n🎭 Regime Analysis:")
-        regime_analysis = result['regime_analysis']
-        print(f"   Components: {regime_analysis['n_components']}")
-        for regime in regime_analysis['regime_stats']:
-            k = regime['component_id']
-            weight = regime['mixing_weight']
-            n_assigned = regime['n_samples_assigned']
-            print(f"   Component {k}: weight={weight:.3f}, assigned={n_assigned} samples")
-        
-        print(f"\n📈 Conditional Forecasting Metrics")
-        print(f"{'─'*70}")
-        calib = result['calibration_metrics']['calibration']
-        forecast_quality = result['calibration_metrics']['forecast_quality']
-        
-        print(f"{'Metric':<35} {'Value':<20} {'Target/Status':<15}")
-        print(f"{'─'*70}")
+            # Generalization gap
+            if result.get('training_metrics') and result.get('validation_metrics'):
+                train_ll_val = result['training_metrics'].get('log_likelihood', {}).get('per_sample_log_likelihood', 0)
+                val_ll_val = val_ll.get('per_sample_log_likelihood', 0)
+                gap = train_ll_val - val_ll_val
+                print(f"   Generalization gap: {gap:.4f}")
         
         # Calibration metrics
-        ks_status = "✅ Good" if calib['ks_pvalue'] > 0.05 else "⚠️  Poor"
-        print(f"{'KS test p-value':<35} {calib['ks_pvalue']:<20.4f} {ks_status:<15}")
+        if result.get('calibration_metrics'):
+            cal_metrics = result['calibration_metrics']
+            print(f"[DEBUG] Calibration metrics found: {cal_metrics}")
+            
+            print(f"\n🎯 Forecast Quality Metrics:")
+            print(f"{'─'*70}")
+            
+            # Handle new reconstructed metrics structure
+            if 'overall' in cal_metrics:
+                overall_metrics = cal_metrics['overall']
+                
+                # CRPS
+                if 'crps' in overall_metrics:
+                    crps = overall_metrics['crps']
+                    print(f"{crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()})")
+                    print(f"   {crps['interpretation']}")
+                
+                # Sharpness
+                if 'sharpness' in overall_metrics:
+                    sharpness = overall_metrics['sharpness']
+                    print(f"{sharpness['icon']} Sharpness: {sharpness['value']:.4f} ({sharpness['quality'].title()})")
+                    print(f"   {sharpness['interpretation']}")
+                
+                # Reliability (ECE)
+                if 'reliability' in overall_metrics:
+                    reliability = overall_metrics['reliability']
+                    print(f"{reliability['icon']} Reliability (ECE): {reliability['ece']:.4f} ({reliability['quality'].title()})")
+                    print(f"   {reliability['interpretation']}")
+                
+                # Show conditioning effectiveness
+                if 'conditioning_effectiveness' in cal_metrics:
+                    eff = cal_metrics['conditioning_effectiveness']
+                    eff_status = "Good" if 0.4 <= eff <= 0.6 else "Poor"
+                    print(f"   📊 Conditioning effectiveness: {eff:.3f} ({eff_status})")
+                
+                # Show note if available
+                if cal_metrics.get('note'):
+                    print(f"   📝 {cal_metrics['note']}")
+                
+                # Horizon-specific metrics
+                if 'horizons' in cal_metrics:
+                    horizons = cal_metrics['horizons']
+                    print(f"\n📈 Horizon-Specific Metrics:")
+                    print(f"{'─'*50}")
+                    
+                    for horizon_name, horizon_metrics in horizons.items():
+                        horizon_display = horizon_name.replace('_', ' ').title()
+                        print(f"\n{horizon_display}:")
+                        
+                        # CRPS
+                        if 'crps' in horizon_metrics:
+                            crps = horizon_metrics['crps']
+                            print(f"  {crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()})")
+                        
+                        # Sharpness
+                        if 'sharpness' in horizon_metrics:
+                            sharpness = horizon_metrics['sharpness']
+                            print(f"  {sharpness['icon']} Sharpness: {sharpness['value']:.4f} ({sharpness['quality'].title()})")
+                        
+                        # Reliability (ECE)
+                        if 'reliability' in horizon_metrics:
+                            reliability = horizon_metrics['reliability']
+                            print(f"  {reliability['icon']} Reliability: {reliability['ece']:.4f} ({reliability['quality'].title()})")
+                
+                # Show future window info
+                if 'future_window' in cal_metrics:
+                    print(f"\n📅 Future Window: {cal_metrics['future_window']} days")
+                    
+            else:
+                # Fallback to old structure
+                # CRPS
+                if 'crps' in cal_metrics:
+                    crps = cal_metrics['crps']
+                    print(f"{crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()})")
+                    print(f"   {crps['interpretation']}")
+                
+                # Sharpness
+                if 'sharpness' in cal_metrics:
+                    sharpness = cal_metrics['sharpness']
+                    print(f"{sharpness['icon']} Sharpness: {sharpness['value']:.4f} ({sharpness['quality'].title()})")
+                    print(f"   {sharpness['interpretation']}")
+                
+                # Reliability (ECE)
+                if 'reliability' in cal_metrics:
+                    reliability = cal_metrics['reliability']
+                    print(f"{reliability['icon']} Reliability (ECE): {reliability['ece']:.4f} ({reliability['quality'].title()})")
+                    print(f"   {reliability['interpretation']}")
+            
+            print(f"{'─'*70}")
         
-        cov_68_diff = abs(calib['coverage_68'] - 0.68)
-        cov_68_status = "✅" if cov_68_diff < 0.05 else "⚠️"
-        print(f"{'68% coverage':<35} {calib['coverage_68']:<20.2%} {cov_68_status} (target: 68%)")
+        # Regime analysis
+        if result.get('regime_analysis'):
+            regime_analysis = result['regime_analysis']
+            print(f"\n🔄 Regime Analysis:")
+            print(f"   Number of regimes: {regime_analysis.get('n_regimes', 'N/A')}")
+            print(f"   Posterior entropy: {regime_analysis.get('posterior_entropy', 'N/A'):.4f}")
+            
+            regime_counts = regime_analysis.get('regime_counts', {})
+            regime_weights = regime_analysis.get('regime_weights', {})
+            for regime in regime_counts:
+                count = regime_counts[regime]
+                weight = regime_weights.get(regime, 0)
+                print(f"   {regime}: {count} samples ({weight:.3f} weight)")
         
-        cov_95_diff = abs(calib['coverage_95'] - 0.95)
-        cov_95_status = "✅" if cov_95_diff < 0.05 else "⚠️"
-        print(f"{'95% coverage':<35} {calib['coverage_95']:<20.2%} {cov_95_status} (target: 95%)")
-        
-        pit_mean_diff = abs(calib['pit_mean'] - 0.5)
-        pit_mean_status = "✅" if pit_mean_diff < 0.05 else "⚠️"
-        print(f"{'PIT mean':<35} {calib['pit_mean']:<20.3f} {pit_mean_status} (target: 0.5)")
-        
-        pit_std_diff = abs(calib['pit_std'] - 0.29)
-        pit_std_status = "✅" if pit_std_diff < 0.05 else "⚠️"
-        print(f"{'PIT std':<35} {calib['pit_std']:<20.3f} {pit_std_status} (target: 0.29)")
-        
-        print(f"{'─'*70}")
-        
-        # CRPS interpretation
-        mean_crps = forecast_quality['mean_crps']
-        median_crps = forecast_quality['median_crps']
-        
-        if mean_crps < 1.0:
-            crps_status = "✅ Excellent"
-        elif mean_crps < 2.0:
-            crps_status = "✅ Good"
-        elif mean_crps < 3.0:
-            crps_status = "⚠️  Moderate"
-        else:
-            crps_status = "❌ Poor"
-        
-        print(f"{'Mean CRPS':<35} {mean_crps:<20.4f} {crps_status:<15}")
-        print(f"{'Median CRPS':<35} {median_crps:<20.4f} {'(lower is better)':<15}")
-        print(f"{'─'*70}")
-        
-        # Overall interpretation
-        print(f"\n💡 Overall Assessment:")
-        print(f"{'─'*70}")
-        
-        # 1. Distribution Match (CRPS)
-        print(f"\n1️⃣  Distribution Match (CRPS):")
-        if mean_crps < 1.0:
-            print(f"   ✅ Excellent: Predicted distribution very close to true distribution")
-        elif mean_crps < 2.0:
-            print(f"   ✅ Good: Predicted distribution matches true distribution well")
-        elif mean_crps < 3.0:
-            print(f"   ⚠️  Moderate: Some mismatch between predicted and true distributions")
-        else:
-            print(f"   ❌ Poor: Significant mismatch between distributions")
-        
-        # 2. Calibration (KS test)
-        print(f"\n2️⃣  Forecast Calibration (KS test):")
-        if calib['ks_pvalue'] > 0.05:
-            print(f"   ✅ Well-calibrated: Forecast probabilities are reliable")
-            print(f"      → Can trust confidence intervals and risk estimates")
-        else:
-            print(f"   ⚠️  Poorly calibrated: Forecast probabilities may be biased")
-            print(f"      → Confidence intervals may be too wide or too narrow")
-        
-        # 3. Coverage accuracy
-        print(f"\n3️⃣  Coverage Accuracy:")
-        coverage_68_ok = abs(calib['coverage_68'] - 0.68) < 0.05
-        coverage_95_ok = abs(calib['coverage_95'] - 0.95) < 0.05
-        if coverage_68_ok and coverage_95_ok:
-            print(f"   ✅ Accurate: Confidence intervals have correct coverage")
-            print(f"      → 68% and 95% intervals are reliable for risk management")
-        elif coverage_68_ok or coverage_95_ok:
-            print(f"   ⚠️  Partially accurate: Some intervals are miscalibrated")
-            if not coverage_68_ok:
-                print(f"      → 68% interval: {calib['coverage_68']:.1%} (target: 68%)")
-            if not coverage_95_ok:
-                print(f"      → 95% interval: {calib['coverage_95']:.1%} (target: 95%)")
-        else:
-            print(f"   ❌ Inaccurate: Confidence intervals need recalibration")
-            print(f"      → 68% interval: {calib['coverage_68']:.1%} (target: 68%)")
-            print(f"      → 95% interval: {calib['coverage_95']:.1%} (target: 95%)")
-        
-        # 4. Overall verdict
-        print(f"\n4️⃣  Overall Verdict:")
-        all_good = (mean_crps < 2.0 and calib['ks_pvalue'] > 0.05 and 
-                   coverage_68_ok and coverage_95_ok)
-        mostly_good = (mean_crps < 3.0 and calib['ks_pvalue'] > 0.05 and 
-                      (coverage_68_ok or coverage_95_ok))
-        
-        if all_good:
-            print(f"   🎉 EXCELLENT: Model is production-ready for scenario generation")
-            print(f"      → Distributions match, calibration is good, coverage is accurate")
-        elif mostly_good:
-            print(f"   ✅ GOOD: Model is suitable for scenario generation")
-            print(f"      → Minor calibration issues, but overall reliable")
-        else:
-            print(f"   ⚠️  NEEDS IMPROVEMENT: Consider hyperparameter tuning")
-            print(f"      → Recalibration or more training data may help")
-        
-        print(f"{'─'*70}")
+        print(f"\n✅ Validation complete!")
+        print(f"{'='*70}")
         
         return result
     
