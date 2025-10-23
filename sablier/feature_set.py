@@ -174,7 +174,7 @@ class FeatureSet:
     def add_data_collector(self, 
                           source: str, 
                           api_key: Optional[str] = None,
-                          config: Optional[Dict[str, Any]] = None) -> 'DataCollectorWrapper':
+                          config: Optional[Dict[str, Any]] = None) -> Any:
         """
         Add a data collector to this feature set and return a collector wrapper
         
@@ -289,56 +289,177 @@ class FeatureSet:
     # FEATURE GROUPING
     # ============================================
     
-    def compute_feature_groups(self, 
-                              correlation_threshold: float = 0.75,
-                              method: str = 'hierarchical',
-                              confirm: Optional[bool] = None) -> Dict[str, Any]:
+    def group_features(self, correlation_threshold: float = 0.75) -> Dict[str, Any]:
         """
-        Compute feature groups based on correlation analysis
+        Group features based on correlation analysis in training data
         
         Args:
-            correlation_threshold: Minimum correlation for grouping
-            method: Grouping method ('hierarchical', 'kmeans')
-            confirm: Skip confirmation prompt if True
+            correlation_threshold: Minimum correlation for grouping features
             
         Returns:
             Dict with grouping results
             
         Example:
-            >>> groups = conditioning_set.compute_feature_groups(correlation_threshold=0.8)
-            >>> print(f"Created {len(groups['groups'])} feature groups")
+            >>> result = conditioning_set.group_features(correlation_threshold=0.8)
+            >>> print(f"Found {len(result['feature_groups']['groups'])} feature groups")
         """
         if not self.fetched_data_available:
-            raise ValueError(f"Data must be fetched before computing feature groups")
+            raise ValueError(f"Data must be fetched before grouping features")
+        
+        # Group features via API
+        response = self.http.post(f'/api/v1/feature-sets/{self.id}/analyze-correlations', {
+            "correlation_threshold": correlation_threshold
+        })
+        
+        # Update local data with feature groups
+        if response.get('status') == 'success':
+            feature_groups = response.get('feature_groups', {})
+            self._data['feature_groups'] = feature_groups
+            
+            groups = feature_groups.get('groups', [])
+            n_groups = len(groups)
+            multivariate_groups = len([g for g in groups if g.get('is_multivariate', False)])
+            
+            print(f"✅ Feature grouping complete for {self.name}")
+            print(f"   Groups found: {n_groups}")
+            print(f"   Multivariate groups: {multivariate_groups}")
+            print(f"   Univariate groups: {n_groups - multivariate_groups}")
+            
+            # Display groups
+            self._display_feature_groups(groups)
+        
+        return response
+    
+    def _display_feature_groups(self, groups: List[Dict[str, Any]]) -> None:
+        """Display feature groups in a formatted way"""
+        print(f"\n📊 FEATURE GROUPS:")
+        print("=" * 60)
+        
+        for group in groups:
+            group_name = group.get('name', 'Unknown')
+            features = group.get('features', [])
+            is_multivariate = group.get('is_multivariate', False)
+            n_features = len(features)
+            
+            print(f"\n{group_name}")
+            print(f"  Features ({n_features}): {', '.join(features)}")
+            print(f"  Type: {'Multivariate' if is_multivariate else 'Univariate'}")
+    
+    
+    def list_feature_groups(self) -> List[Dict[str, Any]]:
+        """
+        List all feature groups for this feature set
+        
+        Returns:
+            List of feature group dictionaries
+            
+        Example:
+            >>> groups = conditioning_set.list_feature_groups()
+            >>> for group in groups:
+            ...     print(f"Group: {group['name']}, Features: {group['features']}")
+        """
+        feature_groups = self._data.get('feature_groups', {})
+        groups = feature_groups.get('groups', [])
+        
+        if not groups:
+            print(f"No feature groups found for {self.name}")
+            print("Run analyze_correlations() first to create groups.")
+            return []
+        
+        print(f"\n📊 FEATURE GROUPS FOR {self.name.upper()}:")
+        print("=" * 60)
+        
+        for group in groups:
+            group_name = group.get('name', 'Unknown')
+            features = group.get('features', [])
+            is_multivariate = group.get('is_multivariate', False)
+            n_features = len(features)
+            
+            print(f"\n{group_name}")
+            print(f"  Features ({n_features}): {', '.join(features)}")
+            print(f"  Type: {'Multivariate' if is_multivariate else 'Univariate'}")
+        
+        return groups
+    
+    def rename_feature_group(self, old_name: str, new_name: str, confirm: Optional[bool] = None) -> Dict[str, Any]:
+        """
+        Rename a feature group
+        
+        Args:
+            old_name: Current group name
+            new_name: New group name
+            confirm: Skip confirmation prompt if True
+            
+        Returns:
+            Dict with rename result
+            
+        Example:
+            >>> result = conditioning_set.rename_feature_group("conditioning_group_1", "economic_indicators")
+        """
+        feature_groups = self._data.get('feature_groups', {})
+        groups = feature_groups.get('groups', [])
+        group_mapping = feature_groups.get('group_mapping', {})
+        
+        # Find the group to rename
+        group_to_rename = None
+        for group in groups:
+            if group.get('name') == old_name:
+                group_to_rename = group
+                break
+        
+        if not group_to_rename:
+            raise ValueError(f"Group '{old_name}' not found")
         
         # Confirmation
         if confirm is None and self.interactive:
-            print(f"🔗 Computing feature groups for {self.name}")
-            print(f"   Correlation threshold: {correlation_threshold}")
-            print(f"   Method: {method}")
+            features = group_to_rename.get('features', [])
+            is_multivariate = group_to_rename.get('is_multivariate', False)
+            
+            print(f"🔄 Renaming feature group:")
+            print(f"   From: {old_name}")
+            print(f"   To: {new_name}")
+            print(f"   Features: {', '.join(features)}")
+            print(f"   Type: {'Multivariate' if is_multivariate else 'Univariate'}")
             print()
             
             response = input("Continue? [y/N]: ")
             if response.lower() != 'y':
                 return {"status": "cancelled"}
         
-        # Compute groups via API
-        response = self.http.post(f'/api/v1/feature-sets/{self.id}/compute-groups', {
-            "correlation_threshold": correlation_threshold,
-            "method": method
-        })
+        # Update the group name
+        group_to_rename['name'] = new_name
+        
+        # Update group mapping for all features in this group
+        for feature in group_to_rename.get('features', []):
+            if feature in group_mapping:
+                group_mapping[feature] = new_name
         
         # Update local data
-        self._data = response.get('feature_set', self._data)
+        self._data['feature_groups'] = {
+            'groups': groups,
+            'group_mapping': group_mapping
+        }
         
-        groups = response.get('feature_groups', {})
-        n_groups = len(groups.get('groups', []))
+        print(f"✅ Renamed group '{old_name}' to '{new_name}'")
         
-        print(f"✅ Feature groups computed for {self.name}")
-        print(f"   Groups created: {n_groups}")
-        print(f"   Multivariate groups: {len([g for g in groups.get('groups', []) if g.get('is_multivariate', False)])}")
-        
-        return response
+        return {
+            "status": "success",
+            "old_name": old_name,
+            "new_name": new_name,
+            "feature_groups": self._data['feature_groups']
+        }
+    
+    @property
+    def feature_groups(self) -> Dict[str, Any]:
+        """Get feature groups for this feature set"""
+        return self._data.get('feature_groups', {})
+    
+    @property
+    def has_feature_groups(self) -> bool:
+        """Check if feature groups have been computed"""
+        feature_groups = self._data.get('feature_groups', {})
+        groups = feature_groups.get('groups', [])
+        return len(groups) > 0
     
     # ============================================
     # UTILITY METHODS
