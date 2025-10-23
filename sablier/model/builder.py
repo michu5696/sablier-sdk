@@ -534,32 +534,33 @@ class Model:
     
     def generate_samples(
         self,
-        past_window: int,
-        future_window: int,
-        stride: int = 10,
+        past_window: int = 100,
+        future_window: int = 80,
+        stride: int = 5,
         splits: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Generate training samples from processed data using model's feature sets
+        Generate training samples and fit encoding models (PCA-ICA) using model's feature sets
+        
+        This method performs a complete pipeline:
+        1. Generate training samples with proper windowing
+        2. Fit PCA-ICA encoding models on training split
+        3. Encode all samples using fitted models
         
         Args:
-            past_window: Past window size (days)
-            future_window: Future window size (days)
-            stride: Stride between samples (days, default: 10)
+            past_window: Past window size (days, default: 100)
+            future_window: Future window size (days, default: 80)
+            stride: Stride between samples (days, default: 5)
             splits: Train/validation splits (optional, auto-calculated if not provided)
                 Can be percentages: {"training": 80, "validation": 20}
                 Or date ranges: {"training": {"start": "2020-01-01", "end": "2023-03-31"}, "validation": {"start": "2023-04-01", "end": "2023-12-31"}}
             
         Returns:
-            dict: Generation statistics with keys: status, samples_generated, split_counts
+            dict: Generation and encoding statistics with keys: status, samples_generated, models_fitted, samples_encoded
             
         Example:
-            >>> model.generate_samples(
-            ...     past_window=30,
-            ...     future_window=10,
-            ...     stride=5,
-            ...     splits={"training": 80, "validation": 20}
-            ... )
+            >>> model.generate_samples()  # Uses defaults: 100 past, 80 future, stride 5, 80/20 split
+            >>> model.generate_samples(past_window=50, future_window=30)  # Custom windows
         """
         # Check for conflicts
         if not self._check_and_handle_conflict("generate_samples", True):
@@ -628,16 +629,77 @@ class Model:
         print("📡 Calling backend to generate samples...")
         response = self.http.post('/api/v1/ml/generate-samples', payload)
         
-        # Update model status
-        self._data["status"] = "samples_generated"
+        # Store sample config but don't update status yet (we'll update to "encoded" at the end)
         self._data["sample_config"] = sample_config
         
         split_counts = response.get('split_counts', {})
-        print(f"✅ Generated {response.get('samples_generated', 0)} samples")
+        samples_generated = response.get('samples_generated', 0)
+        print(f"✅ Generated {samples_generated} samples")
         print(f"   Training: {split_counts.get('training', 0)}")
         print(f"   Validation: {split_counts.get('validation', 0)}")
         
-        return response
+        # Step 2: Fit encoding models and encode samples
+        print(f"\n🔧 Fitting PCA-ICA encoding models and encoding samples...")
+        
+        # Fit encoding models
+        print(f"  Step 2/3: Fitting PCA-ICA encoding models on 'training' split...")
+        try:
+            fit_response = self.http.post('/api/v1/ml/fit?split=training', {
+                "model_id": self.id,
+                "encoding_type": "pca-ica",
+                "pca_variance_threshold_series": 0.95,
+                "pca_variance_threshold_residuals": 0.99
+            })
+            
+            models_fitted = fit_response.get('models_fitted', 0)
+            features_processed = fit_response.get('features_processed', 0)
+            samples_used = fit_response.get('samples_used', 0)
+            
+            print(f"  ✅ Fitted {models_fitted} encoding models")
+            print(f"     Features processed: {features_processed}")
+            print(f"     Samples used: {samples_used}")
+            
+        except Exception as e:
+            print(f"  ❌ Failed to fit encoding models: {e}")
+            raise
+        
+        # Encode samples
+        print(f"  Step 3/3: Encoding all samples...")
+        try:
+            encode_response = self.http.post('/api/v1/ml/encode?source=database', {
+                "model_id": self.id,
+                "encoding_type": "pca-ica"
+            })
+            
+            samples_encoded = encode_response.get('samples_encoded', 0)
+            encoding_features_processed = encode_response.get('features_processed', 0)
+            
+            print(f"  ✅ Encoded {samples_encoded} samples")
+            print(f"     Features processed: {encoding_features_processed}")
+            
+        except Exception as e:
+            print(f"  ❌ Failed to encode samples: {e}")
+            raise
+        
+        # Update model status
+        self._data["status"] = "encoded"
+        
+        # Persist status change to database
+        try:
+            self.http.patch(f'/api/v1/models/{self.id}', {"status": "encoded"})
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to persist status change: {e}")
+        
+        print(f"✅ Sample generation and encoding complete")
+        
+        return {
+            "status": "success",
+            "samples_generated": samples_generated,
+            "models_fitted": models_fitted,
+            "samples_encoded": samples_encoded,
+            "features_processed": features_processed,
+            "split_counts": split_counts
+        }
     
     
     def _update_metadata(self, updates: Dict[str, Any]):
@@ -663,44 +725,40 @@ class Model:
         confirm: Optional[bool] = None
     ) -> Dict[str, Any]:
         """
-        Fit encoding models and encode all samples
+        [DEPRECATED] Fit encoding models and encode all samples
         
-        This performs a two-step process:
-        1. Fits PCA-ICA (or UMAP) encoding models on specified split
-        2. Encodes all samples using the fitted models
+        This method is deprecated. Encoding is now automatically performed as part of generate_samples().
+        Use model.generate_samples() instead, which includes sample generation, model fitting, and encoding.
         
         Args:
-            encoding_type: Type of encoding ("pca-ica" or "umap", default: "pca-ica")
-            split: Which split to use for fitting ("training", "validation", 
-                   "training+validation", or "all", default: "training")
-            pca_variance_threshold_series: Variance threshold for normalized_series (conditioning, default: 0.95)
-            pca_variance_threshold_residuals: Variance threshold for normalized_residuals (targets, default: 0.99)
-            confirm: Explicit confirmation (None = prompt if needed)
+            encoding_type: Type of encoding ("pca-ica", default: "pca-ica")
+            split: Which split to use for fitting ("training", default: "training")
+            pca_variance_threshold_series: Variance threshold for normalized_series (default: 0.95)
+            pca_variance_threshold_residuals: Variance threshold for normalized_residuals (default: 0.99)
+            confirm: Explicit confirmation (ignored)
             
         Returns:
-            dict: {
-                "status": "success",
-                "models_fitted": int,
-                "samples_encoded": int,
-                "features_processed": int,
-                "split_used": str
-            }
+            dict: Encoding statistics
             
         Example:
-            >>> # Basic usage - fit and encode using PCA-ICA on training split
-            >>> result = model.encode_samples()
-            >>> print(f"Fitted {result['models_fitted']} encoding models")
-            >>> print(f"Encoded {result['samples_encoded']} samples")
+            >>> # OLD WAY (deprecated):
+            >>> model.generate_samples()
+            >>> model.encode_samples()  # Don't use this anymore
             
-            >>> # Use UMAP encoding (requires PCA-ICA to be fitted first)
-            >>> result = model.encode_samples(encoding_type="umap")
-            
-            >>> # Fit on combined training+validation data
-            >>> result = model.encode_samples(split="training+validation")
+            >>> # NEW WAY (recommended):
+            >>> model.generate_samples()  # Includes encoding automatically
         """
+        import warnings
+        warnings.warn(
+            "encode_samples() is deprecated. Encoding is now automatically performed as part of generate_samples(). "
+            "Use model.generate_samples() instead, which includes sample generation, model fitting, and encoding.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        
         # Validate encoding_type
-        if encoding_type not in ["pca-ica", "umap"]:
-            raise ValueError(f"Invalid encoding_type: {encoding_type}. Must be 'pca-ica' or 'umap'")
+        if encoding_type not in ["pca-ica"]:
+            raise ValueError(f"Invalid encoding_type: {encoding_type}. Must be 'pca-ica'")
         
         # Validate split
         if split not in ["training", "validation", "training+validation", "all"]:

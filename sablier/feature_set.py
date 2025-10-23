@@ -307,7 +307,7 @@ class FeatureSet:
             raise ValueError(f"Data must be fetched before grouping features")
         
         # Group features via API
-        response = self.http.post(f'/api/v1/feature-sets/{self.id}/analyze-correlations', {
+        response = self.http.post(f'/api/v1/feature-sets/{self.id}/compute-feature-groups', {
             "correlation_threshold": correlation_threshold
         })
         
