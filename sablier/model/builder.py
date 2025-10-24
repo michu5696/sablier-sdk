@@ -842,6 +842,56 @@ class Model:
     # SCENARIO CREATION
     # ============================================
     
+    def _validate_feature_simulation_dates(self, feature_simulation_dates: Dict[str, str]):
+        """
+        Validate that feature_simulation_dates keys correspond to valid conditioning features/groups.
+        
+        Args:
+            feature_simulation_dates: Dict mapping feature/group names to simulation dates
+            
+        Raises:
+            ValueError: If any key is not a valid conditioning feature or group name
+        """
+        if not feature_simulation_dates:
+            return
+        
+        # Get the conditioning feature set
+        conditioning_set_id = self._data.get('conditioning_set_id')
+        if not conditioning_set_id:
+            raise ValueError("Model has no conditioning feature set")
+        
+        # Get conditioning feature set details
+        conditioning_set = self.http.get(f'/api/v1/feature-sets/{conditioning_set_id}')
+        if not conditioning_set:
+            raise ValueError(f"Could not retrieve conditioning feature set {conditioning_set_id}")
+        
+        # Get valid feature/group names from conditioning set
+        valid_names = set()
+        
+        # Add individual feature names
+        features = conditioning_set.get('features', [])
+        for feature in features:
+            valid_names.add(feature.get('name'))
+        
+        # Add feature group names (if any)
+        feature_groups = conditioning_set.get('feature_groups', {})
+        groups = feature_groups.get('groups', [])
+        for group in groups:
+            valid_names.add(group.get('name'))
+        
+        # Validate each key in feature_simulation_dates
+        invalid_names = []
+        for key in feature_simulation_dates.keys():
+            if key not in valid_names:
+                invalid_names.append(key)
+        
+        if invalid_names:
+            available_names = sorted(list(valid_names))
+            raise ValueError(
+                f"Invalid feature/group names in feature_simulation_dates: {invalid_names}. "
+                f"Valid conditioning feature/group names are: {available_names}"
+            )
+    
     def create_scenario(
         self,
         simulation_date: str,
@@ -878,6 +928,10 @@ class Model:
         # Check if model is trained
         if self.status not in ['trained', 'model_trained']:
             raise ValueError(f"Model must be trained to create scenarios. Current status: {self.status}")
+        
+        # Validate feature_simulation_dates if provided
+        if feature_simulation_dates:
+            self._validate_feature_simulation_dates(feature_simulation_dates)
         
         from ..scenario.builder import Scenario
         
@@ -2055,7 +2109,6 @@ Points: {metrics['n_points']}"""
         # Calibration metrics
         if result.get('calibration_metrics'):
             cal_metrics = result['calibration_metrics']
-            print(f"[DEBUG] Calibration metrics found: {cal_metrics}")
             
             print(f"\n🎯 Forecast Quality Metrics:")
             print(f"{'─'*70}")
