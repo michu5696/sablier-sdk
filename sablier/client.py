@@ -28,7 +28,7 @@ class SablierClient:
     def __init__(
         self,
         api_url: str,
-        api_key: str,
+        api_key: Optional[str] = None,
         fred_api_key: Optional[str] = None,
         interactive: bool = True
     ):
@@ -37,14 +37,15 @@ class SablierClient:
         
         Args:
             api_url: Base URL of the Sablier backend API (e.g., https://api.sablier.ai or http://localhost:8000)
-            api_key: API key for authentication (format: sk_live_...) or dummy key for registration
+            api_key: Optional API key for authentication. If None, will register a new user and generate API key
             fred_api_key: Optional FRED API key for data searching and fetching
             interactive: Enable interactive prompts for confirmations (default: True)
         """
+        # If no API key provided, register a new user and get an API key
         if not api_key:
-            raise AuthenticationError("API key is required")
+            api_key = self._register_and_get_api_key(api_url, interactive)
         
-        # Allow dummy keys for registration
+        # Validate API key format
         if not api_key.startswith("sk_") and not api_key.startswith("dummy_"):
             raise AuthenticationError("Invalid API key format. API keys should start with 'sk_'")
         
@@ -61,6 +62,56 @@ class SablierClient:
         self.projects = ProjectManager(self.http, interactive=interactive)
         self.models = ModelManager(self.http, interactive=interactive)
         self.scenarios = ScenarioManager(self.http, self.models)
+    
+    def _register_and_get_api_key(self, api_url: str, interactive: bool) -> str:
+        """
+        Register a new user and get an API key
+        
+        Args:
+            api_url: Base URL of the Sablier backend API
+            interactive: Whether to prompt for user input
+            
+        Returns:
+            str: Generated API key
+        """
+        import requests
+        import uuid
+        import time
+        
+        # Generate a unique email for this session
+        timestamp = int(time.time())
+        email = f"auto_user_{timestamp}@example.com"
+        
+        if interactive:
+            print(f"🔑 No API key provided. Registering new user: {email}")
+        
+        # Register the user
+        try:
+            response = requests.post(
+                f"{api_url}/api/v1/auth/register", 
+                json={
+                    "email": email,
+                    "password": str(uuid.uuid4()),  # Random password
+                    "name": f"Auto User {timestamp}",
+                    "company": "Test Company"
+                }
+            )
+            
+            if response.status_code != 200:
+                raise AuthenticationError(f"Failed to register user: {response.text}")
+            
+            user_data = response.json()
+            user_id = user_data.get("user_id")
+            api_key = user_data.get("api_key")
+            
+            if interactive:
+                print(f"✅ User registered successfully (ID: {user_id})")
+                print(f"🔑 API key generated: {api_key}")
+            
+            return api_key
+            
+        except requests.RequestException as e:
+            raise AuthenticationError(f"Failed to register user and get API key: {e}")
     
     def health_check(self) -> dict:
         """

@@ -76,34 +76,29 @@ class FeatureSet:
     # ============================================
     
     def add_feature(self, 
-                   name: str, 
+                   id: str, 
                    source: str = "fred",
-                   symbol: Optional[str] = None,
-                   display_name: Optional[str] = None) -> 'FeatureSet':
+                   name: Optional[str] = None) -> 'FeatureSet':
         """
         Add a feature to this feature set
         
         Args:
-            name: Feature name (e.g., "DGS10" for FRED)
+            id: Feature identifier (e.g., "DGS10" for FRED, "^GSPC" for Yahoo)
             source: Data source ("fred", "yahoo")
-            symbol: Symbol for Yahoo Finance (e.g., "^GSPC")
-            display_name: Human-readable name (defaults to name)
+            name: Human-readable name (defaults to id)
             
         Returns:
             self (for chaining)
             
         Example:
-            >>> conditioning_set.add_feature("DGS10", source="fred", display_name="10-Year Treasury")
-            >>> conditioning_set.add_feature("S&P 500", source="yahoo", symbol="^GSPC")
+            >>> conditioning_set.add_feature("DGS10", source="fred", name="10-Year Treasury")
+            >>> conditioning_set.add_feature("^GSPC", source="yahoo", name="S&P 500")
         """
         feature = {
-            "name": name,
+            "id": id,
             "source": source,
-            "display_name": display_name or name
+            "name": name or id
         }
-        
-        if symbol:
-            feature["symbol"] = symbol
         
         # Add to local data
         current_features = self.features.copy()
@@ -112,7 +107,7 @@ class FeatureSet:
         # Update via API
         self._update_features(current_features)
         
-        print(f"✅ Added feature: {display_name or name} ({source})")
+        print(f"✅ Added feature: {name or id} ({source})")
         return self
     
     def add_features(self, features: List[Dict[str, Any]]) -> 'FeatureSet':
@@ -127,8 +122,8 @@ class FeatureSet:
             
         Example:
             >>> features = [
-            ...     {"name": "DGS10", "source": "fred", "display_name": "10-Year Treasury"},
-            ...     {"name": "DGS2", "source": "fred", "display_name": "2-Year Treasury"}
+            ...     {"id": "DGS10", "source": "fred", "name": "10-Year Treasury"},
+            ...     {"id": "DGS2", "source": "fred", "name": "2-Year Treasury"}
             ... ]
             >>> target_set.add_features(features)
         """
@@ -196,14 +191,14 @@ class FeatureSet:
             >>> # FRED collector
             >>> fred_collector = conditioning_set.add_data_collector("fred", api_key="your_key")
             >>> fred_collector.add_features([
-            ...     {"series_id": "DGS10", "display_name": "10-Year Treasury"},
-            ...     {"series_id": "UNRATE", "display_name": "Unemployment Rate"}
+            ...     {"id": "DGS10", "name": "10-Year Treasury"},
+            ...     {"id": "UNRATE", "name": "Unemployment Rate"}
             ... ])
             >>> 
             >>> # Yahoo collector
             >>> yahoo_collector = conditioning_set.add_data_collector("yahoo")
             >>> yahoo_collector.add_features([
-            ...     {"symbol": "^GSPC", "display_name": "S&P 500"}
+            ...     {"id": "^GSPC", "name": "S&P 500"}
             ... ])
         """
         collector = {

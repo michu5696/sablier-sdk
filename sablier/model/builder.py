@@ -353,13 +353,13 @@ class Model:
             >>> # FRED collector - uses series_id
             >>> fred = model.add_data_collector('fred', api_key='your_key')
             >>> fred.add_features([
-            >>>     {'series_id': 'DGS30', 'display_name': 'US Treasury 30Y', 'type': 'target'}
+            >>>     {'id': 'DGS30', 'name': 'US Treasury 30Y', 'type': 'target'}
             >>> ])
             >>> 
             >>> # Yahoo collector - uses symbol
             >>> yahoo = model.add_data_collector('yahoo')
             >>> yahoo.add_features([
-            >>>     {'symbol': '^GSPC', 'display_name': 'S&P 500', 'type': 'conditioning'}
+            >>>     {'id': '^GSPC', 'name': 'S&P 500', 'type': 'conditioning'}
             >>> ])
         """
         from ..data_collector import create_collector_wrapper

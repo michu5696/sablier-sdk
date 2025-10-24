@@ -61,14 +61,14 @@ class FREDCollectorWrapper(DataCollectorWrapper):
         Args:
             features: List of dicts with:
                 - series_id: FRED series ID (e.g., 'DGS30', 'FEDFUNDS')
-                - display_name: User-friendly name (e.g., 'US Treasury 30Y')
+                - name: User-friendly name (e.g., 'US Treasury 30Y')
         
         Note: The 'type' field is automatically determined from the FeatureSet type.
         
         Example:
             >>> fred.add_features([
-            >>>     {'series_id': 'DGS30', 'display_name': 'US Treasury 30Y'},
-            >>>     {'series_id': 'FEDFUNDS', 'display_name': 'Fed Funds Rate'}
+            >>>     {'id': 'DGS30', 'name': 'US Treasury 30Y'},
+            >>>     {'id': 'FEDFUNDS', 'name': 'Fed Funds Rate'}
             >>> ])
         """
         standardized_features = []
@@ -76,13 +76,12 @@ class FREDCollectorWrapper(DataCollectorWrapper):
         for feature in features:
             if 'series_id' not in feature:
                 raise ValueError(f"FRED features must have 'series_id': {feature}")
-            if 'display_name' not in feature:
-                raise ValueError(f"FRED features must have 'display_name': {feature}")
+            if 'name' not in feature:
+                raise ValueError(f"FRED features must have 'name': {feature}")
             
             standardized_features.append({
-                'name': feature['display_name'],  # Use display_name as the primary name
-                'series_id': feature['series_id'],  # Store original FRED code separately
-                'display_name': feature['display_name'],
+                'id': feature.get('id', feature.get('series_id')),
+                'name': feature['name'],
                 'source': 'fred'
             })
         
@@ -102,14 +101,14 @@ class YahooCollectorWrapper(DataCollectorWrapper):
         Args:
             features: List of dicts with:
                 - symbol: Ticker symbol (e.g., '^GSPC', 'GLD', '^VIX')
-                - display_name: User-friendly name (e.g., 'S&P 500', 'Gold ETF')
+                - name: User-friendly name (e.g., 'S&P 500', 'Gold ETF')
         
         Note: The 'type' field is automatically determined from the FeatureSet type.
         
         Example:
             >>> yahoo.add_features([
-            >>>     {'symbol': '^GSPC', 'display_name': 'S&P 500'},
-            >>>     {'symbol': 'GLD', 'display_name': 'Gold ETF'}
+            >>>     {'id': '^GSPC', 'name': 'S&P 500'},
+            >>>     {'id': 'GLD', 'name': 'Gold ETF'}
             >>> ])
         """
         standardized_features = []
@@ -117,13 +116,12 @@ class YahooCollectorWrapper(DataCollectorWrapper):
         for feature in features:
             if 'symbol' not in feature:
                 raise ValueError(f"Yahoo features must have 'symbol': {feature}")
-            if 'display_name' not in feature:
-                raise ValueError(f"Yahoo features must have 'display_name': {feature}")
+            if 'name' not in feature:
+                raise ValueError(f"Yahoo features must have 'name': {feature}")
             
             standardized_features.append({
-                'name': feature['display_name'],  # Yahoo uses display_name as name
-                'symbol': feature['symbol'],
-                'display_name': feature['display_name'],
+                'id': feature.get('id', feature.get('symbol')),
+                'name': feature['name'],
                 'source': 'yahoo'
             })
         

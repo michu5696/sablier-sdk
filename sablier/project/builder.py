@@ -222,6 +222,14 @@ class Project:
         if target_set.set_type != 'target':
             raise ValueError(f"Second argument must be a target set, got {target_set.set_type}")
         
+        # Validate no overlapping features between conditioning and target sets
+        conditioning_features = set(feature.get('name') for feature in conditioning_set.features)
+        target_features = set(feature.get('name') for feature in target_set.features)
+        
+        overlapping_features = conditioning_features.intersection(target_features)
+        if overlapping_features:
+            raise ValueError(f"Features cannot be in both conditioning and target sets. Overlapping features: {list(overlapping_features)}")
+        
         # Create model via API (no data validation required - data fetching happens later)
         response = self.http.post('/api/v1/models', {
             "project_id": self.id,
