@@ -844,9 +844,10 @@ class Model:
     
     def create_scenario(
         self,
+        simulation_date: str,
         name: str,
         description: str = "",
-        n_scenarios: int = 100
+        feature_simulation_dates: Optional[Dict[str, str]] = None
     ):
         """
         Create a new scenario linked to this model.
@@ -855,31 +856,43 @@ class Model:
         to access client.scenarios.create().
         
         Args:
+            simulation_date: Default simulation date for all features (YYYY-MM-DD)
             name: Scenario name
             description: Optional scenario description
-            n_scenarios: Number of synthetic paths to generate (default: 100)
+            feature_simulation_dates: Optional dict mapping feature names to specific simulation dates
         
         Returns:
             Scenario instance
         
         Example:
             >>> scenario = model.create_scenario(
+            ...     simulation_date="2020-03-15",
             ...     name="COVID Crash Scenario",
             ...     description="Simulating March 2020 conditions",
-            ...     n_scenarios=1000
+            ...     feature_simulation_dates={
+            ...         "5-Year Treasury Rate": "2008-09-15",  # Lehman crisis
+            ...         "VIX Volatility Index": "2020-02-28"   # Different date
+            ...     }
             ... )
         """
+        # Check if model is trained
+        if self.status not in ['trained', 'model_trained']:
+            raise ValueError(f"Model must be trained to create scenarios. Current status: {self.status}")
+        
         from ..scenario.builder import Scenario
         
         print(f"[Model {self.name}] Creating scenario: {name}")
-        print(f"  Target paths: {n_scenarios}")
+        print(f"  Simulation date: {simulation_date}")
+        if feature_simulation_dates:
+            print(f"  Feature-specific dates: {feature_simulation_dates}")
         
         # Create via API
         response = self.http.post('/api/v1/scenarios', {
             'model_id': self.id,
             'name': name,
             'description': description,
-            'n_scenarios': n_scenarios
+            'simulation_date': simulation_date,
+            'feature_simulation_dates': feature_simulation_dates or {}
         })
         
         print(f"✅ Scenario created: {response.get('name')} (ID: {response.get('id')[:8]}...)")
@@ -2246,8 +2259,7 @@ Points: {metrics['n_points']}"""
         print(f"   Observed: {result['n_observed']} dimensions")
         print(f"   Predicted: {result['n_predicted']} dimensions")
         
-        # Return SyntheticData instance with all reconstructed windows
-        from ..synthetic_data import SyntheticData
+        # Return the raw result with reconstructed windows
         reconstructed_windows = result.get('conditioning_info', {}).get('reconstructed', [])
         
         if not reconstructed_windows:
@@ -2255,21 +2267,8 @@ Points: {metrics['n_points']}"""
             logger.warning("No auto-reconstructed data found, returning raw result")
             return result
         
-        return SyntheticData(
-            reconstructed_windows=reconstructed_windows,
-            forecast_metadata={
-                'n_samples': result['n_samples'],
-                'n_observed': result['n_observed'],
-                'n_predicted': result['n_predicted'],
-                'model_id': result['model_id'],
-                'conditioning_info': result.get('conditioning_info', {}),
-                # Date information for plotting
-                'past_dates': result.get('past_dates', []),
-                'future_dates': result.get('future_dates', []),
-                'reference_date': result.get('reference_date')
-            },
-            model=self
-        )
+        # Return the full forecast result
+        return result
     
     def reconstruct_forecasts(self,
                                    forecasts: Dict[str, Any] = None,
