@@ -128,9 +128,9 @@ class Scenario:
     # PLOTTING AND ANALYSIS
     # ============================================
     
-    def plot_forecasts(self, features: Optional[List[str]] = None, save_path: Optional[str] = None) -> None:
+    def plot_forecasts(self, features: Optional[List[str]] = None, save_dir: Optional[str] = None) -> List[str]:
         """
-        Plot forecast paths with conditioning and ground truth
+        Plot forecast paths with conditioning and ground truth (one plot per feature)
         
         Shows:
         - Past trajectories (historical data)
@@ -141,7 +141,10 @@ class Scenario:
         
         Args:
             features: List of features to plot (default: all forecast features)
-            save_path: Path to save plot (default: display only)
+            save_dir: Directory to save plots (default: ./forecasts/)
+            
+        Returns:
+            List of saved plot file paths
         """
         if not self.is_simulated:
             raise ValueError("Scenario must be simulated before plotting")
@@ -149,9 +152,17 @@ class Scenario:
         import matplotlib.pyplot as plt
         import numpy as np
         import logging
+        import os
         
         # Suppress matplotlib INFO messages about categorical units
         logging.getLogger('matplotlib.category').setLevel(logging.WARNING)
+        
+        # Default save directory
+        if save_dir is None:
+            save_dir = './forecasts/'
+        
+        # Create directory if it doesn't exist
+        os.makedirs(save_dir, exist_ok=True)
         
         # Get reconstructed windows from output
         reconstructed_windows = self.output.get('conditioning_info', {}).get('reconstructed', [])
@@ -166,7 +177,7 @@ class Scenario:
         
         if not forecast_windows:
             print("Warning: No forecast windows found in scenario output")
-            return
+            return []
         
         # Group by feature
         feature_forecasts = {}
@@ -179,7 +190,7 @@ class Scenario:
         
         if not feature_forecasts:
             print("Warning: No features available to plot")
-            return
+            return []
         
         # Select features to plot
         if features is None:
@@ -191,17 +202,11 @@ class Scenario:
         if not features:
             raise ValueError("No forecast features available to plot")
         
-        n_features = len(features)
-        fig, axes = plt.subplots(n_features, 1, figsize=(16, 5*n_features))
-        if n_features == 1:
-            axes = [axes]
+        saved_files = []
         
-        # Main title
-        fig.suptitle('Conditional Forecasts', 
-                     fontsize=16, fontweight='bold', y=0.995)
-        
-        for idx, feature_name in enumerate(features):
-            ax = axes[idx]
+        # Plot each feature separately
+        for feature_name in features:
+            fig, ax = plt.subplots(1, 1, figsize=(14, 6))
             
             # Get forecast data
             forecast_paths = feature_forecasts[feature_name]
@@ -251,10 +256,9 @@ class Scenario:
                            markersize=5, alpha=0.9, label='Ground Truth', zorder=6)
                 
                 # Vertical line at forecast start (red dotted)
-                ax.axvline(x=len(past_values), color='red', linestyle=':', 
-                          linewidth=2, alpha=0.5, label='Forecast Start', zorder=4)
-            else:
-                future_t = np.arange(n_timesteps)
+                if not use_dates:
+                    ax.axvline(x=len(past_values), color='red', linestyle=':', 
+                              linewidth=2, alpha=0.5, label='Forecast Start', zorder=4)
             
             # Plot individual forecast paths (light blue, semi-transparent)
             n_to_plot = min(50, n_samples)  # Show up to 50 paths
@@ -288,7 +292,7 @@ class Scenario:
                    linewidth=2.5, alpha=0.9, label='Median Forecast', zorder=7)
             
             # Formatting
-            ax.set_title(feature_name, fontsize=14, fontweight='bold')
+            ax.set_title(f'{feature_name} - Conditional Forecast', fontsize=14, fontweight='bold')
             
             if use_dates:
                 # Format x-axis for dates
@@ -315,26 +319,28 @@ class Scenario:
             ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
                     fontsize=9, verticalalignment='top',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-        
-        plt.tight_layout()
-        
-        if save_path:
+            
+            plt.tight_layout()
+            
+            # Save individual plot
+            safe_feature_name = feature_name.replace('/', '_').replace('\\', '_')
+            save_path = os.path.join(save_dir, f'{safe_feature_name}_forecast.png')
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            print(f"✅ Plot saved to: {save_path}")
-        else:
-            plt.show()
+            plt.close()
+            saved_files.append(save_path)
+            print(f"  ✅ Saved: {save_path}")
         
-        return fig
+        return saved_files
     
 
     
     def plot_conditioning_scenario(
         self,
         features: Optional[List[str]] = None,
-        save_path: Optional[str] = None
-    ) -> None:
+        save_dir: Optional[str] = None
+    ) -> List[str]:
         """
-        Plot conditioning data (past and future conditioning windows)
+        Plot conditioning data (past and future conditioning windows) - one plot per feature
         
         Shows:
         - Past conditioning (fetched recent data)
@@ -343,7 +349,10 @@ class Scenario:
         
         Args:
             features: List of features to plot (default: all conditioning features)
-            save_path: Path to save plot (default: display only)
+            save_dir: Directory to save plots (default: ./conditioning/)
+            
+        Returns:
+            List of saved plot file paths
         """
         if not self.is_simulated:
             raise ValueError("Scenario must be simulated before plotting")
@@ -351,9 +360,17 @@ class Scenario:
         import matplotlib.pyplot as plt
         import numpy as np
         import logging
+        import os
         
         # Suppress matplotlib INFO messages about categorical units
         logging.getLogger('matplotlib.category').setLevel(logging.WARNING)
+        
+        # Default save directory
+        if save_dir is None:
+            save_dir = './conditioning/'
+        
+        # Create directory if it doesn't exist
+        os.makedirs(save_dir, exist_ok=True)
         
         # Get reconstructed windows from output
         reconstructed_windows = self.output.get('conditioning_info', {}).get('reconstructed', [])
@@ -384,26 +401,11 @@ class Scenario:
         if not features:
             raise ValueError("No conditioning features available to plot")
         
-        # Calculate grid layout (2x3 for 6 features, adjust as needed)
-        n_features = len(features)
-        n_cols = min(3, n_features)
-        n_rows = (n_features + n_cols - 1) // n_cols
+        saved_files = []
         
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
-        if n_features == 1:
-            axes = [axes]
-        elif n_rows == 1:
-            axes = axes.reshape(1, -1)
-        
-        # Flatten axes for easier indexing
-        axes_flat = axes.flatten() if n_features > 1 else axes
-        
-        # Main title
-        fig.suptitle('Conditioning Scenario', 
-                     fontsize=16, fontweight='bold', y=0.995)
-        
-        for idx, feature_name in enumerate(features):
-            ax = axes_flat[idx]
+        # Plot each feature separately
+        for feature_name in features:
+            fig, ax = plt.subplots(1, 1, figsize=(14, 6))
             
             # Get conditioning data
             past_values = self._get_past_conditioning_values(feature_name)
@@ -440,46 +442,48 @@ class Scenario:
                 if use_dates and self.output.get('reference_date'):
                     # Use actual reference date for boundary
                     boundary_x = self.output.get('reference_date')
-                else:
+                elif past_values:
                     # Use numeric index
                     boundary_x = len(past_values)
-                ax.axvline(x=boundary_x, color='red', linestyle='--', 
-                          linewidth=2, alpha=0.7, label='Boundary', zorder=4)
+                else:
+                    boundary_x = None
+                
+                if boundary_x is not None:
+                    ax.axvline(x=boundary_x, color='red', linestyle='--', 
+                              linewidth=2, alpha=0.7, label='Boundary', zorder=4)
             
             # Formatting
-            ax.set_title(feature_name, fontsize=12, fontweight='bold')
+            ax.set_title(f'{feature_name} - Conditioning Scenario', fontsize=14, fontweight='bold')
             
             if use_dates:
                 # Format x-axis for dates
-                ax.set_xlabel('Date', fontsize=10)
+                ax.set_xlabel('Date', fontsize=12)
                 # Rotate labels and show every Nth date
                 n_dates = len(past_t) + len(future_t)
-                tick_interval = max(1, n_dates // 8)  # Show ~8 ticks
+                tick_interval = max(1, n_dates // 10)  # Show ~10 ticks
                 all_dates = list(past_t) + list(future_t)
                 tick_indices = range(0, n_dates, tick_interval)
                 ax.set_xticks([all_dates[i] for i in tick_indices if i < len(all_dates)])
-                ax.tick_params(axis='x', rotation=45, labelsize=8)
+                ax.tick_params(axis='x', rotation=45)
             else:
                 # Numeric time steps
-                ax.set_xlabel('Time Step', fontsize=10)
+                ax.set_xlabel('Time Step', fontsize=12)
             
-            ax.set_ylabel('Value', fontsize=10)
-            ax.legend(loc='best', fontsize=9, framealpha=0.95)
+            ax.set_ylabel('Value', fontsize=12)
+            ax.legend(loc='best', fontsize=10, framealpha=0.95)
             ax.grid(True, alpha=0.3, linestyle='--')
-        
-        # Hide unused subplots
-        for idx in range(n_features, len(axes_flat)):
-            axes_flat[idx].set_visible(False)
-        
-        plt.tight_layout()
-        
-        if save_path:
+            
+            plt.tight_layout()
+            
+            # Save individual plot
+            safe_feature_name = feature_name.replace('/', '_').replace('\\', '_')
+            save_path = os.path.join(save_dir, f'{safe_feature_name}_conditioning.png')
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            print(f"✅ Conditioning plot saved to: {save_path}")
-        else:
-            plt.show()
+            plt.close()
+            saved_files.append(save_path)
+            print(f"  ✅ Saved: {save_path}")
         
-        return fig
+        return saved_files
     
     def _get_past_values(self, feature_name: str) -> Optional[List[float]]:
         """Get past values for a feature from the forecast output"""

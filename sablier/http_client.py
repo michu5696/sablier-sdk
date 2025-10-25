@@ -24,9 +24,12 @@ class HTTPClient:
         self.session = requests.Session()
         self.session.headers.update({'Content-Type': 'application/json'})
     
-    def _get_url(self, endpoint: str) -> str:
+    def _get_url(self, endpoint: str, add_trailing_slash: bool = False) -> str:
         """Construct full URL for endpoint"""
         endpoint = endpoint.lstrip('/')
+        # Add trailing slash if requested (for Cloud Run POST endpoints)
+        if add_trailing_slash and not endpoint.endswith('/'):
+            endpoint = endpoint + '/'
         return f"{self.api_url}/{endpoint}"
     
     def _handle_response(self, response: requests.Response) -> dict:
@@ -78,7 +81,11 @@ class HTTPClient:
         Returns:
             dict: Response data
         """
-        url = self._get_url(endpoint)
+        # Only add trailing slash for simple endpoints without IDs (Cloud Run requirement)
+        has_id_in_path = any(part and len(part) > 20 for part in endpoint.split('/'))
+        add_slash = not has_id_in_path
+        
+        url = self._get_url(endpoint, add_trailing_slash=add_slash)
         headers = self.auth_handler.get_headers()
         
         response = self.session.get(url, headers=headers, params=params)
@@ -95,10 +102,26 @@ class HTTPClient:
         Returns:
             dict: Response data
         """
-        url = self._get_url(endpoint)
+        # Don't add trailing slash - Cloud Run handles the routing correctly without it
+        # Exception: Only for endpoints with IDs and sub-actions (PATCH-style)
+        url = self._get_url(endpoint, add_trailing_slash=False)
         headers = self.auth_handler.get_headers()
         
-        response = self.session.post(url, headers=headers, json=data)
+        response = self.session.post(url, headers=headers, json=data, allow_redirects=False)
+        
+        # Handle redirects manually (307 for Cloud Run POST, 302 for HTTP->HTTPS)
+        # Allow up to 2 levels of redirects to handle HTTP->HTTPS->path/ scenarios
+        for _ in range(2):
+            if response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get('Location')
+                if location:
+                    # Explicitly use POST method on redirect, don't let requests auto-change to GET
+                    response = self.session.request('POST', location, headers=headers, json=data, allow_redirects=False)
+                else:
+                    break
+            else:
+                break
+        
         return self._handle_response(response)
     
     def put(self, endpoint: str, data: Optional[dict] = None) -> dict:
