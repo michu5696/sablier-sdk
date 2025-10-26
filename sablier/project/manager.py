@@ -1,6 +1,7 @@
 """Project manager for creating and retrieving projects"""
 
 from typing import Optional, Any, List
+from datetime import datetime
 from ..http_client import HTTPClient
 from .builder import Project
 
@@ -16,15 +17,15 @@ class ProjectManager:
                name: str,
                description: str = "",
                training_start_date: str = "2015-01-01",
-               training_end_date: str = "2023-12-31") -> Project:
+               training_end_date: Optional[str] = None) -> Project:
         """
         Create a new project
         
         Args:
             name: Project name
             description: Project description
-            training_start_date: Training period start date (YYYY-MM-DD)
-            training_end_date: Training period end date (YYYY-MM-DD)
+            training_start_date: Training period start date (YYYY-MM-DD). Default: "2015-01-01"
+            training_end_date: Training period end date (YYYY-MM-DD). Default: today's date
             
         Returns:
             Project: New project instance
@@ -32,11 +33,13 @@ class ProjectManager:
         Example:
             >>> project = client.projects.create(
             ...     name="Treasury Yield Analysis",
-            ...     description="Analysis of treasury yield predictions",
-            ...     training_start_date="2015-01-01",
-            ...     training_end_date="2023-12-31"
+            ...     description="Analysis of treasury yield predictions"
             ... )
         """
+        # Default training_end_date to today if not provided
+        if training_end_date is None:
+            training_end_date = datetime.now().strftime("%Y-%m-%d")
+        
         # Call API to create project
         response = self.http.post('/api/v1/projects', {
             "name": name,

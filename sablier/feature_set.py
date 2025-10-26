@@ -232,14 +232,14 @@ class FeatureSet:
     def fetch_data(self, 
                   start_date: Optional[str] = None,
                   end_date: Optional[str] = None,
-                  confirm: Optional[bool] = None) -> Dict[str, Any]:
+                  correlation_threshold: float = 1.0) -> Dict[str, Any]:
         """
         Fetch data for all features in this feature set
         
         Args:
             start_date: Start date (uses project's training period if None)
             end_date: End date (uses project's training period if None)
-            confirm: Skip confirmation prompt if True
+            correlation_threshold: Correlation threshold for feature grouping (default: 1.0 = no grouping)
             
         Returns:
             Dict with fetch results
@@ -254,21 +254,11 @@ class FeatureSet:
         if not self.data_collectors:
             raise ValueError(f"No data collectors configured in {self.name}")
         
-        # Confirmation
-        if confirm is None and self.interactive:
-            print(f"📥 Fetching data for {self.name} ({self.set_type} set)")
-            print(f"   Features: {len(self.features)}")
-            print(f"   Data collectors: {len(self.data_collectors)}")
-            print()
-            
-            response = input("Continue? [y/N]: ")
-            if response.lower() != 'y':
-                return {"status": "cancelled"}
-        
         # Fetch data via API
         response = self.http.post(f'/api/v1/feature-sets/{self.id}/fetch-data', {
             "start_date": start_date,
-            "end_date": end_date
+            "end_date": end_date,
+            "correlation_threshold": correlation_threshold
         })
         
         # Update local data
@@ -434,6 +424,15 @@ class FeatureSet:
             'groups': groups,
             'group_mapping': group_mapping
         }
+        
+        # Persist to backend
+        response = self.http.patch(f'/api/v1/feature-sets/{self.id}', {
+            'feature_groups': self._data['feature_groups']
+        })
+        
+        # Update local data with response
+        if response.get('feature_set'):
+            self._data = response['feature_set']
         
         print(f"✅ Renamed group '{old_name}' to '{new_name}'")
         
