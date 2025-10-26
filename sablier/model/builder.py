@@ -2094,9 +2094,12 @@ Points: {metrics['n_points']}"""
             val_metrics = result['validation_metrics']
             val_ll = val_metrics.get('log_likelihood', {})
             print(f"\n📊 Validation Set Metrics:")
-            print(f"   Log-likelihood: {val_ll.get('per_sample_log_likelihood', 'N/A'):.4f}")
-            print(f"   BIC: {val_ll.get('bic', 'N/A'):.2f}")
-            print(f"   AIC: {val_ll.get('aic', 'N/A'):.2f}")
+            val_ll_per_sample = val_ll.get('per_sample_log_likelihood', 'N/A')
+            val_bic = val_ll.get('bic', 'N/A')
+            val_aic = val_ll.get('aic', 'N/A')
+            print(f"   Log-likelihood: {val_ll_per_sample if val_ll_per_sample == 'N/A' else f'{val_ll_per_sample:.4f}'}")
+            print(f"   BIC: {val_bic if val_bic == 'N/A' else f'{val_bic:.2f}'}")
+            print(f"   AIC: {val_aic if val_aic == 'N/A' else f'{val_aic:.2f}'}")
             print(f"   Samples: {val_metrics.get('n_samples', 'N/A')}")
             
             # Generalization gap
