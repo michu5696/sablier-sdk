@@ -537,7 +537,9 @@ class Model:
         past_window: int = 100,
         future_window: int = 80,
         stride: int = 5,
-        splits: Optional[Dict[str, Any]] = None
+        splits: Optional[Dict[str, Any]] = None,
+        pca_variance_threshold_series: float = 0.99,
+        pca_variance_threshold_residuals: float = 0.99
     ) -> Dict[str, Any]:
         """
         Generate training samples and fit encoding models (PCA-ICA) using model's feature sets
