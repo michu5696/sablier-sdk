@@ -618,6 +618,11 @@ class Scenario:
         
         return saved_files
     
+    # Alias for convenience
+    def plot_conditioning(self, **kwargs) -> List[str]:
+        """Alias for plot_conditioning_scenario()"""
+        return self.plot_conditioning_scenario(**kwargs)
+    
     def _get_past_values(self, feature_name: str) -> Optional[List[float]]:
         """Get past values for a feature from the forecast output"""
         reconstructed_windows = self.output.get('conditioning_info', {}).get('reconstructed', [])
