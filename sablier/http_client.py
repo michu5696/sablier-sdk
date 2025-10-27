@@ -81,7 +81,8 @@ class HTTPClient:
         Returns:
             dict: Response data
         """
-        # Only add trailing slash for simple endpoints without IDs (Cloud Run requirement)
+        # Add trailing slash for list endpoints (Cloud Run + FastAPI router requirement)
+        # Only add if endpoint doesn't have an ID (no long UUID-like segments)
         has_id_in_path = any(part and len(part) > 20 for part in endpoint.split('/'))
         add_slash = not has_id_in_path
         

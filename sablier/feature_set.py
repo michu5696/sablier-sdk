@@ -75,40 +75,7 @@ class FeatureSet:
     # FEATURE MANAGEMENT
     # ============================================
     
-    def add_feature(self, 
-                   id: str, 
-                   source: str = "fred",
-                   name: Optional[str] = None) -> 'FeatureSet':
-        """
-        Add a feature to this feature set
-        
-        Args:
-            id: Feature identifier (e.g., "DGS10" for FRED, "^GSPC" for Yahoo)
-            source: Data source ("fred", "yahoo")
-            name: Human-readable name (defaults to id)
-            
-        Returns:
-            self (for chaining)
-            
-        Example:
-            >>> conditioning_set.add_feature("DGS10", source="fred", name="10-Year Treasury")
-            >>> conditioning_set.add_feature("^GSPC", source="yahoo", name="S&P 500")
-        """
-        feature = {
-            "id": id,
-            "source": source,
-            "name": name or id
-        }
-        
-        # Add to local data
-        current_features = self.features.copy()
-        current_features.append(feature)
-        
-        # Update via API
-        self._update_features(current_features)
-        
-        print(f"✅ Added feature: {name or id} ({source})")
-        return self
+    
     
     def add_features(self, features: List[Dict[str, Any]]) -> 'FeatureSet':
         """
@@ -270,65 +237,7 @@ class FeatureSet:
         
         return response
     
-    # ============================================
-    # FEATURE GROUPING
-    # ============================================
-    
-    def group_features(self, correlation_threshold: float = 0.75) -> Dict[str, Any]:
-        """
-        Group features based on correlation analysis in training data
-        
-        Args:
-            correlation_threshold: Minimum correlation for grouping features
-            
-        Returns:
-            Dict with grouping results
-            
-        Example:
-            >>> result = conditioning_set.group_features(correlation_threshold=0.8)
-            >>> print(f"Found {len(result['feature_groups']['groups'])} feature groups")
-        """
-        if not self.fetched_data_available:
-            raise ValueError(f"Data must be fetched before grouping features")
-        
-        # Group features via API
-        response = self.http.post(f'/api/v1/feature-sets/{self.id}/compute-feature-groups', {
-            "correlation_threshold": correlation_threshold
-        })
-        
-        # Update local data with feature groups
-        if response.get('status') == 'success':
-            feature_groups = response.get('feature_groups', {})
-            self._data['feature_groups'] = feature_groups
-            
-            groups = feature_groups.get('groups', [])
-            n_groups = len(groups)
-            multivariate_groups = len([g for g in groups if g.get('is_multivariate', False)])
-            
-            print(f"✅ Feature grouping complete for {self.name}")
-            print(f"   Groups found: {n_groups}")
-            print(f"   Multivariate groups: {multivariate_groups}")
-            print(f"   Univariate groups: {n_groups - multivariate_groups}")
-            
-            # Display groups
-            self._display_feature_groups(groups)
-        
-        return response
-    
-    def _display_feature_groups(self, groups: List[Dict[str, Any]]) -> None:
-        """Display feature groups in a formatted way"""
-        print(f"\n📊 FEATURE GROUPS:")
-        print("=" * 60)
-        
-        for group in groups:
-            group_name = group.get('name', 'Unknown')
-            features = group.get('features', [])
-            is_multivariate = group.get('is_multivariate', False)
-            n_features = len(features)
-            
-            print(f"\n{group_name}")
-            print(f"  Features ({n_features}): {', '.join(features)}")
-            print(f"  Type: {'Multivariate' if is_multivariate else 'Univariate'}")
+
     
     
     def list_feature_groups(self) -> List[Dict[str, Any]]:
@@ -345,24 +254,6 @@ class FeatureSet:
         """
         feature_groups = self._data.get('feature_groups', {})
         groups = feature_groups.get('groups', [])
-        
-        if not groups:
-            print(f"No feature groups found for {self.name}")
-            print("Run analyze_correlations() first to create groups.")
-            return []
-        
-        print(f"\n📊 FEATURE GROUPS FOR {self.name.upper()}:")
-        print("=" * 60)
-        
-        for group in groups:
-            group_name = group.get('name', 'Unknown')
-            features = group.get('features', [])
-            is_multivariate = group.get('is_multivariate', False)
-            n_features = len(features)
-            
-            print(f"\n{group_name}")
-            print(f"  Features ({n_features}): {', '.join(features)}")
-            print(f"  Type: {'Multivariate' if is_multivariate else 'Univariate'}")
         
         return groups
     

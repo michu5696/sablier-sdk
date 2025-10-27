@@ -70,13 +70,15 @@ class ProjectManager:
     
     def list(self,
              limit: int = 100,
-             offset: int = 0) -> List[Project]:
+             offset: int = 0,
+             include_templates: bool = True) -> List[Project]:
         """
-        List all projects
+        List all projects (user's own + templates)
         
         Args:
             limit: Maximum number of projects to return
             offset: Number of projects to skip
+            include_templates: Include template projects (default: True)
             
         Returns:
             List[Project]: List of project instances
@@ -84,7 +86,8 @@ class ProjectManager:
         # Call API to list projects
         response = self.http.get('/api/v1/projects', params={
             "limit": limit,
-            "offset": offset
+            "offset": offset,
+            "include_templates": include_templates
         })
         
         # Handle the response format from backend: {"projects": [...], "total": ..., "limit": ..., "offset": ...}

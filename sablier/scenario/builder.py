@@ -62,32 +62,57 @@ class Scenario:
     # SIMULATION
     # ============================================
     
-    def simulate(self, n_samples: int = 1000) -> Dict[str, Any]:
+    def simulate(self, n_samples: int = 1000, force: bool = False) -> Dict[str, Any]:
         """
         Run the scenario simulation by calling the forecast endpoint.
         
+        If the scenario was already simulated, this will re-run it with fresh data,
+        overwriting the previous results.
+        
         Args:
             n_samples: Number of forecast samples to generate
+            force: Skip confirmation prompt for re-simulation (default: False)
             
         Returns:
             Forecast response data
             
         Example:
             >>> scenario.simulate(n_samples=1000)
+            >>> # Re-run with fresh data
+            >>> scenario.simulate(n_samples=1000)  # Will prompt for confirmation
+            >>> scenario.simulate(n_samples=1000, force=True)  # Skip confirmation
         """
         if not self.simulation_date:
             raise ValueError("Scenario must have a simulation_date configured")
         
-        print(f"[Scenario {self.name}] Running simulation...")
+        # Check if already simulated
+        is_resimulation = bool(self._data.get('output'))
+        
+        if is_resimulation and not force and self.interactive:
+            print(f"\n⚠️  Scenario '{self.name}' has already been simulated.")
+            print(f"   Re-running will fetch fresh market data and overwrite the previous results.")
+            response = input("   Continue? (y/N): ").strip().lower()
+            if response != 'y':
+                print("❌ Re-simulation cancelled.")
+                return self._data.get('output', {})
+            print()
+        
+        if is_resimulation:
+            print(f"[Scenario {self.name}] Re-running simulation with fresh data...")
+        else:
+            print(f"[Scenario {self.name}] Running simulation...")
+        
         print(f"  Simulation date: {self.simulation_date}")
         print(f"  Number of samples: {n_samples}")
         
         # Call forecast endpoint with scenario-based conditioning
-        # Get user_id from model data (the model should have it)
-        user_id = self.model._data.get("user_id")
+        # Use the authenticated user's ID (scenario owner), not the model's user_id
+        # This allows using template models (owned by template user) while accessing
+        # the current user's scenarios
+        user_id = self._data.get("user_id")
         if not user_id:
-            # Fallback: try to get from scenario data
-            user_id = self._data.get("user_id")
+            # Fallback: get from HTTP client's auth (if available)
+            user_id = getattr(self.http.auth_handler, 'user_id', None)
         
         response = self.http.post('/api/v1/ml/forecast', {
             'user_id': user_id,
@@ -101,53 +126,68 @@ class Scenario:
         print(f"  Status: {response.get('status')}")
         print(f"  Generated {response.get('n_samples', 0)} forecast samples")
         
-        # Update local data
-        self._data.update(response)
-        self.output = response
-        self.status = 'simulation_done'
+        # Refetch scenario from database to get the full output structure
+        refreshed_data = self.http.get(f'/api/v1/scenarios/{self.id}')
+        
+        # Update local data with refreshed scenario (includes full output)
+        self._data.update(refreshed_data)
+        self.output = refreshed_data.get('output')
+        self.status = refreshed_data.get('status', 'simulation_done')
         
         return response
-    
-    def re_run(self, n_samples: int = 1000) -> Dict[str, Any]:
-        """
-        Re-run the scenario simulation with fresh data.
-        
-        This will fetch fresh market data and re-run the forecast,
-        but keep the same simulation_date configuration.
-        
-        Args:
-            n_samples: Number of forecast samples to generate
-            
-        Returns:
-            Forecast response data
-        """
-        print(f"[Scenario {self.name}] Re-running simulation with fresh data...")
-        return self.simulate(n_samples)
     
     # ============================================
     # PLOTTING AND ANALYSIS
     # ============================================
     
-    def plot_forecasts(self, features: Optional[List[str]] = None, save_dir: Optional[str] = None) -> List[str]:
+    def plot_forecasts(
+        self, 
+        feature: Optional[str] = None,
+        features: Optional[List[str]] = None, 
+        save: bool = False,
+        save_dir: Optional[str] = None,
+        display: bool = True
+    ) -> List[str]:
         """
-        Plot forecast paths with conditioning and ground truth (one plot per feature)
+        Plot forecast paths with conditioning and ground truth
         
         Shows:
         - Past trajectories (historical data)
-        - Future ground truth (if available)
+        - Future ground truth (if available from historical simulation)
         - Confidence intervals (68% and 95%)
         - Limited number of individual forecast paths
         - Median forecast
         
         Args:
-            features: List of features to plot (default: all forecast features)
+            feature: Single feature to plot and display inline (optional)
+            features: List of features to plot when saving (default: all)
+            save: Whether to save plots to disk (default: False)
             save_dir: Directory to save plots (default: ./forecasts/)
+            display: Whether to display plot inline (default: True, only when feature specified)
             
         Returns:
-            List of saved plot file paths
+            List of saved plot file paths (empty if save=False)
+            
+        Examples:
+            >>> # Display a single feature inline
+            >>> scenario.plot_forecasts(feature="10-Year Treasury Rate")
+            
+            >>> # Save all features to disk without displaying
+            >>> scenario.plot_forecasts(save=True, display=False)
+            
+            >>> # Display one feature AND save all features
+            >>> scenario.plot_forecasts(feature="S&P 500", save=True)
         """
         if not self.is_simulated:
-            raise ValueError("Scenario must be simulated before plotting")
+            # Try to refresh from database
+            refreshed_data = self.http.get(f'/api/v1/scenarios/{self.id}')
+            self._data.update(refreshed_data)
+            self.output = refreshed_data.get('output')
+            self.status = refreshed_data.get('status', 'created')
+            
+            if not self.is_simulated:
+                print(f"Debug: status={self.status}, output type={type(self.output)}, output is not None={self.output is not None}")
+                raise ValueError("Scenario must be simulated before plotting. Run scenario.simulate() first.")
         
         import matplotlib.pyplot as plt
         import numpy as np
@@ -165,18 +205,19 @@ class Scenario:
         os.makedirs(save_dir, exist_ok=True)
         
         # Get reconstructed windows from output
-        reconstructed_windows = self.output.get('conditioning_info', {}).get('reconstructed', [])
+        output = self.output
+        reconstructed_windows = output.get('conditioning_info', {}).get('reconstructed', [])
         
         if not reconstructed_windows:
             raise ValueError("No reconstructed data found in scenario output")
         
-        # Find target forecast windows
+        # Find forecast windows - these are future windows that are NOT historical patterns
         forecast_windows = [w for w in reconstructed_windows if 
                           w.get('temporal_tag') == 'future' and 
                           w.get('_is_historical_pattern') == False]
         
         if not forecast_windows:
-            print("Warning: No forecast windows found in scenario output")
+            print("Warning: No forecast windows found")
             return []
         
         # Group by feature
@@ -192,20 +233,40 @@ class Scenario:
             print("Warning: No features available to plot")
             return []
         
-        # Select features to plot
-        if features is None:
-            features = list(feature_forecasts.keys())
+        # Determine which features to process
+        features_to_plot = []
         
-        # Filter to only features that have forecasts
-        features = [f for f in features if f in feature_forecasts]
+        # If a single feature is specified for display, use that
+        if feature is not None:
+            if feature in feature_forecasts:
+                features_to_plot = [feature]
+            else:
+                available = ', '.join(list(feature_forecasts.keys())[:5])
+                raise ValueError(f"Feature '{feature}' not found. Available: {available}...")
         
-        if not features:
-            raise ValueError("No forecast features available to plot")
+        # If saving, determine which features to save
+        if save:
+            if features is None:
+                # Save all features
+                save_features = list(feature_forecasts.keys())
+            else:
+                # Save specified features
+                save_features = [f for f in features if f in feature_forecasts]
+        else:
+            save_features = []
+        
+        # Combine both lists (for display and/or save)
+        all_features_to_process = list(set(features_to_plot + save_features))
+        
+        if not all_features_to_process and not feature:
+            raise ValueError("No features specified. Use feature='name' to display or save=True to save all")
         
         saved_files = []
         
-        # Plot each feature separately
-        for feature_name in features:
+        # Plot each feature
+        for feature_name in all_features_to_process:
+            should_display_this = (feature_name == feature and display)
+            should_save_this = (save and feature_name in save_features)
             fig, ax = plt.subplots(1, 1, figsize=(14, 6))
             
             # Get forecast data
@@ -240,7 +301,7 @@ class Scenario:
             # Plot ground truth past (black line with markers)
             if past_values and len(past_t) > 0:
                 ax.plot(past_t, past_values, 'o-', color='black', linewidth=2, 
-                       markersize=4, alpha=0.8, label='Historical', zorder=5)
+                       markersize=4, alpha=0.8, label='Recent Past', zorder=5)
                 
                 # Plot ground truth future (green line with markers)
                 if future_gt_values and len(future_gt_values) > 0:
@@ -252,8 +313,12 @@ class Scenario:
                         # Use numeric indices for ground truth
                         future_t_gt = np.arange(len(past_values), len(past_values) + len(future_gt_values))
                     
+                    # Get simulation_date from scenario for label
+                    simulation_date = self._data.get('simulation_date', '')
+                    hist_label = f'Historical Path ({simulation_date})' if simulation_date else 'Historical Path'
+                    
                     ax.plot(future_t_gt, future_gt_values, 'o-', color='green', linewidth=2.5, 
-                           markersize=5, alpha=0.9, label='Ground Truth', zorder=6)
+                           markersize=5, alpha=0.9, label=hist_label, zorder=6)
                 
                 # Vertical line at forecast start (red dotted)
                 if not use_dates:
@@ -322,13 +387,25 @@ class Scenario:
             
             plt.tight_layout()
             
-            # Save individual plot
-            safe_feature_name = feature_name.replace('/', '_').replace('\\', '_')
-            save_path = os.path.join(save_dir, f'{safe_feature_name}_forecast.png')
-            plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            saved_files.append(save_path)
-            print(f"  ✅ Saved: {save_path}")
+            # Save if requested
+            if should_save_this:
+                if save_dir:
+                    os.makedirs(save_dir, exist_ok=True)
+                safe_feature_name = feature_name.replace('/', '_').replace('\\', '_')
+                save_path = os.path.join(save_dir, f'{safe_feature_name}_forecast.png')
+                plt.savefig(save_path, dpi=150, bbox_inches='tight')
+                saved_files.append(save_path)
+                if display:
+                    print(f"  ✅ Saved: {save_path}")
+            
+            # Display if requested
+            if should_display_this:
+                plt.show()
+            else:
+                plt.close()
+        
+        if save and saved_files:
+            print(f"\n✅ Saved {len(saved_files)} forecast plots to {save_dir}")
         
         return saved_files
     
@@ -336,11 +413,14 @@ class Scenario:
     
     def plot_conditioning_scenario(
         self,
+        feature: Optional[str] = None,
         features: Optional[List[str]] = None,
-        save_dir: Optional[str] = None
+        save: bool = False,
+        save_dir: Optional[str] = None,
+        display: bool = True
     ) -> List[str]:
         """
-        Plot conditioning data (past and future conditioning windows) - one plot per feature
+        Plot conditioning data (past and future conditioning windows)
         
         Shows:
         - Past conditioning (fetched recent data)
@@ -348,14 +428,35 @@ class Scenario:
         - Boundary line separating past from future
         
         Args:
-            features: List of features to plot (default: all conditioning features)
+            feature: Single feature to plot and display inline (optional)
+            features: List of features to plot when saving (default: all)
+            save: Whether to save plots to disk (default: False)
             save_dir: Directory to save plots (default: ./conditioning/)
+            display: Whether to display plot inline (default: True, only when feature specified)
             
         Returns:
-            List of saved plot file paths
+            List of saved plot file paths (empty if save=False)
+            
+        Examples:
+            >>> # Display a single feature inline
+            >>> scenario.plot_conditioning_scenario(feature="10-Year Treasury Rate")
+            
+            >>> # Save all features to disk without displaying
+            >>> scenario.plot_conditioning_scenario(save=True, display=False)
+            
+            >>> # Display one feature AND save all features
+            >>> scenario.plot_conditioning_scenario(feature="S&P 500", save=True)
         """
         if not self.is_simulated:
-            raise ValueError("Scenario must be simulated before plotting")
+            # Try to refresh from database
+            refreshed_data = self.http.get(f'/api/v1/scenarios/{self.id}')
+            self._data.update(refreshed_data)
+            self.output = refreshed_data.get('output')
+            self.status = refreshed_data.get('status', 'created')
+            
+            if not self.is_simulated:
+                print(f"Debug: status={self.status}, output type={type(self.output)}, output is not None={self.output is not None}")
+                raise ValueError("Scenario must be simulated before plotting. Run scenario.simulate() first.")
         
         import matplotlib.pyplot as plt
         import numpy as np
@@ -387,24 +488,44 @@ class Scenario:
         # Get available features from past and future conditioning
         available_features = set()
         for window in past_windows + future_cond_windows:
-            feature = window.get('feature')
-            if feature:
-                available_features.add(feature)
+            feat = window.get('feature')
+            if feat:
+                available_features.add(feat)
         
-        # Select features to plot
-        if features is None:
-            features = list(available_features)
+        # Determine which features to process
+        features_to_plot = []
         
-        # Filter to only features that have conditioning data
-        features = [f for f in features if f in available_features]
+        # If a single feature is specified for display, use that
+        if feature is not None:
+            if feature in available_features:
+                features_to_plot = [feature]
+            else:
+                available = ', '.join(list(available_features)[:5])
+                raise ValueError(f"Feature '{feature}' not found. Available: {available}...")
         
-        if not features:
-            raise ValueError("No conditioning features available to plot")
+        # If saving, determine which features to save
+        if save:
+            if features is None:
+                # Save all features
+                save_features = list(available_features)
+            else:
+                # Save specified features
+                save_features = [f for f in features if f in available_features]
+        else:
+            save_features = []
+        
+        # Combine both lists (for display and/or save)
+        all_features_to_process = list(set(features_to_plot + save_features))
+        
+        if not all_features_to_process and not feature:
+            raise ValueError("No features specified. Use feature='name' to display or save=True to save all")
         
         saved_files = []
         
-        # Plot each feature separately
-        for feature_name in features:
+        # Plot each feature
+        for feature_name in all_features_to_process:
+            should_display_this = (feature_name == feature and display)
+            should_save_this = (save and feature_name in save_features)
             fig, ax = plt.subplots(1, 1, figsize=(14, 6))
             
             # Get conditioning data
@@ -475,13 +596,25 @@ class Scenario:
             
             plt.tight_layout()
             
-            # Save individual plot
-            safe_feature_name = feature_name.replace('/', '_').replace('\\', '_')
-            save_path = os.path.join(save_dir, f'{safe_feature_name}_conditioning.png')
-            plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            saved_files.append(save_path)
-            print(f"  ✅ Saved: {save_path}")
+            # Save if requested
+            if should_save_this:
+                if save_dir:
+                    os.makedirs(save_dir, exist_ok=True)
+                safe_feature_name = feature_name.replace('/', '_').replace('\\', '_')
+                save_path = os.path.join(save_dir, f'{safe_feature_name}_conditioning.png')
+                plt.savefig(save_path, dpi=150, bbox_inches='tight')
+                saved_files.append(save_path)
+                if display:
+                    print(f"  ✅ Saved: {save_path}")
+            
+            # Display if requested
+            if should_display_this:
+                plt.show()
+            else:
+                plt.close()
+        
+        if save and saved_files:
+            print(f"\n✅ Saved {len(saved_files)} conditioning plots to {save_dir}")
         
         return saved_files
     

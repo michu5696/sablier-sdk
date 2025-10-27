@@ -64,6 +64,16 @@ class Project:
         """Get models created in this project"""
         return self._data.get('models', [])
     
+    @property
+    def is_template(self) -> bool:
+        """Check if this is a template project"""
+        return self._data.get('is_template', False)
+    
+    @property
+    def template_source_id(self) -> Optional[str]:
+        """Get template source if this is cloned from template"""
+        return self._data.get('template_source_id')
+    
     # ============================================
     # FEATURE SET MANAGEMENT
     # ============================================
