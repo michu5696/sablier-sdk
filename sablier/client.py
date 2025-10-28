@@ -2,13 +2,14 @@
 Main Sablier SDK client
 """
 
-from typing import Optional, List, Dict, Union
+from typing import Optional, List, Dict, Union, Any
 from .auth import AuthHandler
 from .http_client import HTTPClient
 from .project.manager import ProjectManager
 from .model.manager import ModelManager
 from .scenario.manager import ScenarioManager
 from .portfolio.manager import PortfolioManager
+from .user_settings import UserSettingsManager
 from .exceptions import AuthenticationError
 
 
@@ -28,7 +29,7 @@ class SablierClient:
     
     def __init__(
         self,
-        api_url: str,
+        api_url: Optional[str] = None,
         api_key: Optional[str] = None,
         fred_api_key: Optional[str] = None,
         interactive: bool = True
@@ -37,14 +38,43 @@ class SablierClient:
         Initialize Sablier client
         
         Args:
-            api_url: Base URL of the Sablier backend API (e.g., https://api.sablier.ai or http://localhost:8000)
+            api_url: Base URL of the Sablier backend API. If None, uses saved default URL
             api_key: Optional API key for authentication. If None, will register a new user and generate API key
             fred_api_key: Optional FRED API key for data searching and fetching
             interactive: Enable interactive prompts for confirmations (default: True)
         """
-        # If no API key provided, register a new user and get an API key
+        # Initialize user settings manager first
+        self.user_settings = UserSettingsManager()
+        
+        # Use default URL if not provided
+        if api_url is None:
+            api_url = self.user_settings.get_default_api_url()
+            if api_url is None:
+                print("❌ No API URL provided and no default URL set.")
+                print("💡 First-time setup required:")
+                print("   1. Run setup script: python setup_sablier.py")
+                print("   2. Or provide api_url: SablierClient(api_url='https://your-api-url.com')")
+                print("   3. Or run migration: python migrate_api_key.py")
+                raise ValueError("No API URL provided and no default URL set. Please see setup instructions above.")
+        
+        # If no API key provided, try to get saved one or register new user
         if not api_key:
-            api_key = self._register_and_get_api_key(api_url, interactive)
+            # Try to get saved API key for this URL
+            saved_api_key = self.user_settings.get_active_api_key(api_url)
+            if saved_api_key:
+                if interactive:
+                    print(f"🔑 Using saved API key for {api_url}")
+                api_key = saved_api_key
+            else:
+                # No saved key, register new user
+                if interactive:
+                    print(f"🔑 No saved API key found for {api_url}")
+                    print(f"🔄 Registering new user...")
+                api_key = self._register_and_get_api_key(api_url, interactive)
+                # Save the new API key
+                self.user_settings.save_api_key(api_key, api_url, description="Auto-generated")
+                if interactive:
+                    print(f"💾 API key saved for future use")
         
         # Validate API key format
         if not api_key.startswith("sk_") and not api_key.startswith("dummy_"):
@@ -66,6 +96,119 @@ class SablierClient:
         
         # Initialize portfolio manager (local-only)
         self.portfolios = PortfolioManager(self.http)
+    
+    # ============================================
+    # API KEY MANAGEMENT METHODS
+    # ============================================
+    
+    def save_api_key(self, api_key: str, api_url: Optional[str] = None, 
+                     description: Optional[str] = None) -> bool:
+        """
+        Save an API key for future use
+        
+        Args:
+            api_key: The API key to save
+            api_url: The API URL (defaults to current client URL)
+            description: Optional description
+            
+        Returns:
+            bool: True if saved successfully
+        """
+        if api_url is None:
+            api_url = self.http.base_url
+        
+        return self.user_settings.save_api_key(api_key, api_url, description=description)
+    
+    def list_api_keys(self) -> List[Dict[str, Any]]:
+        """
+        List all saved API keys
+        
+        Returns:
+            List of API key dictionaries
+        """
+        return self.user_settings.list_api_keys()
+    
+    def delete_api_key(self, api_key: str) -> bool:
+        """
+        Delete a saved API key
+        
+        Args:
+            api_key: The API key to delete
+            
+        Returns:
+            bool: True if deleted successfully
+        """
+        return self.user_settings.delete_api_key(api_key)
+    
+    def set_default_api_url(self, api_url: str) -> bool:
+        """
+        Set the default API URL
+        
+        Args:
+            api_url: The default API URL
+            
+        Returns:
+            bool: True if set successfully
+        """
+        return self.user_settings.set_default_api_url(api_url)
+    
+    def get_default_api_url(self) -> Optional[str]:
+        """
+        Get the default API URL
+        
+        Returns:
+            str: The default API URL, or None if not set
+        """
+        return self.user_settings.get_default_api_url()
+    
+    def clear_all_user_data(self) -> bool:
+        """
+        Clear all user data (API keys and settings)
+        
+        Returns:
+            bool: True if cleared successfully
+        """
+        return self.user_settings.clear_all_data()
+    
+    def clear_all_portfolios(self) -> int:
+        """
+        Delete all portfolios from local SQLite database
+        
+        Returns:
+            int: Number of portfolios deleted
+        """
+        import sqlite3
+        import os
+        
+        db_path = os.path.expanduser("~/.sablier/portfolios.db")
+        
+        try:
+            with sqlite3.connect(db_path) as conn:
+                # Count portfolios before deletion
+                cursor = conn.execute("SELECT COUNT(*) FROM portfolios")
+                count_before = cursor.fetchone()[0]
+                
+                if count_before == 0:
+                    print("📭 No portfolios found in local database")
+                    return 0
+                
+                # Delete all portfolios and related data
+                conn.execute("DELETE FROM portfolio_tests")
+                conn.execute("DELETE FROM portfolio_optimizations") 
+                conn.execute("DELETE FROM portfolio_evaluations")
+                conn.execute("DELETE FROM portfolios")
+                
+                conn.commit()
+                
+                print(f"🗑️ Deleted {count_before} portfolios from local database")
+                print("✅ All portfolio data cleared")
+                
+                return count_before
+                
+        except Exception as e:
+            print(f"❌ Failed to clear portfolios: {e}")
+            return 0
+    
     
     # ============================================
     # CONSISTENT API METHODS

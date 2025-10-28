@@ -1995,10 +1995,10 @@ class Portfolio:
                 downside_deviation = np.std(negative_returns) if len(negative_returns) > 0 else 0
                 sortino_ratio = np.mean(excess_returns) / downside_deviation * np.sqrt(252) if downside_deviation > 0 else 0
                 
-                # Max drawdown - DEBUG VERSION
-                # Drawdown = (Peak - Current) / Peak
+                # Max drawdown - CORRECTED VERSION
+                # Drawdown = (Current - Peak) / Peak (negative when below peak)
                 running_max = np.maximum.accumulate(portfolio_values)
-                drawdowns = (running_max - portfolio_values) / running_max
+                drawdowns = (portfolio_values - running_max) / running_max
                 max_drawdown = np.min(drawdowns)  # Most negative drawdown (worst case)
                 
                 
