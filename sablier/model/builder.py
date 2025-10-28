@@ -152,6 +152,32 @@ class Model:
         response = self.http.get(f'/api/v1/feature-sets/{self.target_set_id}')
         return FeatureSet(self.http, response, self.project_id, self.interactive)
     
+    def get_scenario(self, identifier):
+        """
+        Get scenario by name or index
+        
+        Args:
+            identifier: Scenario name (str) or index (int)
+            
+        Returns:
+            Scenario instance or None if not found
+        """
+        scenarios = self.list_scenarios()
+        
+        if isinstance(identifier, int):
+            # Get by index
+            if 0 <= identifier < len(scenarios):
+                return scenarios[identifier]
+            return None
+        elif isinstance(identifier, str):
+            # Get by name
+            for scenario in scenarios:
+                if scenario.name == identifier:
+                    return scenario
+            return None
+        else:
+            raise ValueError("Identifier must be string (name) or int (index)")
+    
     def list_features(self) -> Dict[str, Any]:
         """
         List all features in this model with their grouping information

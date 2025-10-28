@@ -7,6 +7,7 @@ Create scenario-conditioned synthetic financial data for portfolio testing and r
 __version__ = "0.1.0"
 
 from .client import SablierClient
+from .portfolio import Portfolio, PortfolioManager, Test
 from .exceptions import (
     SablierError,
     AuthenticationError,
@@ -19,6 +20,9 @@ from .exceptions import (
 
 __all__ = [
     "SablierClient",
+    "Portfolio",
+    "PortfolioManager",
+    "Test",
     "SablierError",
     "AuthenticationError",
     "APIError",

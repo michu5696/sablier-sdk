@@ -2,12 +2,13 @@
 Main Sablier SDK client
 """
 
-from typing import Optional
+from typing import Optional, List, Dict, Union
 from .auth import AuthHandler
 from .http_client import HTTPClient
 from .project.manager import ProjectManager
 from .model.manager import ModelManager
 from .scenario.manager import ScenarioManager
+from .portfolio.manager import PortfolioManager
 from .exceptions import AuthenticationError
 
 
@@ -62,6 +63,105 @@ class SablierClient:
         self.projects = ProjectManager(self.http, interactive=interactive)
         self.models = ModelManager(self.http, interactive=interactive)
         self.scenarios = ScenarioManager(self.http, self.models)
+        
+        # Initialize portfolio manager (local-only)
+        self.portfolios = PortfolioManager(self.http)
+    
+    # ============================================
+    # CONSISTENT API METHODS
+    # ============================================
+    
+    def list_projects(self, include_templates: bool = True) -> List:
+        """List all projects"""
+        return self.projects.list(include_templates=include_templates)
+    
+    def get_project(self, identifier) -> Optional:
+        """
+        Get project by name or index
+        
+        Args:
+            identifier: Project name (str) or index (int)
+            
+        Returns:
+            Project instance or None if not found
+        """
+        projects = self.list_projects()
+        
+        if isinstance(identifier, int):
+            # Get by index
+            if 0 <= identifier < len(projects):
+                return projects[identifier]
+            return None
+        elif isinstance(identifier, str):
+            # Get by name
+            for project in projects:
+                if project.name == identifier:
+                    return project
+            return None
+        else:
+            raise ValueError("Identifier must be string (name) or int (index)")
+    
+    # ============================================
+    # PORTFOLIO METHODS (CONSISTENT API)
+    # ============================================
+    
+    def list_portfolios(self) -> List:
+        """List all portfolios"""
+        return self.portfolios.list()
+    
+    def get_portfolio(self, identifier):
+        """
+        Get portfolio by name or index
+        
+        Args:
+            identifier: Portfolio name (str) or index (int)
+            
+        Returns:
+            Portfolio instance or None if not found
+        """
+        portfolios = self.list_portfolios()
+        
+        if isinstance(identifier, int):
+            # Get by index
+            if 0 <= identifier < len(portfolios):
+                return portfolios[identifier]
+            return None
+        elif isinstance(identifier, str):
+            # Get by name
+            for portfolio in portfolios:
+                if portfolio.name == identifier:
+                    return portfolio
+            return None
+        else:
+            raise ValueError("Identifier must be string (name) or int (index)")
+    
+    def create_portfolio(self, name: str, target_set, weights: Optional[Union[Dict[str, float], List[float]]] = None, 
+                        capital: float = 100000.0, description: str = "", constraint_type: str = "long_short"):
+        """
+        Create a new portfolio
+        
+        Args:
+            name: Portfolio name
+            target_set: TargetSet instance to create portfolio from
+            weights: Either:
+                - Dict[str, float]: Dictionary of asset weights (must sum to 1.0)
+                - List[float]: List of weights assigned to assets in order (must sum to 1.0)
+                - None: Random weights will be generated (sum to 1.0)
+            capital: Total capital allocation (default $100k)
+            description: Optional description
+            constraint_type: Type of constraints ('long_short', 'long_only', 'custom')
+            
+        Returns:
+            Portfolio instance
+        """
+        return self.portfolios.create(
+            name=name,
+            target_set=target_set,
+            weights=weights,
+            capital=capital,
+            description=description,
+            constraint_type=constraint_type
+        )
     
     def _register_and_get_api_key(self, api_url: str, interactive: bool) -> str:
         """

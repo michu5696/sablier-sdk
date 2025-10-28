@@ -284,6 +284,110 @@ class Project:
         models_data = response.get('models', []) if isinstance(response, dict) else response
         return [Model(self.http, data, self.interactive) for data in models_data]
     
+    def get_model(self, identifier):
+        """
+        Get model by name or index
+        
+        Args:
+            identifier: Model name (str) or index (int)
+            
+        Returns:
+            Model instance or None if not found
+        """
+        models = self.list_models()
+        
+        if isinstance(identifier, int):
+            # Get by index
+            if 0 <= identifier < len(models):
+                return models[identifier]
+            return None
+        elif isinstance(identifier, str):
+            # Get by name
+            for model in models:
+                if model.name == identifier:
+                    return model
+            return None
+        else:
+            raise ValueError("Identifier must be string (name) or int (index)")
+    
+    def get_feature_set(self, identifier):
+        """
+        Get feature set by name or index
+        
+        Args:
+            identifier: Feature set name (str) or index (int)
+            
+        Returns:
+            FeatureSet instance or None if not found
+        """
+        feature_sets = self.list_feature_sets()
+        
+        if isinstance(identifier, int):
+            # Get by index
+            if 0 <= identifier < len(feature_sets):
+                return feature_sets[identifier]
+            return None
+        elif isinstance(identifier, str):
+            # Get by name
+            for feature_set in feature_sets:
+                if feature_set.name == identifier:
+                    return feature_set
+            return None
+        else:
+            raise ValueError("Identifier must be string (name) or int (index)")
+    
+    def get_target_set(self, identifier):
+        """
+        Get target set by name or index
+        
+        Args:
+            identifier: Target set name (str) or index (int)
+            
+        Returns:
+            FeatureSet instance or None if not found
+        """
+        target_sets = self.list_target_sets()
+        
+        if isinstance(identifier, int):
+            # Get by index
+            if 0 <= identifier < len(target_sets):
+                return target_sets[identifier]
+            return None
+        elif isinstance(identifier, str):
+            # Get by name
+            for target_set in target_sets:
+                if target_set.name == identifier:
+                    return target_set
+            return None
+        else:
+            raise ValueError("Identifier must be string (name) or int (index)")
+    
+    def get_conditioning_set(self, identifier):
+        """
+        Get conditioning set by name or index
+        
+        Args:
+            identifier: Conditioning set name (str) or index (int)
+            
+        Returns:
+            FeatureSet instance or None if not found
+        """
+        conditioning_sets = self.list_conditioning_sets()
+        
+        if isinstance(identifier, int):
+            # Get by index
+            if 0 <= identifier < len(conditioning_sets):
+                return conditioning_sets[identifier]
+            return None
+        elif isinstance(identifier, str):
+            # Get by name
+            for conditioning_set in conditioning_sets:
+                if conditioning_set.name == identifier:
+                    return conditioning_set
+            return None
+        else:
+            raise ValueError("Identifier must be string (name) or int (index)")
+    
     # ============================================
     # UTILITY METHODS
     # ============================================
