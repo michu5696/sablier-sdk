@@ -809,7 +809,6 @@ class Portfolio:
             # NEW: Additional risk metrics
             # Information Ratio (using risk-free rate as benchmark)
             excess_returns = daily_returns - (risk_free_rate / 252)
-            information_ratio = np.mean(excess_returns) / np.std(excess_returns) * np.sqrt(252) if np.std(excess_returns) > 0 else 0
             
             # Average Drawdown (mean of all drawdowns)
             average_drawdown = np.mean(drawdown) if len(drawdown) > 0 else 0
@@ -826,7 +825,6 @@ class Portfolio:
                 'sharpe_ratio': float(sharpe_ratio),
                 'sortino_ratio': float(sortino_ratio),
                 'calmar_ratio': float(calmar_ratio),
-                'information_ratio': float(information_ratio),
                 'average_drawdown': float(average_drawdown),
                 'downside_deviation': float(downside_deviation),
                 'daily_returns': daily_returns.tolist(),
@@ -859,7 +857,6 @@ class Portfolio:
         calmar_ratios = np.array([r['calmar_ratio'] for r in sample_results])
         
         # NEW: Extract additional risk metrics
-        information_ratios = np.array([r['information_ratio'] for r in sample_results])
         average_drawdowns = np.array([r['average_drawdown'] for r in sample_results])
         downside_deviations = np.array([r['downside_deviation'] for r in sample_results])
         
@@ -959,12 +956,6 @@ class Portfolio:
                 'max': float(np.max(max_drawdowns))
             },
             # NEW: Additional risk metric distributions
-            'information_ratio_distribution': {
-                'mean': float(np.mean(information_ratios)),
-                'std': float(np.std(information_ratios)),
-                'min': float(np.min(information_ratios)),
-                'max': float(np.max(information_ratios))
-            },
             'average_drawdown_distribution': {
                 'mean': float(np.mean(average_drawdowns)),
                 'std': float(np.std(average_drawdowns)),
@@ -994,7 +985,6 @@ class Portfolio:
         max_drawdowns = np.array([r['max_drawdown'] for r in sample_results])
         
         # NEW: Extract additional risk metrics
-        information_ratios = np.array([r['information_ratio'] for r in sample_results])
         average_drawdowns = np.array([r['average_drawdown'] for r in sample_results])
         downside_deviations = np.array([r['downside_deviation'] for r in sample_results])
         
@@ -1017,11 +1007,6 @@ class Portfolio:
                 'max': float(np.max(max_drawdowns))
             },
             # NEW: Additional risk metric summaries
-            'information_ratio': {
-                'mean': float(np.mean(information_ratios)),
-                'median': float(np.median(information_ratios)),
-                'std': float(np.std(information_ratios))
-            },
             'average_drawdown': {
                 'mean': float(np.mean(average_drawdowns)),
                 'median': float(np.median(average_drawdowns)),
@@ -1753,6 +1738,12 @@ class Portfolio:
         # Validate scenario compatibility
         self._validate_scenario_compatibility(scenario)
         
+        # Check if test already exists for this portfolio-scenario combination
+        existing_test = self._find_existing_test(scenario)
+        if existing_test:
+            print(f"📊 Found existing test for scenario '{scenario.name}' - returning cached results")
+            return existing_test
+        
         # Ensure scenario is simulated
         if not scenario.is_simulated:
             print(f"🔄 Simulating scenario '{scenario.name}'...")
@@ -1760,7 +1751,9 @@ class Portfolio:
             print("✅ Scenario simulation complete")
         
         # Run the test and get results
+        print(f"🔄 Running portfolio test analysis for scenario '{scenario.name}'...")
         results = self._run_test_analysis(scenario)
+        print(f"✅ Portfolio test analysis complete!")
         
         # Save test results to SQLite
         test_id = self._save_test_results(scenario, results)
@@ -1768,6 +1761,32 @@ class Portfolio:
         # Load and return Test instance
         test_data = self._load_test_from_db(test_id)
         return Test(self.id, test_data)
+    
+    def _find_existing_test(self, scenario) -> Optional['Test']:
+        """Find existing test for the same portfolio-scenario combination"""
+        import sqlite3
+        from .test import Test
+        
+        db_path = os.path.expanduser("~/.sablier/portfolios.db")
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.execute("""
+                    SELECT * FROM portfolio_tests 
+                    WHERE portfolio_id = ? AND scenario_id = ?
+                    ORDER BY test_date DESC
+                    LIMIT 1
+                """, (self.id, scenario.id))
+                
+                row = cursor.fetchone()
+                if row:
+                    # Convert row to dict
+                    columns = [description[0] for description in cursor.description]
+                    test_data = dict(zip(columns, row))
+                    return Test(self.id, test_data)
+        except Exception as e:
+            print(f"⚠️ Could not check for existing tests: {e}")
+        
+        return None
     
     def list_tests(self) -> List['Test']:
         """List all tests for this portfolio"""
@@ -1787,6 +1806,22 @@ class Portfolio:
                 tests.append(Test(self.id, test_data))
             
             return tests
+    
+    def delete_all_tests(self) -> int:
+        """Delete all tests for this portfolio"""
+        import sqlite3
+        
+        db_path = os.path.expanduser("~/.sablier/portfolios.db")
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.execute("DELETE FROM portfolio_tests WHERE portfolio_id = ?", (self.id,))
+                deleted_count = cursor.rowcount
+                conn.commit()
+                print(f"✅ Deleted {deleted_count} tests for portfolio '{self.name}'")
+                return deleted_count
+        except Exception as e:
+            print(f"❌ Failed to delete tests: {e}")
+            return 0
     
     def get_test(self, identifier) -> Optional['Test']:
         """
@@ -1825,11 +1860,16 @@ class Portfolio:
     
     def _run_test_analysis(self, scenario) -> Dict[str, Any]:
         """Run the actual portfolio test analysis"""
+        print(f"🔍 DEBUG: Starting _run_test_analysis for scenario '{scenario.name}'")
+        
         # Extract scenario data
         price_matrix = self._extract_scenario_data(scenario)
+        print(f"🔍 DEBUG: Extracted price matrix shape: {price_matrix.shape}")
         
         # Compute sample metrics
+        print(f"🔍 DEBUG: Computing sample metrics...")
         sample_results = self._compute_sample_metrics(price_matrix)
+        print(f"🔍 DEBUG: Computed metrics for {len(sample_results)} samples")
         
         # Aggregate sample metrics
         aggregated_results = self._aggregate_sample_metrics(sample_results)
@@ -1866,8 +1906,6 @@ class Portfolio:
         if not forecast_windows:
             raise ValueError("No forecast windows found in scenario output")
         
-        print(f"🔍 DEBUG: Portfolio assets: {self.assets}")
-        print(f"🔍 DEBUG: Forecast windows: {len(forecast_windows)}")
         
         # Debug temporal tags
         temporal_tags = set()
@@ -1876,8 +1914,6 @@ class Portfolio:
             temporal_tags.add(window.get('temporal_tag'))
             historical_patterns.add(window.get('_is_historical_pattern'))
         
-        print(f"🔍 DEBUG: Available temporal tags: {temporal_tags}")
-        print(f"🔍 DEBUG: Available historical pattern flags: {historical_patterns}")
         
         # Group by feature (same logic as plotting function)
         feature_data = {}
@@ -1890,7 +1926,6 @@ class Portfolio:
                 # Use 'reconstructed_values' field like the plotting function does
                 feature_data[feature_name].append(window.get('reconstructed_values', []))
         
-        print(f"🔍 DEBUG: Found data for features: {list(feature_data.keys())}")
         
         # Check we have data for all assets
         missing_assets = set(self.assets) - set(feature_data.keys())
@@ -1900,10 +1935,6 @@ class Portfolio:
         # Debug the data structure
         first_asset = self.assets[0]
         first_window = feature_data[first_asset][0]
-        print(f"🔍 DEBUG: First asset: {first_asset}")
-        print(f"🔍 DEBUG: First window type: {type(first_window)}")
-        print(f"🔍 DEBUG: First window length: {len(first_window) if hasattr(first_window, '__len__') else 'N/A'}")
-        
         # Convert to numpy array [n_samples, n_days, n_assets]
         # Each feature_data[asset] is a list of samples, each sample is a list of values
         n_samples = len(feature_data[self.assets[0]])  # Number of samples
@@ -1942,15 +1973,16 @@ class Portfolio:
                     portfolio_value += weight * price_path[t, i] * self.capital
                 portfolio_values[t] = portfolio_value
             
+            
             # Compute returns
             daily_returns = np.diff(portfolio_values) / portfolio_values[:-1]
             cumulative_returns = (portfolio_values / portfolio_values[0]) - 1
             
-            # Compute PnL
+            # Compute PnL and total return (these should match!)
             initial_value = portfolio_values[0]
             final_value = portfolio_values[-1]
             pnl = final_value - initial_value
-            total_return = pnl / initial_value
+            total_return = pnl / initial_value  # This should equal cumulative_returns[-1]
             
             # Compute risk metrics
             if len(daily_returns) > 0:
@@ -1963,30 +1995,28 @@ class Portfolio:
                 downside_deviation = np.std(negative_returns) if len(negative_returns) > 0 else 0
                 sortino_ratio = np.mean(excess_returns) / downside_deviation * np.sqrt(252) if downside_deviation > 0 else 0
                 
-                # Max drawdown
+                # Max drawdown - DEBUG VERSION
+                # Drawdown = (Peak - Current) / Peak
                 running_max = np.maximum.accumulate(portfolio_values)
-                drawdowns = (portfolio_values - running_max) / running_max
-                max_drawdown = np.min(drawdowns)
+                drawdowns = (running_max - portfolio_values) / running_max
+                max_drawdown = np.min(drawdowns)  # Most negative drawdown (worst case)
                 
-                # Average drawdown
-                average_drawdown = np.mean(drawdowns[drawdowns < 0]) if np.any(drawdowns < 0) else 0
+                
+                
+                # Average drawdown - FIXED!
+                # Average of all drawdowns (including zeros)
+                average_drawdown = np.mean(drawdowns)
                 
                 # Downside deviation
                 downside_returns = daily_returns[daily_returns < 0]
                 downside_deviation = np.std(downside_returns) if len(downside_returns) > 0 else 0
                 
-                # Calmar ratio
-                calmar_ratio = total_return / abs(max_drawdown) if max_drawdown != 0 else 0
+                # Calmar ratio - FIXED!
+                # Calmar = Annual Return / Max Drawdown
+                calmar_ratio = total_return / max_drawdown if max_drawdown > 0 else 0
                 
-                # Information ratio (excess return over benchmark / tracking error)
-                # Using risk-free rate as benchmark (typically ~2% annually = ~0.008% daily)
-                risk_free_rate_daily = 0.02 / 252  # 2% annual risk-free rate
-                benchmark_returns = np.full_like(daily_returns, risk_free_rate_daily)
-                active_returns = daily_returns - benchmark_returns
-                tracking_error = np.std(active_returns)
-                information_ratio = np.mean(active_returns) / tracking_error * np.sqrt(252) if tracking_error > 0 else 0
             else:
-                sharpe_ratio = sortino_ratio = calmar_ratio = information_ratio = 0
+                sharpe_ratio = sortino_ratio = calmar_ratio = 0
                 max_drawdown = average_drawdown = downside_deviation = 0
             
             # Daily metrics for time-series analysis
@@ -2001,7 +2031,8 @@ class Portfolio:
                     'portfolio_value': float(portfolio_values[t]),
                     'pnl': float(daily_pnl),
                     'cumulative_return': float(daily_cumulative_return),
-                    'daily_return': float(daily_return)
+                    'daily_return': float(daily_return),
+                    'drawdown': float(drawdowns[t])
                 }
                 daily_metrics.append(daily_metric)
             
@@ -2013,7 +2044,6 @@ class Portfolio:
                 'sharpe_ratio': float(sharpe_ratio),
                 'sortino_ratio': float(sortino_ratio),
                 'calmar_ratio': float(calmar_ratio),
-                'information_ratio': float(information_ratio),
                 'average_drawdown': float(average_drawdown),
                 'downside_deviation': float(downside_deviation),
                 'daily_returns': daily_returns.tolist(),
@@ -2035,7 +2065,6 @@ class Portfolio:
         # Extract arrays for aggregation
         total_returns = np.array([s['total_return'] for s in sample_results])
         sharpe_ratios = np.array([s['sharpe_ratio'] for s in sample_results])
-        information_ratios = np.array([s['information_ratio'] for s in sample_results])
         max_drawdowns = np.array([s['max_drawdown'] for s in sample_results])
         average_drawdowns = np.array([s['average_drawdown'] for s in sample_results])
         downside_deviations = np.array([s['downside_deviation'] for s in sample_results])
@@ -2061,21 +2090,29 @@ class Portfolio:
             for day in range(n_days):
                 daily_pnls = [s['daily_metrics'][day]['pnl'] for s in sample_results]
                 daily_returns = [s['daily_metrics'][day]['cumulative_return'] for s in sample_results]
+                daily_portfolio_values = [s['daily_metrics'][day]['portfolio_value'] for s in sample_results]
+                daily_drawdowns = [s['daily_metrics'][day]['drawdown'] for s in sample_results]
 
                 # Convert to numpy arrays for proper indexing
                 daily_pnls_array = np.array(daily_pnls)
                 daily_returns_array = np.array(daily_returns)
+                daily_portfolio_values_array = np.array(daily_portfolio_values)
+                daily_drawdowns_array = np.array(daily_drawdowns)
                 
                 # Compute CVaR (Conditional Value at Risk)
                 var_95_pnl = np.percentile(daily_pnls_array, 5)
                 var_99_pnl = np.percentile(daily_pnls_array, 1)
                 var_95_returns = np.percentile(daily_returns_array, 5)
                 var_99_returns = np.percentile(daily_returns_array, 1)
+                var_95_portfolio = np.percentile(daily_portfolio_values_array, 5)
+                var_99_portfolio = np.percentile(daily_portfolio_values_array, 1)
                 
                 cvar_95_pnl = np.mean(daily_pnls_array[daily_pnls_array <= var_95_pnl]) if np.any(daily_pnls_array <= var_95_pnl) else var_95_pnl
                 cvar_99_pnl = np.mean(daily_pnls_array[daily_pnls_array <= var_99_pnl]) if np.any(daily_pnls_array <= var_99_pnl) else var_99_pnl
                 cvar_95_returns = np.mean(daily_returns_array[daily_returns_array <= var_95_returns]) if np.any(daily_returns_array <= var_95_returns) else var_95_returns
                 cvar_99_returns = np.mean(daily_returns_array[daily_returns_array <= var_99_returns]) if np.any(daily_returns_array <= var_99_returns) else var_99_returns
+                cvar_95_portfolio = np.mean(daily_portfolio_values_array[daily_portfolio_values_array <= var_95_portfolio]) if np.any(daily_portfolio_values_array <= var_95_portfolio) else var_95_portfolio
+                cvar_99_portfolio = np.mean(daily_portfolio_values_array[daily_portfolio_values_array <= var_99_portfolio]) if np.any(daily_portfolio_values_array <= var_99_portfolio) else var_99_portfolio
 
                 time_series_metrics[f'day_{day}'] = {
                     'day': day,
@@ -2094,6 +2131,20 @@ class Portfolio:
                         'var_99': float(var_99_returns),
                         'cvar_95': float(cvar_95_returns),
                         'cvar_99': float(cvar_99_returns)
+                    },
+                    'portfolio_value': {
+                        'mean': float(np.mean(daily_portfolio_values_array)),
+                        'std': float(np.std(daily_portfolio_values_array)),
+                        'var_95': float(var_95_portfolio),
+                        'var_99': float(var_99_portfolio),
+                        'cvar_95': float(cvar_95_portfolio),
+                        'cvar_99': float(cvar_99_portfolio)
+                    },
+                    'drawdown': {
+                        'mean': float(np.mean(daily_drawdowns_array)),
+                        'std': float(np.std(daily_drawdowns_array)),
+                        'min': float(np.min(daily_drawdowns_array)),
+                        'max': float(np.max(daily_drawdowns_array))
                     }
                 }
         
@@ -2126,12 +2177,6 @@ class Portfolio:
                 'min': float(np.min(max_drawdowns)),
                 'max': float(np.max(max_drawdowns))
             },
-            'information_ratio_distribution': {
-                'mean': float(np.mean(information_ratios)),
-                'std': float(np.std(information_ratios)),
-                'min': float(np.min(information_ratios)),
-                'max': float(np.max(information_ratios))
-            },
             'average_drawdown_distribution': {
                 'mean': float(np.mean(average_drawdowns)),
                 'std': float(np.std(average_drawdowns)),
@@ -2154,7 +2199,6 @@ class Portfolio:
         
         total_returns = np.array([s['total_return'] for s in sample_results])
         sharpe_ratios = np.array([s['sharpe_ratio'] for s in sample_results])
-        information_ratios = np.array([s['information_ratio'] for s in sample_results])
         max_drawdowns = np.array([s['max_drawdown'] for s in sample_results])
         average_drawdowns = np.array([s['average_drawdown'] for s in sample_results])
         downside_deviations = np.array([s['downside_deviation'] for s in sample_results])
@@ -2180,11 +2224,6 @@ class Portfolio:
                 'std': float(np.std(max_drawdowns)),
                 'p25': float(np.percentile(max_drawdowns, 25)),
                 'p75': float(np.percentile(max_drawdowns, 75))
-            },
-            'information_ratio': {
-                'mean': float(np.mean(information_ratios)),
-                'median': float(np.median(information_ratios)),
-                'std': float(np.std(information_ratios))
             },
             'average_drawdown': {
                 'mean': float(np.mean(average_drawdowns)),

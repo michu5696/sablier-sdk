@@ -57,7 +57,6 @@ class Test:
             'return_distribution': self.aggregated_results['return_distribution'],
             'sharpe_distribution': self.aggregated_results['sharpe_distribution'],
             'drawdown_distribution': self.aggregated_results['drawdown_distribution'],
-            'information_ratio_distribution': self.aggregated_results['information_ratio_distribution'],
             'average_drawdown_distribution': self.aggregated_results['average_drawdown_distribution'],
             'downside_deviation_distribution': self.aggregated_results['downside_deviation_distribution']
         }
@@ -75,7 +74,6 @@ class Test:
             'sharpe_ratio': sample['sharpe_ratio'],
             'sortino_ratio': sample['sortino_ratio'],
             'calmar_ratio': sample['calmar_ratio'],
-            'information_ratio': sample['information_ratio'],
             'max_drawdown': sample['max_drawdown'],
             'average_drawdown': sample['average_drawdown'],
             'downside_deviation': sample['downside_deviation'],
@@ -86,650 +84,62 @@ class Test:
         }
     
     # ============================================
-    # METRIC-FOCUSED DISTRIBUTION PLOTTING METHODS
+    # STREAMLINED PLOTTING SYSTEM
     # ============================================
     
-    def plot_return_distribution(self, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot distribution of total returns across all samples"""
-        # Set default save directory and create it if needed
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-        
-        returns = [s['total_return'] for s in self.sample_results]
-        
-        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        ax.hist(returns, bins=30, alpha=0.7, density=True, color='blue', edgecolor='black')
-        
-        # Add statistics
-        mean_return = np.mean(returns)
-        std_return = np.std(returns)
-        var_95 = np.percentile(returns, 5)
-        var_99 = np.percentile(returns, 1)
-        
-        ax.axvline(mean_return, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_return:.3f}')
-        ax.axvline(var_95, color='orange', linestyle='--', linewidth=2, label=f'95% VaR: {var_95:.3f}')
-        ax.axvline(var_99, color='darkred', linestyle='--', linewidth=2, label=f'99% VaR: {var_99:.3f}')
-        
-        ax.set_xlabel('Total Return')
-        ax.set_ylabel('Density')
-        ax.set_title(f'Portfolio Return Distribution\n{self.scenario_name}')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            filename = f"return_distribution_{self.scenario_name.replace(' ', '_')}.png"
-            filepath = os.path.join(save_dir, filename)
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            saved_files.append(filepath)
-            print(f"✅ Saved: {filepath}")
-        
-        if display:
-            plt.show()
-        else:
-            plt.close()
-        
-        return saved_files
-    
-    def plot_sharpe_distribution(self, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot distribution of Sharpe ratios across all samples"""
-        # Set default save directory and create it if needed
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-        
-        sharpe_ratios = [s['sharpe_ratio'] for s in self.sample_results]
-        
-        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        ax.hist(sharpe_ratios, bins=30, alpha=0.7, density=True, color='green', edgecolor='black')
-        
-        # Add statistics
-        mean_sharpe = np.mean(sharpe_ratios)
-        std_sharpe = np.std(sharpe_ratios)
-        
-        ax.axvline(mean_sharpe, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_sharpe:.3f}')
-        ax.axvline(mean_sharpe + std_sharpe, color='orange', linestyle=':', linewidth=1, label=f'+1σ: {mean_sharpe + std_sharpe:.3f}')
-        ax.axvline(mean_sharpe - std_sharpe, color='orange', linestyle=':', linewidth=1, label=f'-1σ: {mean_sharpe - std_sharpe:.3f}')
-        
-        ax.set_xlabel('Sharpe Ratio')
-        ax.set_ylabel('Density')
-        ax.set_title(f'Portfolio Sharpe Ratio Distribution\n{self.scenario_name}')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            filename = f"sharpe_distribution_{self.scenario_name.replace(' ', '_')}.png"
-            filepath = os.path.join(save_dir, filename)
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            saved_files.append(filepath)
-            print(f"✅ Saved: {filepath}")
-        
-        if display:
-            plt.show()
-        else:
-            plt.close()
-        
-        return saved_files
-    
-    def plot_information_ratio_distribution(self, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot distribution of Information ratios across all samples"""
-        # Set default save directory and create it if needed
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-        
-        info_ratios = [s['information_ratio'] for s in self.sample_results]
-        
-        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        ax.hist(info_ratios, bins=30, alpha=0.7, density=True, color='purple', edgecolor='black')
-        
-        # Add statistics
-        mean_info = np.mean(info_ratios)
-        std_info = np.std(info_ratios)
-        
-        ax.axvline(mean_info, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_info:.3f}')
-        ax.axvline(mean_info + std_info, color='orange', linestyle=':', linewidth=1, label=f'+1σ: {mean_info + std_info:.3f}')
-        ax.axvline(mean_info - std_info, color='orange', linestyle=':', linewidth=1, label=f'-1σ: {mean_info - std_info:.3f}')
-        
-        ax.set_xlabel('Information Ratio')
-        ax.set_ylabel('Density')
-        ax.set_title(f'Portfolio Information Ratio Distribution\n{self.scenario_name}')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            filename = f"information_ratio_distribution_{self.scenario_name.replace(' ', '_')}.png"
-            filepath = os.path.join(save_dir, filename)
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            saved_files.append(filepath)
-            print(f"✅ Saved: {filepath}")
-        
-        if display:
-            plt.show()
-        else:
-            plt.close()
-        
-        return saved_files
-    
-    def plot_max_drawdown_distribution(self, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot distribution of max drawdowns across all samples"""
-        # Set default save directory and create it if needed
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-        
-        max_drawdowns = [s['max_drawdown'] for s in self.sample_results]
-        
-        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        ax.hist(max_drawdowns, bins=30, alpha=0.7, density=True, color='red', edgecolor='black')
-        
-        # Add statistics
-        mean_dd = np.mean(max_drawdowns)
-        std_dd = np.std(max_drawdowns)
-        max_dd = np.max(max_drawdowns)
-        
-        ax.axvline(mean_dd, color='blue', linestyle='--', linewidth=2, label=f'Mean: {mean_dd:.3f}')
-        ax.axvline(max_dd, color='darkred', linestyle='--', linewidth=2, label=f'Max: {max_dd:.3f}')
-        
-        ax.set_xlabel('Max Drawdown')
-        ax.set_ylabel('Density')
-        ax.set_title(f'Portfolio Max Drawdown Distribution\n{self.scenario_name}')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            filename = f"max_drawdown_distribution_{self.scenario_name.replace(' ', '_')}.png"
-            filepath = os.path.join(save_dir, filename)
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            saved_files.append(filepath)
-            print(f"✅ Saved: {filepath}")
-        
-        if display:
-            plt.show()
-        else:
-            plt.close()
-        
-        return saved_files
-    
-    def plot_average_drawdown_distribution(self, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot distribution of average drawdowns across all samples"""
-        # Set default save directory and create it if needed
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-        
-        avg_drawdowns = [s['average_drawdown'] for s in self.sample_results]
-        
-        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        ax.hist(avg_drawdowns, bins=30, alpha=0.7, density=True, color='orange', edgecolor='black')
-        
-        # Add statistics
-        mean_avg_dd = np.mean(avg_drawdowns)
-        std_avg_dd = np.std(avg_drawdowns)
-        
-        ax.axvline(mean_avg_dd, color='blue', linestyle='--', linewidth=2, label=f'Mean: {mean_avg_dd:.3f}')
-        ax.axvline(mean_avg_dd + std_avg_dd, color='red', linestyle=':', linewidth=1, label=f'+1σ: {mean_avg_dd + std_avg_dd:.3f}')
-        ax.axvline(mean_avg_dd - std_avg_dd, color='red', linestyle=':', linewidth=1, label=f'-1σ: {mean_avg_dd - std_avg_dd:.3f}')
-        
-        ax.set_xlabel('Average Drawdown')
-        ax.set_ylabel('Density')
-        ax.set_title(f'Portfolio Average Drawdown Distribution\n{self.scenario_name}')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            filename = f"average_drawdown_distribution_{self.scenario_name.replace(' ', '_')}.png"
-            filepath = os.path.join(save_dir, filename)
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            saved_files.append(filepath)
-            print(f"✅ Saved: {filepath}")
-        
-        if display:
-            plt.show()
-        else:
-            plt.close()
-        
-        return saved_files
-    
-    def plot_downside_deviation_distribution(self, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot distribution of downside deviations across all samples"""
-        # Set default save directory and create it if needed
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-        
-        downside_deviations = [s['downside_deviation'] for s in self.sample_results]
-        
-        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        ax.hist(downside_deviations, bins=30, alpha=0.7, density=True, color='brown', edgecolor='black')
-        
-        # Add statistics
-        mean_dd_dev = np.mean(downside_deviations)
-        std_dd_dev = np.std(downside_deviations)
-        
-        ax.axvline(mean_dd_dev, color='blue', linestyle='--', linewidth=2, label=f'Mean: {mean_dd_dev:.3f}')
-        ax.axvline(mean_dd_dev + std_dd_dev, color='red', linestyle=':', linewidth=1, label=f'+1σ: {mean_dd_dev + std_dd_dev:.3f}')
-        ax.axvline(mean_dd_dev - std_dd_dev, color='red', linestyle=':', linewidth=1, label=f'-1σ: {mean_dd_dev - std_dd_dev:.3f}')
-        
-        ax.set_xlabel('Downside Deviation')
-        ax.set_ylabel('Density')
-        ax.set_title(f'Portfolio Downside Deviation Distribution\n{self.scenario_name}')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            filename = f"downside_deviation_distribution_{self.scenario_name.replace(' ', '_')}.png"
-            filepath = os.path.join(save_dir, filename)
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            saved_files.append(filepath)
-            print(f"✅ Saved: {filepath}")
-        
-        if display:
-            plt.show()
-        else:
-            plt.close()
-        
-        return saved_files
-    
-    # ============================================
-    # METRIC-FOCUSED TIME-SERIES PLOTTING METHODS (AGGREGATED)
-    # ============================================
-    
-    def plot_pnl_evolution(self, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot PnL evolution over time (aggregated across samples)"""
-        # Set default save directory and create it if needed
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-        
-        if not self.time_series_metrics:
-            raise ValueError("No time-series data found. This test may be from an older version.")
-        
-        days = []
-        mean_pnl = []
-        var_95_pnl = []
-        var_99_pnl = []
-        std_pnl = []
-        
-        for day_key, day_data in self.time_series_metrics.items():
-            days.append(day_data['day'])
-            mean_pnl.append(day_data['pnl']['mean'])
-            var_95_pnl.append(day_data['pnl']['var_95'])
-            var_99_pnl.append(day_data['pnl']['var_99'])
-            std_pnl.append(day_data['pnl']['std'])
-        
-        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-        
-        # Plot mean PnL
-        ax.plot(days, mean_pnl, 'b-', linewidth=2, label='Mean PnL')
-        
-        # Plot confidence bands
-        ax.fill_between(days, var_95_pnl, var_99_pnl, alpha=0.2, color='red', 
-                       label='95%-99% VaR Band')
-        
-        # Plot standard deviation bands
-        upper_std = np.array(mean_pnl) + np.array(std_pnl)
-        lower_std = np.array(mean_pnl) - np.array(std_pnl)
-        ax.fill_between(days, lower_std, upper_std, alpha=0.3, color='blue', 
-                       label='±1 Std Dev')
-        
-        ax.axhline(y=0, color='k', linestyle='--', alpha=0.5)
-        ax.set_xlabel('Days')
-        ax.set_ylabel('PnL')
-        ax.set_title(f'Portfolio PnL Evolution Over Time\n{self.scenario_name}')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            filename = f"pnl_evolution_{self.scenario_name.replace(' ', '_')}.png"
-            filepath = os.path.join(save_dir, filename)
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            saved_files.append(filepath)
-            print(f"✅ Saved: {filepath}")
-        
-        if display:
-            plt.show()
-        else:
-            plt.close()
-        
-        return saved_files
-    
-    def plot_return_evolution(self, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot cumulative return evolution over time (aggregated across samples)"""
-        # Set default save directory and create it if needed
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-        
-        if not self.time_series_metrics:
-            raise ValueError("No time-series data found. This test may be from an older version.")
-        
-        days = []
-        mean_return = []
-        var_95_return = []
-        var_99_return = []
-        std_return = []
-        
-        for day_key, day_data in self.time_series_metrics.items():
-            days.append(day_data['day'])
-            mean_return.append(day_data['returns']['mean'])
-            var_95_return.append(day_data['returns']['var_95'])
-            var_99_return.append(day_data['returns']['var_99'])
-            std_return.append(day_data['returns']['std'])
-        
-        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-        
-        # Plot mean return
-        ax.plot(days, np.array(mean_return) * 100, 'g-', linewidth=2, label='Mean Return (%)')
-        
-        # Plot confidence bands
-        ax.fill_between(days, np.array(var_95_return) * 100, np.array(var_99_return) * 100, 
-                       alpha=0.2, color='red', label='95%-99% VaR Band')
-        
-        # Plot standard deviation bands
-        upper_std = (np.array(mean_return) + np.array(std_return)) * 100
-        lower_std = (np.array(mean_return) - np.array(std_return)) * 100
-        ax.fill_between(days, lower_std, upper_std, alpha=0.3, color='green', 
-                       label='±1 Std Dev')
-        
-        ax.axhline(y=0, color='k', linestyle='--', alpha=0.5)
-        ax.set_xlabel('Days')
-        ax.set_ylabel('Cumulative Return (%)')
-        ax.set_title(f'Portfolio Cumulative Return Evolution\n{self.scenario_name}')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            filename = f"return_evolution_{self.scenario_name.replace(' ', '_')}.png"
-            filepath = os.path.join(save_dir, filename)
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            saved_files.append(filepath)
-            print(f"✅ Saved: {filepath}")
-        
-        if display:
-            plt.show()
-        else:
-            plt.close()
-        
-        return saved_files
-    
-    def plot_var_evolution(self, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot VaR evolution over time (aggregated across samples)"""
-        # Set default save directory and create it if needed
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-        
-        if not self.time_series_metrics:
-            raise ValueError("No time-series data found. This test may be from an older version.")
-        
-        days = []
-        var_95_returns = []
-        var_99_returns = []
-        cvar_95_returns = []
-        cvar_99_returns = []
-        
-        for day_key, day_data in self.time_series_metrics.items():
-            days.append(day_data['day'])
-            var_95_returns.append(day_data['returns']['var_95'])
-            var_99_returns.append(day_data['returns']['var_99'])
-            cvar_95_returns.append(day_data['returns']['cvar_95'])
-            cvar_99_returns.append(day_data['returns']['cvar_99'])
-        
-        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-        
-        # Plot VaR evolution
-        ax.plot(days, np.array(var_95_returns) * 100, 'b-', linewidth=2, label='95% VaR (%)')
-        ax.plot(days, np.array(var_99_returns) * 100, 'r-', linewidth=2, label='99% VaR (%)')
-        
-        # Plot CVaR evolution
-        ax.plot(days, np.array(cvar_95_returns) * 100, 'b--', linewidth=2, label='95% CVaR (%)')
-        ax.plot(days, np.array(cvar_99_returns) * 100, 'r--', linewidth=2, label='99% CVaR (%)')
-        
-        ax.axhline(y=0, color='k', linestyle='--', alpha=0.5)
-        ax.set_xlabel('Days')
-        ax.set_ylabel('Risk Level (%)')
-        ax.set_title(f'Portfolio Risk Evolution (VaR/CVaR)\n{self.scenario_name}')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            filename = f"var_evolution_{self.scenario_name.replace(' ', '_')}.png"
-            filepath = os.path.join(save_dir, filename)
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            saved_files.append(filepath)
-            print(f"✅ Saved: {filepath}")
-        
-        if display:
-            plt.show()
-        else:
-            plt.close()
-        
-        return saved_files
-    
-    # ============================================
-    # METRIC-FOCUSED TIME-SERIES PLOTTING METHODS (SINGLE SAMPLE)
-    # ============================================
-    
-    def plot_sample_pnl_evolution(self, sample_idx: int, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot PnL evolution for a specific sample"""
-        # Set default save directory and create it if needed
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-        
-        if sample_idx >= len(self.sample_results):
-            raise ValueError(f"Sample index {sample_idx} out of range. Available: 0-{len(self.sample_results)-1}")
-        
-        sample = self.sample_results[sample_idx]
-        daily_metrics = sample['daily_metrics']
-        
-        days = [dm['day'] for dm in daily_metrics]
-        pnls = [dm['pnl'] for dm in daily_metrics]
-        
-        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-        ax.plot(days, pnls, 'b-', linewidth=2, label=f'Sample {sample_idx} PnL')
-        ax.axhline(y=0, color='k', linestyle='--', alpha=0.5)
-        
-        ax.set_xlabel('Days')
-        ax.set_ylabel('PnL')
-        ax.set_title(f'Portfolio PnL Evolution - Sample {sample_idx}\n{self.scenario_name}')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            filename = f"sample_{sample_idx}_pnl_evolution_{self.scenario_name.replace(' ', '_')}.png"
-            filepath = os.path.join(save_dir, filename)
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            saved_files.append(filepath)
-            print(f"✅ Saved: {filepath}")
-        
-        if display:
-            plt.show()
-        else:
-            plt.close()
-        
-        return saved_files
-    
-    def plot_sample_return_evolution(self, sample_idx: int, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot cumulative return evolution for a specific sample"""
-        # Set default save directory and create it if needed
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-        
-        if sample_idx >= len(self.sample_results):
-            raise ValueError(f"Sample index {sample_idx} out of range. Available: 0-{len(self.sample_results)-1}")
-        
-        sample = self.sample_results[sample_idx]
-        daily_metrics = sample['daily_metrics']
-        
-        days = [dm['day'] for dm in daily_metrics]
-        returns = [dm['cumulative_return'] for dm in daily_metrics]
-        
-        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-        ax.plot(days, np.array(returns) * 100, 'g-', linewidth=2, label=f'Sample {sample_idx} Return (%)')
-        ax.axhline(y=0, color='k', linestyle='--', alpha=0.5)
-        
-        ax.set_xlabel('Days')
-        ax.set_ylabel('Cumulative Return (%)')
-        ax.set_title(f'Portfolio Return Evolution - Sample {sample_idx}\n{self.scenario_name}')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            filename = f"sample_{sample_idx}_return_evolution_{self.scenario_name.replace(' ', '_')}.png"
-            filepath = os.path.join(save_dir, filename)
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            saved_files.append(filepath)
-            print(f"✅ Saved: {filepath}")
-        
-        if display:
-            plt.show()
-        else:
-            plt.close()
-        
-        return saved_files
-    
-    def plot_sample_portfolio_value_evolution(self, sample_idx: int, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot portfolio value evolution for a specific sample"""
-        # Set default save directory and create it if needed
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-        
-        if sample_idx >= len(self.sample_results):
-            raise ValueError(f"Sample index {sample_idx} out of range. Available: 0-{len(self.sample_results)-1}")
-        
-        sample = self.sample_results[sample_idx]
-        daily_metrics = sample['daily_metrics']
-        
-        days = [dm['day'] for dm in daily_metrics]
-        portfolio_values = [dm['portfolio_value'] for dm in daily_metrics]
-        
-        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-        ax.plot(days, portfolio_values, 'purple', linewidth=2, label=f'Sample {sample_idx} Portfolio Value')
-        
-        ax.set_xlabel('Days')
-        ax.set_ylabel('Portfolio Value')
-        ax.set_title(f'Portfolio Value Evolution - Sample {sample_idx}\n{self.scenario_name}')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            filename = f"sample_{sample_idx}_portfolio_value_evolution_{self.scenario_name.replace(' ', '_')}.png"
-            filepath = os.path.join(save_dir, filename)
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            saved_files.append(filepath)
-            print(f"✅ Saved: {filepath}")
-        
-        if display:
-            plt.show()
-        else:
-            plt.close()
-        
-        return saved_files
-    
-    def plot_sample_daily_returns(self, sample_idx: int, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot daily returns for a specific sample"""
-        # Set default save directory and create it if needed
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-        
-        if sample_idx >= len(self.sample_results):
-            raise ValueError(f"Sample index {sample_idx} out of range. Available: 0-{len(self.sample_results)-1}")
-        
-        sample = self.sample_results[sample_idx]
-        daily_returns = np.array(sample['daily_returns'])
-        daily_days = np.arange(1, len(daily_returns) + 1)
-        
-        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-        ax.plot(daily_days, daily_returns * 100, 'r-', linewidth=1, alpha=0.7, label=f'Sample {sample_idx} Daily Returns (%)')
-        ax.axhline(y=0, color='k', linestyle='--', alpha=0.5)
-        
-        ax.set_xlabel('Days')
-        ax.set_ylabel('Daily Return (%)')
-        ax.set_title(f'Portfolio Daily Returns - Sample {sample_idx}\n{self.scenario_name}')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            filename = f"sample_{sample_idx}_daily_returns_{self.scenario_name.replace(' ', '_')}.png"
-            filepath = os.path.join(save_dir, filename)
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            saved_files.append(filepath)
-            print(f"✅ Saved: {filepath}")
-        
-        if display:
-            plt.show()
-        else:
-            plt.close()
-        
-        return saved_files
-    
-    # ============================================
-    # MISSING EVOLUTION PLOTS (Running + Aggregated)
-    # ============================================
-    
-    def plot_cvar_evolution(self, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot CVaR evolution over time (aggregated across samples)"""
-        if not self.time_series_metrics:
-            raise ValueError("No time series metrics available")
-        
-        days = []
-        cvar_95_values = []
-        cvar_99_values = []
-        
-        for day_key, metrics in self.time_series_metrics.items():
-            if day_key.startswith('day_'):
-                day = int(day_key.split('_')[1])
-                days.append(day)
-                cvar_95_values.append(metrics['returns']['cvar_95'])
-                cvar_99_values.append(metrics['returns']['cvar_99'])
-        
-        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-        ax.plot(days, np.array(cvar_95_values) * 100, 'b-', linewidth=2, label='CVaR 95%')
-        ax.plot(days, np.array(cvar_99_values) * 100, 'r-', linewidth=2, label='CVaR 99%')
-        ax.set_title(f'CVaR Evolution Over Time\n{self.scenario_name}')
-        ax.set_xlabel('Day')
-        ax.set_ylabel('CVaR (%)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
+    def plot_distribution(self, metric: str, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
+        """Plot distribution of a metric across all samples (end-of-path metrics only)
+        
+        Args:
+            metric: Metric name ('total_return', 'sharpe_ratio', 'sortino_ratio', 
+                   'max_drawdown', 'average_drawdown', 'downside_deviation', 'calmar_ratio')
+            save: Whether to save the plot
+            save_dir: Directory to save plots (default: './portfolio_plots/')
+            display: Whether to display the plot
             
-            filename = f"cvar_evolution_{self.scenario_name.replace(' ', '_')}.png"
+        Returns:
+            List of saved file paths
+        """
+        # Set default save directory and create it if needed
+        if save:
+            if save_dir is None:
+                save_dir = './portfolio_plots/'
+            os.makedirs(save_dir, exist_ok=True)
+        
+        # Extract metric values from sample results (end-of-path metrics only)
+        end_of_path_metrics = ['total_return', 'sharpe_ratio', 'sortino_ratio', 'max_drawdown', 
+                              'average_drawdown', 'downside_deviation', 'calmar_ratio']
+        
+        if metric not in end_of_path_metrics:
+            raise ValueError(f"Unsupported end-of-path metric: {metric}. Available: {end_of_path_metrics}")
+        
+        values = [s[metric] for s in self.sample_results]
+        
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+        ax.hist(values, bins=30, alpha=0.7, density=True, color='blue', edgecolor='black')
+        
+        # Add statistics
+        mean_val = np.mean(values)
+        std_val = np.std(values)
+        
+        ax.axvline(mean_val, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_val:.3f}')
+        
+        # Add VaR lines for return metrics
+        if metric == 'total_return':
+            var_95 = np.percentile(values, 5)
+            var_99 = np.percentile(values, 1)
+            ax.axvline(var_95, color='orange', linestyle='--', linewidth=2, label=f'95% VaR: {var_95:.3f}')
+            ax.axvline(var_99, color='darkred', linestyle='--', linewidth=2, label=f'99% VaR: {var_99:.3f}')
+        
+        ax.set_xlabel(metric.replace('_', ' ').title())
+        ax.set_ylabel('Density')
+        ax.set_title(f'Portfolio {metric.replace("_", " ").title()} Distribution\n{self.scenario_name}')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        saved_files = []
+        if save:
+            filename = f"{metric}_distribution_{self.scenario_name.replace(' ', '_')}.png"
             filepath = os.path.join(save_dir, filename)
             plt.savefig(filepath, dpi=300, bbox_inches='tight')
             saved_files.append(filepath)
@@ -742,158 +152,103 @@ class Test:
         
         return saved_files
     
-    def plot_portfolio_value_evolution(self, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot portfolio value evolution over time (aggregated across samples)"""
-        if not self.time_series_metrics:
-            raise ValueError("No time series metrics available")
+    def plot_evolution(self, metric: str, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
+        """Plot evolution of a metric over time (aggregated across all samples with confidence intervals)
         
+        Args:
+            metric: Metric name ('pnl', 'total_return', 'portfolio_value')
+            save: Whether to save the plot
+            save_dir: Directory to save plots (default: './portfolio_plots/')
+            display: Whether to display the plot
+            
+        Returns:
+            List of saved file paths
+        """
+        # Set default save directory and create it if needed
+        if save:
+            if save_dir is None:
+                save_dir = './portfolio_plots/'
+            os.makedirs(save_dir, exist_ok=True)
+        
+        # Extract time-series data (daily metrics aggregated across samples)
+        time_series_metrics = ['pnl', 'returns', 'portfolio_value', 'drawdown']
+        
+        if metric not in time_series_metrics:
+            raise ValueError(f"Unsupported time-series metric: {metric}. Available: {time_series_metrics}")
+        
+        # Map metric names to actual keys in the data
+        metric_key_map = {
+            'pnl': 'pnl',
+            'total_return': 'returns',  # Map total_return to returns
+            'portfolio_value': 'portfolio_value',
+            'drawdown': 'drawdown'
+        }
+        
+        actual_metric_key = metric_key_map.get(metric, metric)
+        
+        # Get time-series metrics from aggregated results
+        time_series_data = self.time_series_metrics
+        if not time_series_data:
+            raise ValueError(f"Time-series data not available")
+        
+        # Extract daily aggregated data
         days = []
         mean_values = []
         std_values = []
-        
-        for day_key, metrics in self.time_series_metrics.items():
-            if day_key.startswith('day_'):
-                day = int(day_key.split('_')[1])
-                days.append(day)
-                mean_values.append(metrics['pnl']['mean'])
-                std_values.append(metrics['pnl']['std'])
-        
-        mean_values = np.array(mean_values)
-        std_values = np.array(std_values)
-        
-        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-        ax.plot(days, mean_values, 'b-', linewidth=2, label='Mean Portfolio Value')
-        ax.fill_between(days, mean_values - std_values, mean_values + std_values, 
-                       alpha=0.3, color='blue', label='±1 Std')
-        ax.set_title(f'Portfolio Value Evolution Over Time\n{self.scenario_name}')
-        ax.set_xlabel('Day')
-        ax.set_ylabel('Portfolio Value ($)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-            
-            filename = f"portfolio_value_evolution_{self.scenario_name.replace(' ', '_')}.png"
-            filepath = os.path.join(save_dir, filename)
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            saved_files.append(filepath)
-            print(f"✅ Saved: {filepath}")
-        
-        if display:
-            plt.show()
-        else:
-            plt.close()
-        
-        return saved_files
-    
-    # ============================================
-    # MISSING SINGLE PATH EVOLUTION PLOTS
-    # ============================================
-    
-    def plot_sample_var_evolution(self, sample_idx: int, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot VaR evolution for a specific sample"""
-        if sample_idx >= len(self.sample_results):
-            raise ValueError(f"Sample index {sample_idx} out of range. Available: 0-{len(self.sample_results)-1}")
-        
-        sample = self.sample_results[sample_idx]
-        daily_metrics = sample['daily_metrics']
-        
-        days = [m['day'] for m in daily_metrics]
-        returns = [m['cumulative_return'] for m in daily_metrics]
-        
-        # Compute rolling VaR (simplified - using historical returns)
         var_95_values = []
         var_99_values = []
-        
-        for i in range(len(returns)):
-            if i < 10:  # Need at least 10 observations
-                var_95_values.append(0)
-                var_99_values.append(0)
-            else:
-                historical_returns = returns[:i+1]
-                var_95_values.append(np.percentile(historical_returns, 5))
-                var_99_values.append(np.percentile(historical_returns, 1))
-        
-        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-        ax.plot(days, np.array(var_95_values) * 100, 'b-', linewidth=2, label='VaR 95%')
-        ax.plot(days, np.array(var_99_values) * 100, 'r-', linewidth=2, label='VaR 99%')
-        ax.plot(days, np.array(returns) * 100, 'g-', linewidth=1, alpha=0.7, label='Cumulative Return')
-        ax.set_title(f'VaR Evolution - Sample {sample_idx}\n{self.scenario_name}')
-        ax.set_xlabel('Day')
-        ax.set_ylabel('VaR / Return (%)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        saved_files = []
-        if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-            
-            filename = f"var_evolution_sample_{sample_idx}_{self.scenario_name.replace(' ', '_')}.png"
-            filepath = os.path.join(save_dir, filename)
-            plt.savefig(filepath, dpi=300, bbox_inches='tight')
-            saved_files.append(filepath)
-            print(f"✅ Saved: {filepath}")
-        
-        if display:
-            plt.show()
-        else:
-            plt.close()
-        
-        return saved_files
-    
-    def plot_sample_cvar_evolution(self, sample_idx: int, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
-        """Plot CVaR evolution for a specific sample"""
-        if sample_idx >= len(self.sample_results):
-            raise ValueError(f"Sample index {sample_idx} out of range. Available: 0-{len(self.sample_results)-1}")
-        
-        sample = self.sample_results[sample_idx]
-        daily_metrics = sample['daily_metrics']
-        
-        days = [m['day'] for m in daily_metrics]
-        returns = [m['cumulative_return'] for m in daily_metrics]
-        
-        # Compute rolling CVaR
         cvar_95_values = []
         cvar_99_values = []
         
-        for i in range(len(returns)):
-            if i < 10:  # Need at least 10 observations
-                cvar_95_values.append(0)
-                cvar_99_values.append(0)
-            else:
-                historical_returns = np.array(returns[:i+1])
-                var_95 = np.percentile(historical_returns, 5)
-                var_99 = np.percentile(historical_returns, 1)
+        for day_key, day_data in time_series_data.items():
+            if day_key.startswith('day_'):
+                days.append(day_data['day'])
                 
-                cvar_95 = np.mean(historical_returns[historical_returns <= var_95]) if np.any(historical_returns <= var_95) else var_95
-                cvar_99 = np.mean(historical_returns[historical_returns <= var_99]) if np.any(historical_returns <= var_99) else var_99
-                
-                cvar_95_values.append(cvar_95)
-                cvar_99_values.append(cvar_99)
+                if actual_metric_key in day_data:
+                    metric_data = day_data[actual_metric_key]
+                    mean_values.append(metric_data['mean'])
+                    std_values.append(metric_data['std'])
+                    
+                    # Only add VaR/CVaR for metrics that have them
+                    if 'var_95' in metric_data:
+                        var_95_values.append(metric_data['var_95'])
+                        var_99_values.append(metric_data['var_99'])
+                        cvar_95_values.append(metric_data['cvar_95'])
+                        cvar_99_values.append(metric_data['cvar_99'])
+                    else:
+                        var_95_values.append(None)
+                        var_99_values.append(None)
+                        cvar_95_values.append(None)
+                        cvar_99_values.append(None)
+        
+        if not days:
+            raise ValueError(f"No time-series data found for metric: {metric}")
         
         fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-        ax.plot(days, np.array(cvar_95_values) * 100, 'b-', linewidth=2, label='CVaR 95%')
-        ax.plot(days, np.array(cvar_99_values) * 100, 'r-', linewidth=2, label='CVaR 99%')
-        ax.plot(days, np.array(returns) * 100, 'g-', linewidth=1, alpha=0.7, label='Cumulative Return')
-        ax.set_title(f'CVaR Evolution - Sample {sample_idx}\n{self.scenario_name}')
-        ax.set_xlabel('Day')
-        ax.set_ylabel('CVaR / Return (%)')
+        
+        # Plot mean line
+        ax.plot(days, mean_values, 'b-', linewidth=2, label=f'{metric.replace("_", " ").title()} (Mean)')
+        
+        # Add confidence intervals
+        if metric == 'portfolio_value' and var_95_values[0] is not None:
+            # For portfolio value, show VaR/CVaR bands
+            ax.fill_between(days, var_95_values, var_99_values, alpha=0.2, color='red', label='95%-99% VaR Band')
+            ax.fill_between(days, cvar_95_values, cvar_99_values, alpha=0.3, color='darkred', label='95%-99% CVaR Band')
+        else:
+            # For other metrics (including drawdown), show ±1σ bands
+            upper_band = [m + s for m, s in zip(mean_values, std_values)]
+            lower_band = [m - s for m, s in zip(mean_values, std_values)]
+            ax.fill_between(days, lower_band, upper_band, alpha=0.3, color='blue', label='±1σ Band')
+        
+        ax.set_xlabel('Days')
+        ax.set_ylabel(metric.replace('_', ' ').title())
+        ax.set_title(f'Portfolio {metric.replace("_", " ").title()} Evolution (Aggregated)\n{self.scenario_name}')
         ax.legend()
         ax.grid(True, alpha=0.3)
         
         saved_files = []
         if save:
-            if save_dir is None:
-                save_dir = './portfolio_plots/'
-            os.makedirs(save_dir, exist_ok=True)
-            
-            filename = f"cvar_evolution_sample_{sample_idx}_{self.scenario_name.replace(' ', '_')}.png"
+            filename = f"{metric}_evolution_{self.scenario_name.replace(' ', '_')}.png"
             filepath = os.path.join(save_dir, filename)
             plt.savefig(filepath, dpi=300, bbox_inches='tight')
             saved_files.append(filepath)
@@ -906,5 +261,174 @@ class Test:
         
         return saved_files
     
-    def __repr__(self) -> str:
-        return f"Test(id='{self.id}', scenario='{self.scenario_name}', date='{self.test_date}')"
+    def plot_sample_distribution(self, metric: str, sample_idx: int, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
+        """Plot distribution of daily metric values for a single sample
+        
+        Args:
+            metric: Metric name ('pnl', 'total_return', 'daily_return', 'portfolio_value', 'drawdown')
+            sample_idx: Index of the sample to plot
+            save: Whether to save the plot
+            save_dir: Directory to save plots (default: './portfolio_plots/')
+            display: Whether to display the plot
+            
+        Returns:
+            List of saved file paths
+        """
+        # Set default save directory and create it if needed
+        if save:
+            if save_dir is None:
+                save_dir = './portfolio_plots/'
+            os.makedirs(save_dir, exist_ok=True)
+        
+        if sample_idx >= len(self.sample_results):
+            raise ValueError(f"Sample index {sample_idx} out of range (max: {len(self.sample_results)-1})")
+        
+        # Extract daily metrics for the sample
+        sample_data = self.sample_results[sample_idx]
+        daily_metrics = sample_data.get('daily_metrics', [])
+        
+        if not daily_metrics:
+            raise ValueError(f"No daily metrics available for sample {sample_idx}")
+        
+        # Valid daily metrics
+        daily_metric_names = ['pnl', 'cumulative_return', 'daily_return', 'portfolio_value', 'drawdown']
+        if metric not in daily_metric_names:
+            raise ValueError(f"Unsupported daily metric: {metric}. Available: {daily_metric_names}")
+        
+        # Map metric names to actual keys in the data
+        metric_key_map = {
+            'pnl': 'pnl',
+            'total_return': 'cumulative_return',  # Map total_return to cumulative_return
+            'daily_return': 'daily_return',
+            'portfolio_value': 'portfolio_value',
+            'drawdown': 'drawdown'
+        }
+        
+        actual_metric_key = metric_key_map.get(metric, metric)
+        
+        # Extract values for the metric across all days
+        values = [dm[actual_metric_key] for dm in daily_metrics]
+        
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+        ax.hist(values, bins=30, alpha=0.7, density=True, color='green', edgecolor='black')
+        
+        # Add statistics
+        mean_val = np.mean(values)
+        std_val = np.std(values)
+        
+        ax.axvline(mean_val, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_val:.3f}')
+        ax.axvline(mean_val + std_val, color='orange', linestyle=':', linewidth=1, label=f'+1σ: {mean_val + std_val:.3f}')
+        ax.axvline(mean_val - std_val, color='orange', linestyle=':', linewidth=1, label=f'-1σ: {mean_val - std_val:.3f}')
+        
+        ax.set_xlabel(metric.replace('_', ' ').title())
+        ax.set_ylabel('Density')
+        ax.set_title(f'Sample {sample_idx} - {metric.replace("_", " ").title()} Distribution\n{self.scenario_name}')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        saved_files = []
+        if save:
+            filename = f"sample_{sample_idx}_{metric}_distribution_{self.scenario_name.replace(' ', '_')}.png"
+            filepath = os.path.join(save_dir, filename)
+            plt.savefig(filepath, dpi=300, bbox_inches='tight')
+            saved_files.append(filepath)
+            print(f"✅ Saved: {filepath}")
+        
+        if display:
+            plt.show()
+        else:
+            plt.close()
+        
+        return saved_files
+    
+    def plot_sample_evolution(self, metric: str, sample_idx: int, save: bool = False, save_dir: str = None, display: bool = True) -> List[str]:
+        """Plot evolution of a metric over time for a single sample (no confidence intervals)
+        
+        Args:
+            metric: Metric name ('pnl', 'total_return', 'daily_return', 'portfolio_value', 'drawdown')
+            sample_idx: Index of the sample to plot
+            save: Whether to save the plot
+            save_dir: Directory to save plots (default: './portfolio_plots/')
+            display: Whether to display the plot
+            
+        Returns:
+            List of saved file paths
+        """
+        # Set default save directory and create it if needed
+        if save:
+            if save_dir is None:
+                save_dir = './portfolio_plots/'
+            os.makedirs(save_dir, exist_ok=True)
+        
+        if sample_idx >= len(self.sample_results):
+            raise ValueError(f"Sample index {sample_idx} out of range (max: {len(self.sample_results)-1})")
+        
+        # Extract daily metrics for the sample
+        sample_data = self.sample_results[sample_idx]
+        daily_metrics = sample_data.get('daily_metrics', [])
+        
+        if not daily_metrics:
+            raise ValueError(f"No daily metrics available for sample {sample_idx}")
+        
+        # Valid daily metrics
+        daily_metric_names = ['pnl', 'cumulative_return', 'daily_return', 'portfolio_value', 'drawdown']
+        if metric not in daily_metric_names:
+            raise ValueError(f"Unsupported daily metric: {metric}. Available: {daily_metric_names}")
+        
+        # Map metric names to actual keys in the data
+        metric_key_map = {
+            'pnl': 'pnl',
+            'total_return': 'cumulative_return',  # Map total_return to cumulative_return
+            'daily_return': 'daily_return',
+            'portfolio_value': 'portfolio_value',
+            'drawdown': 'drawdown'
+        }
+        
+        actual_metric_key = metric_key_map.get(metric, metric)
+        
+        # Extract values and days
+        values = [dm[actual_metric_key] for dm in daily_metrics]
+        days = list(range(len(values)))
+        
+        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+        ax.plot(days, values, 'b-', linewidth=2, label=f'Sample {sample_idx}')
+        
+        ax.set_xlabel('Days')
+        ax.set_ylabel(metric.replace('_', ' ').title())
+        ax.set_title(f'Sample {sample_idx} - {metric.replace("_", " ").title()} Evolution\n{self.scenario_name}')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        saved_files = []
+        if save:
+            filename = f"sample_{sample_idx}_{metric}_evolution_{self.scenario_name.replace(' ', '_')}.png"
+            filepath = os.path.join(save_dir, filename)
+            plt.savefig(filepath, dpi=300, bbox_inches='tight')
+            saved_files.append(filepath)
+            print(f"✅ Saved: {filepath}")
+        
+        if display:
+            plt.show()
+        else:
+            plt.close()
+        
+        return saved_files
+    
+    def delete(self) -> bool:
+        """Delete this test from the database"""
+        import sqlite3
+        
+        db_path = os.path.expanduser("~/.sablier/portfolios.db")
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.execute("DELETE FROM portfolio_tests WHERE id = ?", (self.id,))
+                if cursor.rowcount > 0:
+                    conn.commit()
+                    print(f"✅ Deleted test {self.id}")
+                    return True
+                else:
+                    print(f"❌ Test {self.id} not found")
+                    return False
+        except Exception as e:
+            print(f"❌ Failed to delete test: {e}")
+            return False
