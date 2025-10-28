@@ -114,7 +114,7 @@ class PortfolioManager:
     
     def create(self, name: str, target_set, weights: Optional[Union[Dict[str, float], List[float]]] = None, 
                capital: float = 100000.0, description: Optional[str] = None, 
-               constraint_type: str = "long_short") -> Portfolio:
+               constraint_type: str = "long_short", asset_configs: Optional[Dict[str, Dict[str, Any]]] = None) -> Portfolio:
         """
         Create a new portfolio from a target set
         
@@ -128,6 +128,7 @@ class PortfolioManager:
             capital: Total capital allocation (default $100k)
             description: Optional description
             constraint_type: "long_only", "long_short", or "custom"
+            asset_configs: Optional dict mapping asset names to their return calculation config
             
         Returns:
             New Portfolio instance
@@ -157,6 +158,7 @@ class PortfolioManager:
             "capital": capital,
             "constraint_type": constraint_type,
             "custom_constraints": None,
+            "asset_configs": asset_configs or {},
             "created_at": datetime.utcnow().isoformat() + 'Z',
             "updated_at": datetime.utcnow().isoformat() + 'Z'
         }

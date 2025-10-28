@@ -279,7 +279,8 @@ class SablierClient:
             raise ValueError("Identifier must be string (name) or int (index)")
     
     def create_portfolio(self, name: str, target_set, weights: Optional[Union[Dict[str, float], List[float]]] = None, 
-                        capital: float = 100000.0, description: str = "", constraint_type: str = "long_short"):
+                        capital: float = 100000.0, description: str = "", constraint_type: str = "long_short",
+                        asset_configs: Optional[Dict[str, Dict[str, Any]]] = None):
         """
         Create a new portfolio
         
@@ -293,6 +294,18 @@ class SablierClient:
             capital: Total capital allocation (default $100k)
             description: Optional description
             constraint_type: Type of constraints ('long_short', 'long_only', 'custom')
+            asset_configs: Optional dict mapping asset names to their return calculation config
+                Example: {
+                    "10-Year Treasury": {
+                        "type": "treasury_bond",
+                        "params": {
+                            "coupon_rate": 0.025,
+                            "face_value": 1000,
+                            "issue_date": "2020-01-01",
+                            "payment_frequency": 2
+                        }
+                    }
+                }
             
         Returns:
             Portfolio instance
@@ -303,7 +316,8 @@ class SablierClient:
             weights=weights,
             capital=capital,
             description=description,
-            constraint_type=constraint_type
+            constraint_type=constraint_type,
+            asset_configs=asset_configs
         )
     
     def _register_and_get_api_key(self, api_url: str, interactive: bool) -> str:

@@ -4,7 +4,7 @@ import json
 import os
 import uuid
 import sqlite3
-from datetime import datetime
+from datetime import datetime, date
 from typing import Dict, List, Optional, Any, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -54,6 +54,7 @@ class Portfolio:
         self.capital = portfolio_data.get('capital', 100000.0)  # Default $100k
         self.constraint_type = portfolio_data.get('constraint_type', 'long_short')
         self.custom_constraints = portfolio_data.get('custom_constraints')
+        self.asset_configs = portfolio_data.get('asset_configs', {})
         self.created_at = portfolio_data.get('created_at')
         
         # Validate weights if provided
@@ -1863,12 +1864,12 @@ class Portfolio:
         print(f"🔍 DEBUG: Starting _run_test_analysis for scenario '{scenario.name}'")
         
         # Extract scenario data
-        price_matrix = self._extract_scenario_data(scenario)
+        price_matrix, future_dates = self._extract_scenario_data(scenario)
         print(f"🔍 DEBUG: Extracted price matrix shape: {price_matrix.shape}")
         
         # Compute sample metrics
         print(f"🔍 DEBUG: Computing sample metrics...")
-        sample_results = self._compute_sample_metrics(price_matrix)
+        sample_results = self._compute_sample_metrics(price_matrix, future_dates)
         print(f"🔍 DEBUG: Computed metrics for {len(sample_results)} samples")
         
         # Aggregate sample metrics
@@ -1883,8 +1884,8 @@ class Portfolio:
             'summary_stats': summary_stats
         }
     
-    def _extract_scenario_data(self, scenario) -> np.ndarray:
-        """Extract price data from scenario for portfolio testing"""
+    def _extract_scenario_data(self, scenario) -> tuple[np.ndarray, List[str]]:
+        """Extract price data and future dates from scenario for portfolio testing"""
         import numpy as np
         
         # Get scenario output
@@ -1906,6 +1907,13 @@ class Portfolio:
         if not forecast_windows:
             raise ValueError("No forecast windows found in scenario output")
         
+        # Extract future dates from scenario output
+        # The future_dates are in the simulation_result returned by simulate()
+        # We need to get them from the scenario's output structure
+        future_dates = output.get('future_dates', [])
+        
+        if not future_dates:
+            raise ValueError("No future_dates found in scenario output")
         
         # Debug temporal tags
         temporal_tags = set()
@@ -1950,10 +1958,172 @@ class Portfolio:
             for sample_idx, sample_data in enumerate(asset_samples):
                 price_matrix[sample_idx, :, i] = np.array(sample_data)
         
-        return price_matrix
+        return price_matrix, future_dates
     
-    def _compute_sample_metrics(self, price_matrix: np.ndarray) -> List[Dict[str, Any]]:
-        """Compute metrics for each sample path"""
+    def _calculate_asset_returns(self, asset_name: str, price_path: np.ndarray, future_dates: List[str]) -> np.ndarray:
+        """
+        Calculate returns for a specific asset using its configured return calculation method
+        
+        Args:
+            asset_name: Name of the asset
+            price_path: Array of prices/yields over time [n_days]
+            future_dates: List of date strings ['2025-10-29', ...]
+            
+        Returns:
+            Array of returns over time [n_days-1]
+        """
+        # Check if asset has custom config
+        if asset_name in self.asset_configs:
+            config = self.asset_configs[asset_name]
+            asset_type = config["type"]
+            params = config["params"]
+            
+            if asset_type == "treasury_bond":
+                return self._calculate_treasury_bond_returns(price_path, future_dates, params)
+            elif asset_type == "default":
+                return self._calculate_default_returns(price_path)
+            else:
+                raise ValueError(f"Unknown asset type: {asset_type}")
+        else:
+            # No config = use default calculation (backward compatibility)
+            return self._calculate_default_returns(price_path)
+    
+    def _calculate_default_returns(self, price_path: np.ndarray) -> np.ndarray:
+        """Calculate simple price returns"""
+        return np.diff(price_path) / price_path[:-1]
+    
+    def _calculate_treasury_bond_returns(self, yield_path: np.ndarray, future_dates: List[str], params: Dict[str, Any]) -> np.ndarray:
+        """
+        Calculate Treasury bond returns using YTM method
+        
+        Args:
+            yield_path: Array of yields over time [n_days]
+            future_dates: List of date strings ['2025-10-29', ...]
+            params: Dict with coupon_rate, face_value, issue_date, payment_frequency
+            
+        Returns:
+            Array of bond returns for each time step [n_days-1]
+        """
+        # Validate required parameters
+        required_params = ['coupon_rate', 'face_value', 'issue_date', 'payment_frequency']
+        for param in required_params:
+            if param not in params:
+                raise ValueError(f"Missing required parameter '{param}' for Treasury bond")
+        
+        coupon_rate = params['coupon_rate']
+        face_value = params['face_value']
+        issue_date_str = params['issue_date']
+        payment_frequency = params['payment_frequency']
+        
+        # Parse dates
+        issue_date = datetime.strptime(issue_date_str, '%Y-%m-%d').date()
+        forecast_start = datetime.strptime(future_dates[0], '%Y-%m-%d').date()
+        
+        # Validate issue_date is before forecast start
+        if issue_date >= forecast_start:
+            raise ValueError(f"Issue date {issue_date_str} must be before forecast start date {future_dates[0]}")
+        
+        # Calculate coupon payment dates within forecast window
+        coupon_dates = self._get_coupon_payment_dates(issue_date, future_dates, payment_frequency)
+        
+        # Calculate bond prices and returns
+        n_days = len(yield_path)
+        bond_prices = np.zeros(n_days)
+        returns = np.zeros(n_days - 1)
+        
+        # Calculate bond price for each day
+        for t in range(n_days):
+            bond_prices[t] = self._calculate_bond_price(
+                yield_path[t], coupon_rate, face_value, issue_date, 
+                datetime.strptime(future_dates[t], '%Y-%m-%d').date(), payment_frequency
+            )
+        
+        # Calculate returns (price change + coupon payments)
+        for t in range(1, n_days):
+            price_return = (bond_prices[t] - bond_prices[t-1]) / bond_prices[t-1]
+            
+            # Add coupon payment if due on this date
+            coupon_return = 0.0
+            current_date = datetime.strptime(future_dates[t], '%Y-%m-%d').date()
+            if current_date in coupon_dates:
+                coupon_return = (coupon_rate / payment_frequency) / bond_prices[t-1]
+            
+            returns[t-1] = price_return + coupon_return
+        
+        return returns
+    
+    def _get_coupon_payment_dates(self, issue_date: date, future_dates: List[str], payment_frequency: int) -> List[date]:
+        """Find which dates in future_dates have coupon payments"""
+        from dateutil.relativedelta import relativedelta
+        
+        coupon_dates = []
+        forecast_start = datetime.strptime(future_dates[0], '%Y-%m-%d').date()
+        forecast_end = datetime.strptime(future_dates[-1], '%Y-%m-%d').date()
+        
+        # Calculate coupon payment interval
+        months_per_payment = 12 // payment_frequency
+        
+        # Find first coupon date after issue date
+        current_coupon_date = issue_date
+        while current_coupon_date <= forecast_start:
+            current_coupon_date = current_coupon_date + relativedelta(months=months_per_payment)
+        
+        # Find all coupon dates within forecast window
+        while current_coupon_date <= forecast_end:
+            # Convert to business day if weekend
+            if current_coupon_date.weekday() >= 5:  # Saturday = 5, Sunday = 6
+                # Move to next Monday
+                days_to_add = 7 - current_coupon_date.weekday()
+                current_coupon_date = current_coupon_date + relativedelta(days=days_to_add)
+            
+            coupon_dates.append(current_coupon_date)
+            current_coupon_date = current_coupon_date + relativedelta(months=months_per_payment)
+        
+        return coupon_dates
+    
+    def _calculate_bond_price(self, yield_rate: float, coupon_rate: float, face_value: float, 
+                            issue_date: date, current_date: date, payment_frequency: int) -> float:
+        """
+        Calculate bond price using yield-to-maturity formula
+        
+        Args:
+            yield_rate: Current market yield (annual)
+            coupon_rate: Annual coupon rate
+            face_value: Bond face value
+            issue_date: When bond was issued
+            current_date: Current date
+            payment_frequency: Payments per year
+            
+        Returns:
+            Bond price
+        """
+        from dateutil.relativedelta import relativedelta
+        
+        # Calculate years to maturity from current date
+        years_to_maturity = (issue_date + relativedelta(years=10) - current_date).days / 365.25
+        
+        if years_to_maturity <= 0:
+            return face_value  # Bond at maturity
+        
+        # Calculate coupon payment
+        coupon_payment = (coupon_rate / payment_frequency) * face_value
+        
+        # Calculate number of remaining payments
+        payments_per_year = payment_frequency
+        total_payments = int(years_to_maturity * payments_per_year)
+        
+        # Calculate present value of coupon payments
+        coupon_pv = 0.0
+        for i in range(1, total_payments + 1):
+            coupon_pv += coupon_payment / ((1 + yield_rate / payments_per_year) ** i)
+        
+        # Calculate present value of face value
+        face_pv = face_value / ((1 + yield_rate / payments_per_year) ** total_payments)
+        
+        return coupon_pv + face_pv
+    
+    def _compute_sample_metrics(self, price_matrix: np.ndarray, future_dates: List[str]) -> List[Dict[str, Any]]:
+        """Compute metrics for each sample path using asset-specific return calculations"""
         import numpy as np
         
         n_samples, n_days, n_assets = price_matrix.shape
@@ -1963,16 +2133,23 @@ class Portfolio:
             # Get price path for this sample
             price_path = price_matrix[sample_idx]  # [n_days, n_assets]
             
-            # Compute portfolio values (correct for long-short)
-            portfolio_values = np.zeros(n_days)
-            for t in range(n_days):
-                portfolio_value = 0
-                for i, asset in enumerate(self.assets):
-                    weight = self.weights[asset]
-                    # For long-short: positive weights = long, negative weights = short
-                    portfolio_value += weight * price_path[t, i] * self.capital
-                portfolio_values[t] = portfolio_value
+            # Calculate returns for each asset using their specific method
+            asset_returns = {}
+            for i, asset in enumerate(self.assets):
+                asset_price_path = price_path[:, i]  # [n_days]
+                asset_returns[asset] = self._calculate_asset_returns(asset, asset_price_path, future_dates)
             
+            # Compute portfolio values using returns
+            portfolio_values = np.zeros(n_days)
+            portfolio_values[0] = self.capital  # Start with initial capital
+            
+            for t in range(1, n_days):
+                portfolio_value = portfolio_values[t-1]
+                for asset in self.assets:
+                    weight = self.weights[asset]
+                    asset_return = asset_returns[asset][t-1]  # Returns are n_days-1 length
+                    portfolio_value += weight * portfolio_values[t-1] * asset_return
+                portfolio_values[t] = portfolio_value
             
             # Compute returns
             daily_returns = np.diff(portfolio_values) / portfolio_values[:-1]
