@@ -13,7 +13,7 @@ from .builder import Portfolio
 logger = logging.getLogger(__name__)
 
 # Schema version - increment this when making database schema changes
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class PortfolioManager:
@@ -49,24 +49,32 @@ class PortfolioManager:
                 )
             """)
             
-            # Check if schema_version table exists and has any records
-            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
-            schema_version_exists = cursor.fetchone() is not None
+            # Check current schema version
+            cursor = conn.execute("SELECT MAX(version) FROM schema_version")
+            result = cursor.fetchone()
+            current_version = (result[0] if result and result[0] is not None else 0)
             
-            if schema_version_exists:
-                # Check current schema version
-                cursor = conn.execute("SELECT MAX(version) FROM schema_version")
-                result = cursor.fetchone()
-                current_version = (result[0] if result and result[0] is not None else 0)
-            else:
-                # Old database without schema_version - set to version 0 to force all migrations
-                current_version = 0
-                logger.info("⚠️  Old database detected (no schema_version). Running all migrations...")
+            # Check if this is a new database (no tables exist yet)
+            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('portfolios', 'portfolio_tests')")
+            existing_tables = {row[0] for row in cursor.fetchall()}
+            is_new_database = 'portfolios' not in existing_tables
             
-            # Run migrations to bring database to latest version
-            self._run_migrations(conn, current_version, SCHEMA_VERSION)
+            if is_new_database:
+                # New database - skip migrations and mark as up-to-date
+                logger.info("📝 Creating new database with schema version 2")
+                try:
+                    conn.execute("""
+                        INSERT INTO schema_version (version, applied_at) 
+                        VALUES (?, ?)
+                    """, (SCHEMA_VERSION, datetime.utcnow().isoformat() + 'Z'))
+                except sqlite3.IntegrityError:
+                    pass
+            elif current_version < SCHEMA_VERSION:
+                # Existing database - run migrations
+                logger.info(f"🔧 Database version {current_version}, migrating to {SCHEMA_VERSION}")
+                self._run_migrations(conn, current_version, SCHEMA_VERSION)
             
-            # Create tables
+            # Create tables with latest schema (includes asset_configs)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS portfolios (
                     id TEXT PRIMARY KEY,
@@ -79,42 +87,10 @@ class PortfolioManager:
                     custom_constraints TEXT,  -- JSON object
                     weights TEXT,  -- JSON object
                     capital REAL NOT NULL DEFAULT 100000.0,
+                    asset_configs TEXT,  -- Added in schema version 1
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     UNIQUE(name)
-                )
-            """)
-            
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS portfolio_optimizations (
-                    id TEXT PRIMARY KEY,
-                    portfolio_id TEXT NOT NULL,
-                    scenario_id TEXT NOT NULL,
-                    scenario_name TEXT NOT NULL,
-                    metric TEXT NOT NULL,
-                    n_iterations INTEGER NOT NULL,
-                    final_sharpe REAL,
-                    final_return REAL,
-                    final_risk REAL,
-                    optimization_date TEXT NOT NULL,
-                    FOREIGN KEY (portfolio_id) REFERENCES portfolios (id)
-                )
-            """)
-            
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS portfolio_evaluations (
-                    id TEXT PRIMARY KEY,
-                    portfolio_id TEXT NOT NULL,
-                    scenario_id TEXT NOT NULL,
-                    scenario_name TEXT NOT NULL,
-                    sharpe REAL,
-                    mean_return REAL,
-                    std_return REAL,
-                    var_95 REAL,
-                    var_99 REAL,
-                    max_drawdown REAL,
-                    evaluation_date TEXT NOT NULL,
-                    FOREIGN KEY (portfolio_id) REFERENCES portfolios (id)
                 )
             """)
             
@@ -131,7 +107,7 @@ class PortfolioManager:
                     summary_stats TEXT NOT NULL,  -- JSON object
                     time_series_metrics TEXT,  -- JSON object with time-series aggregated data
                     n_days INTEGER,  -- Number of days in the test period
-                    FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+                    FOREIGN KEY (portfolio_id) REFERENCES portfolios(id) ON DELETE CASCADE
                 )
             """)
             
@@ -146,6 +122,8 @@ class PortfolioManager:
         """Run migrations to bring database from current_version to target_version"""
         
         for version in range(current_version + 1, target_version + 1):
+            logger.info(f"🔧 Applying portfolio migration {version}...")
+            
             if version == 1:
                 # Migration 1: Add asset_configs column to portfolios table
                 # AND Add time_series_metrics and n_days to portfolio_tests table
@@ -202,9 +180,57 @@ class PortfolioManager:
                     # Version already recorded
                     pass
             
-            # Add future migrations here:
-            # if version == 2:
-            #     ...
+            elif version == 2:
+                # Migration 2: Remove legacy tables and add CASCADE deletion to portfolio_tests
+                try:
+                    logger.info("   Removing legacy tables and adding CASCADE deletion...")
+                    
+                    # Drop legacy tables (these were never used in the current implementation)
+                    conn.execute("DROP TABLE IF EXISTS portfolio_optimizations")
+                    conn.execute("DROP TABLE IF EXISTS portfolio_evaluations")
+                    logger.info("   Dropped legacy portfolio_optimizations and portfolio_evaluations tables")
+                    
+                    # Drop and recreate portfolio_tests with CASCADE
+                    conn.execute("DROP TABLE IF EXISTS portfolio_tests_backup")
+                    conn.execute("""
+                        CREATE TABLE portfolio_tests_backup AS 
+                        SELECT * FROM portfolio_tests
+                    """)
+                    conn.execute("DROP TABLE portfolio_tests")
+                    conn.execute("""
+                        CREATE TABLE portfolio_tests (
+                            id TEXT PRIMARY KEY,
+                            portfolio_id TEXT NOT NULL,
+                            scenario_id TEXT NOT NULL,
+                            scenario_name TEXT NOT NULL,
+                            test_date TEXT NOT NULL,
+                            sample_results TEXT NOT NULL,
+                            aggregated_results TEXT NOT NULL,
+                            summary_stats TEXT NOT NULL,
+                            time_series_metrics TEXT,
+                            n_days INTEGER,
+                            FOREIGN KEY (portfolio_id) REFERENCES portfolios(id) ON DELETE CASCADE
+                        )
+                    """)
+                    conn.execute("INSERT INTO portfolio_tests SELECT * FROM portfolio_tests_backup")
+                    conn.execute("DROP TABLE portfolio_tests_backup")
+                    
+                    # Recreate indexes
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_tests_portfolio_id ON portfolio_tests(portfolio_id)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_tests_scenario_id ON portfolio_tests(scenario_id)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_tests_date ON portfolio_tests(test_date)")
+                    
+                    logger.info("✅ Applied portfolio migration 2: Removed legacy tables and added CASCADE deletion")
+                except Exception as e:
+                    logger.error(f"❌ Portfolio migration 2 failed: {e}")
+                
+                try:
+                    conn.execute("""
+                        INSERT INTO schema_version (version, applied_at) 
+                        VALUES (?, ?)
+                    """, (2, datetime.utcnow().isoformat() + 'Z'))
+                except sqlite3.IntegrityError:
+                    pass
     
     def create(self, name: str, target_set, weights: Optional[Union[Dict[str, float], List[float]]] = None, 
                capital: float = 100000.0, description: Optional[str] = None, 
@@ -498,33 +524,6 @@ class PortfolioManager:
         
         return portfolios
     
-    def get_optimization_history(self, portfolio_id: str) -> List[Dict[str, Any]]:
-        """Get optimization history for a portfolio"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                SELECT * FROM portfolio_optimizations 
-                WHERE portfolio_id = ? 
-                ORDER BY optimization_date DESC
-            """, (portfolio_id,))
-            
-            rows = cursor.fetchall()
-        
-        return [dict(row) for row in rows]
-    
-    def get_evaluation_history(self, portfolio_id: str) -> List[Dict[str, Any]]:
-        """Get evaluation history for a portfolio"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                SELECT * FROM portfolio_evaluations 
-                WHERE portfolio_id = ? 
-                ORDER BY evaluation_date DESC
-            """, (portfolio_id,))
-            
-            rows = cursor.fetchall()
-        
-        return [dict(row) for row in rows]
     
     def delete(self, portfolio_id: str) -> bool:
         """
@@ -537,9 +536,7 @@ class PortfolioManager:
             True if deleted successfully, False otherwise
         """
         with sqlite3.connect(self.db_path) as conn:
-            # Delete related records first
-            conn.execute("DELETE FROM portfolio_optimizations WHERE portfolio_id = ?", (portfolio_id,))
-            conn.execute("DELETE FROM portfolio_evaluations WHERE portfolio_id = ?", (portfolio_id,))
+            # Delete related records first (portfolio_tests is now CASCADE, but explicit delete ensures cleanup)
             conn.execute("DELETE FROM portfolio_tests WHERE portfolio_id = ?", (portfolio_id,))
             
             # Delete portfolio
@@ -650,21 +647,14 @@ class PortfolioManager:
             """)
             optimized_portfolios = cursor.fetchone()[0]
             
-            # Count optimizations
+            # Count tests (replacement for optimizations/evaluations)
             cursor = conn.execute("""
-                SELECT COUNT(*) FROM portfolio_optimizations
+                SELECT COUNT(*) FROM portfolio_tests
             """)
-            total_optimizations = cursor.fetchone()[0]
-            
-            # Count evaluations
-            cursor = conn.execute("""
-                SELECT COUNT(*) FROM portfolio_evaluations
-            """)
-            total_evaluations = cursor.fetchone()[0]
+            total_tests = cursor.fetchone()[0]
         
         return {
             'total_portfolios': total_portfolios,
             'optimized_portfolios': optimized_portfolios,
-            'total_optimizations': total_optimizations,
-            'total_evaluations': total_evaluations
+            'total_tests': total_tests
         }

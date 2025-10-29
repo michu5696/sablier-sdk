@@ -43,24 +43,32 @@ class UserSettingsManager:
                 )
             """)
             
-            # Check if schema_version table exists and has any records
-            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
-            schema_version_exists = cursor.fetchone() is not None
+            # Check current schema version
+            cursor = conn.execute("SELECT MAX(version) FROM schema_version")
+            result = cursor.fetchone()
+            current_version = (result[0] if result and result[0] is not None else 0)
             
-            if schema_version_exists:
-                # Check current schema version
-                cursor = conn.execute("SELECT MAX(version) FROM schema_version")
-                result = cursor.fetchone()
-                current_version = (result[0] if result and result[0] is not None else 0)
-            else:
-                # Old database without schema_version - set to version 0 to force all migrations
-                current_version = 0
-                logger.info("⚠️  Old database detected (no schema_version). Running all migrations...")
+            # Check if this is a new database (no tables exist yet)
+            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('user_settings', 'api_keys')")
+            existing_tables = {row[0] for row in cursor.fetchall()}
+            is_new_database = 'user_settings' not in existing_tables
             
-            # Run migrations to bring database to latest version
-            self._run_migrations(conn, current_version, SCHEMA_VERSION)
+            if is_new_database:
+                # New database - skip migrations and mark as up-to-date
+                logger.info("📝 Creating new user settings database with schema version 1")
+                try:
+                    conn.execute("""
+                        INSERT INTO schema_version (version, applied_at) 
+                        VALUES (?, ?)
+                    """, (SCHEMA_VERSION, datetime.utcnow().isoformat() + 'Z'))
+                except sqlite3.IntegrityError:
+                    pass
+            elif current_version < SCHEMA_VERSION:
+                # Existing database - run migrations
+                logger.info(f"🔧 User settings database version {current_version}, migrating to {SCHEMA_VERSION}")
+                self._run_migrations(conn, current_version, SCHEMA_VERSION)
             
-            # Create tables
+            # Create tables with latest schema (includes description column)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_settings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,7 +88,7 @@ class UserSettingsManager:
                     is_active BOOLEAN NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
                     last_used_at TEXT,
-                    description TEXT
+                    description TEXT  -- Added in schema version 1
                 )
             """)
             

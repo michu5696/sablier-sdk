@@ -188,7 +188,8 @@ class Portfolio:
     
     def get_optimization_history(self) -> List[Dict[str, Any]]:
         """Get optimization history for this portfolio"""
-        return self._get_optimization_history()
+        # DEPRECATED: Optimization history is no longer tracked in database
+        return []
     
     def _is_compatible_with_scenario(self, scenario) -> bool:
         """
@@ -555,10 +556,7 @@ class Portfolio:
         db_path = os.path.expanduser("~/.sablier/portfolios.db")
         
         with sqlite3.connect(db_path) as conn:
-            # Delete related records first
-            conn.execute("DELETE FROM portfolio_optimizations WHERE portfolio_id = ?", (self.id,))
-            conn.execute("DELETE FROM portfolio_evaluations WHERE portfolio_id = ?", (self.id,))
-            
+            # Delete portfolio (tests are now CASCADE deleted automatically)
             # Delete portfolio
             cursor = conn.execute("DELETE FROM portfolios WHERE id = ?", (self.id,))
             deleted = cursor.rowcount > 0
@@ -585,44 +583,7 @@ class Portfolio:
         
         return updated
     
-    def _get_optimization_history(self) -> List[Dict[str, Any]]:
-        """Get optimization history from database"""
-        import sqlite3
-        
-        db_path = os.path.expanduser("~/.sablier/portfolios.db")
-        
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                SELECT * FROM portfolio_optimizations 
-                WHERE portfolio_id = ? 
-                ORDER BY optimization_date DESC
-            """, (self.id,))
-            
-            rows = cursor.fetchall()
-        
-        return [dict(row) for row in rows]
     
-    def _get_evaluation_history(self) -> List[Dict[str, Any]]:
-        """Get evaluation history from database"""
-        import sqlite3
-        
-        db_path = os.path.expanduser("~/.sablier/portfolios.db")
-        
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                SELECT * FROM portfolio_evaluations 
-                WHERE portfolio_id = ? 
-                ORDER BY evaluation_date DESC
-            """, (self.id,))
-            
-            rows = cursor.fetchall()
-        
-        return [dict(row) for row in rows]
-    
-
-
     
     def _aggregate_sample_metrics(self, sample_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Aggregate metrics across all samples with time-series analysis"""
@@ -849,12 +810,6 @@ class Portfolio:
         # Validate scenario compatibility
         self._validate_scenario_compatibility(scenario)
         
-        # Check if test already exists for this portfolio-scenario combination
-        existing_test = self._find_existing_test(scenario)
-        if existing_test:
-            print(f"📊 Found existing test for scenario '{scenario.name}' - returning cached results")
-            return existing_test
-        
         # Ensure scenario is simulated
         if not scenario.is_simulated:
             print(f"🔄 Simulating scenario '{scenario.name}'...")
@@ -874,29 +829,12 @@ class Portfolio:
         return Test(self.id, test_data)
     
     def _find_existing_test(self, scenario) -> Optional['Test']:
-        """Find existing test for the same portfolio-scenario combination"""
-        import sqlite3
-        from .test import Test
-        
-        db_path = os.path.expanduser("~/.sablier/portfolios.db")
-        try:
-            with sqlite3.connect(db_path) as conn:
-                cursor = conn.execute("""
-                    SELECT * FROM portfolio_tests 
-                    WHERE portfolio_id = ? AND scenario_id = ?
-                    ORDER BY test_date DESC
-                    LIMIT 1
-                """, (self.id, scenario.id))
-                
-                row = cursor.fetchone()
-                if row:
-                    # Convert row to dict
-                    columns = [description[0] for description in cursor.description]
-                    test_data = dict(zip(columns, row))
-                    return Test(self.id, test_data)
-        except Exception as e:
-            print(f"⚠️ Could not check for existing tests: {e}")
-        
+        """
+        DEPRECATED: This method no longer returns cached tests.
+        We always create a new test to allow running tests with different parameters
+        (e.g., different number of samples).
+        """
+        # Always return None to force creation of new test
         return None
     
     def list_tests(self) -> List['Test']:

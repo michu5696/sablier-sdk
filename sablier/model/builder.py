@@ -106,6 +106,70 @@ class Model:
         """Check if this is a shared model from template"""
         return self._data.get('is_shared', False)
     
+    def rename(self, new_name: str) -> Dict[str, Any]:
+        """
+        Rename the model
+        
+        Args:
+            new_name: New name for the model
+        
+        Returns:
+            Updated model data
+            
+        Example:
+            >>> model.rename("Updated Model Name")
+            ✅ Model renamed to 'Updated Model Name'
+        """
+        try:
+            response = self.http.patch(f'/api/v1/models/{self.id}', {"name": new_name})
+            
+            # Update local data
+            self._data = response
+            
+            old_name = self.name
+            self.name = new_name
+            
+            print(f"✅ Model renamed from '{old_name}' to '{new_name}'")
+            
+            return response
+        except APIError as e:
+            if e.status_code == 403:
+                print("Not authorized")
+                return {}
+            raise
+    
+    def set_sharing(self, enabled: bool = True) -> Dict[str, Any]:
+        """
+        Set model sharing status (admin only)
+        
+        Args:
+            enabled: Whether to enable sharing (default: True)
+        
+        Returns:
+            Updated model data
+            
+        Example:
+            >>> model.set_sharing(enabled=True)
+            ✅ Model 'Treasury Forecasting Model' is now shared
+        """
+        try:
+            # The endpoint expects is_shared as a query parameter
+            is_shared_str = "true" if enabled else "false"
+            response = self.http.patch(f'/api/v1/models/{self.id}/share?is_shared={is_shared_str}')
+            
+            # Update local data
+            self._data = response
+            
+            status = "shared" if enabled else "unshared"
+            print(f"✅ Model '{self.name}' is now {status}")
+            
+            return response
+        except APIError as e:
+            if e.status_code == 403:
+                print("Not authorized")
+                return {}
+            raise
+    
     def refresh(self):
         """Refresh model data from API"""
         response = self.http.get(f'/api/v1/models/{self.id}')
