@@ -4,6 +4,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date
 from ..http_client import HTTPClient
+from ..exceptions import APIError
 
 logger = logging.getLogger(__name__)
 
@@ -99,15 +100,21 @@ class Project:
         """
         from ..feature_set import FeatureSet
         
-        response = self.http.post('/api/v1/feature-sets', {
-            "project_id": self.id,
-            "name": name,
-            "description": description,
-            "set_type": "conditioning"
-        })
-        
-        print(f"✅ Created conditioning set: {name}")
-        return FeatureSet(self.http, response, self.id, self.interactive)
+        try:
+            response = self.http.post('/api/v1/feature-sets', {
+                "project_id": self.id,
+                "name": name,
+                "description": description,
+                "set_type": "conditioning"
+            })
+            
+            print(f"✅ Created conditioning set: {name}")
+            return FeatureSet(self.http, response, self.id, self.interactive)
+        except APIError as e:
+            if e.status_code == 403:
+                print("Not authorized")
+                return None
+            raise
     
     def create_target_set(self, 
                          name: str, 
@@ -130,15 +137,21 @@ class Project:
         """
         from ..feature_set import FeatureSet
         
-        response = self.http.post('/api/v1/feature-sets', {
-            "project_id": self.id,
-            "name": name,
-            "description": description,
-            "set_type": "target"
-        })
-        
-        print(f"✅ Created target set: {name}")
-        return FeatureSet(self.http, response, self.id, self.interactive)
+        try:
+            response = self.http.post('/api/v1/feature-sets', {
+                "project_id": self.id,
+                "name": name,
+                "description": description,
+                "set_type": "target"
+            })
+            
+            print(f"✅ Created target set: {name}")
+            return FeatureSet(self.http, response, self.id, self.interactive)
+        except APIError as e:
+            if e.status_code == 403:
+                print("Not authorized")
+                return None
+            raise
     
     def get_conditioning_set(self, set_id: str) -> 'FeatureSet':
         """
@@ -241,19 +254,25 @@ class Project:
             raise ValueError(f"Features cannot be in both conditioning and target sets. Overlapping features: {list(overlapping_features)}")
         
         # Create model via API (no data validation required - data fetching happens later)
-        response = self.http.post('/api/v1/models', {
-            "project_id": self.id,
-            "conditioning_set_id": conditioning_set.id,
-            "target_set_id": target_set.id,
-            "name": name,
-            "description": description
-        })
-        
-        print(f"✅ Created model: {name}")
-        print(f"   Conditioning: {conditioning_set.name} ({len(conditioning_set.features)} features)")
-        print(f"   Target: {target_set.name} ({len(target_set.features)} features)")
-        
-        return Model(self.http, response, self.interactive)
+        try:
+            response = self.http.post('/api/v1/models', {
+                "project_id": self.id,
+                "conditioning_set_id": conditioning_set.id,
+                "target_set_id": target_set.id,
+                "name": name,
+                "description": description
+            })
+            
+            print(f"✅ Created model: {name}")
+            print(f"   Conditioning: {conditioning_set.name} ({len(conditioning_set.features)} features)")
+            print(f"   Target: {target_set.name} ({len(target_set.features)} features)")
+            
+            return Model(self.http, response, self.interactive)
+        except APIError as e:
+            if e.status_code == 403:
+                print("Not authorized")
+                return None
+            raise
     
     def get_model(self, model_id: str) -> 'Model':
         """
@@ -422,17 +441,23 @@ class Project:
             raise ValueError("Start date must be before end date")
         
         # Update via API
-        response = self.http.patch(f'/api/v1/projects/{self.id}', {
-            "training_start_date": start_date,
+        try:
+            response = self.http.patch(f'/api/v1/projects/{self.id}', {
+                "training_start_date": start_date,
             "training_end_date": end_date
         })
         
-        self._data = response
-        self.training_start_date = start_date
-        self.training_end_date = end_date
-        
-        print(f"✅ Updated training period: {start_date} to {end_date}")
-        return self
+            self._data = response
+            self.training_start_date = start_date
+            self.training_end_date = end_date
+            print(f"✅ Updated training period: {start_date} to {end_date}")
+            
+            return self
+        except APIError as e:
+            if e.status_code == 403:
+                print("Not authorized")
+                return self
+            raise
     
     def delete(self, confirm: Optional[bool] = None) -> Dict[str, Any]:
         """
@@ -473,11 +498,17 @@ class Project:
             return {"status": "cancelled"}
         
         # Delete via API
-        print("🗑️  Deleting project...")
-        response = self.http.delete(f'/api/v1/projects/{self.id}')
-        
-        print(f"✅ Project '{self.name}' deleted")
-        return response
+        try:
+            print("🗑️  Deleting project...")
+            response = self.http.delete(f'/api/v1/projects/{self.id}')
+            
+            print(f"✅ Project '{self.name}' deleted")
+            return response
+        except APIError as e:
+            if e.status_code == 403:
+                print("Not authorized")
+                return {"status": "failed", "message": "Not authorized"}
+            raise
     
     # ============================================
     # SUMMARY METHODS

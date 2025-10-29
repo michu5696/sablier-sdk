@@ -4,6 +4,7 @@ import logging
 import numpy as np
 from typing import Optional, Any, List, Dict
 from ..http_client import HTTPClient
+from ..exceptions import APIError
 from ..workflow import WorkflowValidator, WorkflowConflict
 from .validators import (
     validate_sample_generation_inputs,
@@ -279,12 +280,18 @@ class Model:
             return {"status": "cancelled"}
         
         # Delete via API
-        print("🗑️  Deleting model...")
-        response = self.http.delete(f'/api/v1/models/{self.id}')
-        
-        print(f"✅ Model '{self.name}' deleted successfully")
-        
-        return response
+        try:
+            print("🗑️  Deleting model...")
+            response = self.http.delete(f'/api/v1/models/{self.id}')
+            
+            print(f"✅ Model '{self.name}' deleted successfully")
+            
+            return response
+        except APIError as e:
+            if e.status_code == 403:
+                print("Not authorized")
+                return {"status": "failed", "message": "Not authorized"}
+            raise
     
     # ============================================
     # WORKFLOW VALIDATION

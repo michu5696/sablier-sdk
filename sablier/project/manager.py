@@ -3,6 +3,7 @@
 from typing import Optional, Any, List
 from datetime import datetime
 from ..http_client import HTTPClient
+from ..exceptions import APIError
 from .builder import Project
 
 
@@ -17,7 +18,7 @@ class ProjectManager:
                name: str,
                description: str = "",
                training_start_date: str = "2015-01-01",
-               training_end_date: Optional[str] = None) -> Project:
+               training_end_date: Optional[str] = None) -> Optional[Project]:
         """
         Create a new project
         
@@ -41,17 +42,23 @@ class ProjectManager:
             training_end_date = datetime.now().strftime("%Y-%m-%d")
         
         # Call API to create project
-        response = self.http.post('/api/v1/projects', {
-            "name": name,
-            "description": description,
-            "training_start_date": training_start_date,
-            "training_end_date": training_end_date
-        })
-        
-        print(f"✅ Project created: {response['name']} (ID: {response['id']})")
-        print(f"   Training period: {training_start_date} to {training_end_date}")
-        
-        return Project(self.http, response, interactive=self.interactive)
+        try:
+            response = self.http.post('/api/v1/projects', {
+                "name": name,
+                "description": description,
+                "training_start_date": training_start_date,
+                "training_end_date": training_end_date
+            })
+            
+            print(f"✅ Project created: {response['name']} (ID: {response['id']})")
+            print(f"   Training period: {training_start_date} to {training_end_date}")
+            
+            return Project(self.http, response, interactive=self.interactive)
+        except APIError as e:
+            if e.status_code == 403:
+                print("Not authorized")
+                return None
+            raise
     
     def get(self, project_id: str) -> Project:
         """

@@ -4,6 +4,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date
 from .http_client import HTTPClient
+from .exceptions import APIError
 
 logger = logging.getLogger(__name__)
 
@@ -124,10 +125,16 @@ class FeatureSet:
     
     def _update_features(self, features: List[Dict[str, Any]]) -> None:
         """Update features via API"""
-        response = self.http.patch(f'/api/v1/feature-sets/{self.id}', {
-            "features": features
-        })
-        self._data = response
+        try:
+            response = self.http.patch(f'/api/v1/feature-sets/{self.id}', {
+                "features": features
+            })
+            self._data = response
+        except APIError as e:
+            if e.status_code == 403:
+                print("Not authorized")
+                return
+            raise
     
     # ============================================
     # DATA COLLECTOR MANAGEMENT
@@ -187,10 +194,16 @@ class FeatureSet:
     
     def _update_data_collectors(self, collectors: List[Dict[str, Any]]) -> None:
         """Update data collectors via API"""
-        response = self.http.patch(f'/api/v1/feature-sets/{self.id}', {
-            "data_collectors": collectors
-        })
-        self._data = response
+        try:
+            response = self.http.patch(f'/api/v1/feature-sets/{self.id}', {
+                "data_collectors": collectors
+            })
+            self._data = response
+        except APIError as e:
+            if e.status_code == 403:
+                print("Not authorized")
+                return
+            raise
     
     # ============================================
     # DATA FETCHING
@@ -222,20 +235,26 @@ class FeatureSet:
             raise ValueError(f"No data collectors configured in {self.name}")
         
         # Fetch data via API
-        response = self.http.post(f'/api/v1/feature-sets/{self.id}/fetch-data', {
-            "start_date": start_date,
-            "end_date": end_date,
-            "correlation_threshold": correlation_threshold
-        })
-        
-        # Update local data
-        self._data = response.get('feature_set', self._data)
-        
-        print(f"✅ Data fetched for {self.name}")
-        print(f"   Features processed: {response.get('features_processed', 0)}")
-        print(f"   Data points: {response.get('total_data_points', 0)}")
-        
-        return response
+        try:
+            response = self.http.post(f'/api/v1/feature-sets/{self.id}/fetch-data', {
+                "start_date": start_date,
+                "end_date": end_date,
+                "correlation_threshold": correlation_threshold
+            })
+            
+            # Update local data
+            self._data = response.get('feature_set', self._data)
+            
+            print(f"✅ Data fetched for {self.name}")
+            print(f"   Features processed: {response.get('features_processed', 0)}")
+            print(f"   Data points: {response.get('total_data_points', 0)}")
+            
+            return response
+        except APIError as e:
+            if e.status_code == 403:
+                print("Not authorized")
+                return None
+            raise
     
 
     
@@ -317,13 +336,19 @@ class FeatureSet:
         }
         
         # Persist to backend
-        response = self.http.patch(f'/api/v1/feature-sets/{self.id}', {
-            'feature_groups': self._data['feature_groups']
-        })
-        
-        # Update local data with response
-        if response.get('feature_set'):
-            self._data = response['feature_set']
+        try:
+            response = self.http.patch(f'/api/v1/feature-sets/{self.id}', {
+                'feature_groups': self._data['feature_groups']
+            })
+            
+            # Update local data with response
+            if response.get('feature_set'):
+                self._data = response['feature_set']
+        except APIError as e:
+            if e.status_code == 403:
+                print("Not authorized")
+                return
+            raise
         
         print(f"✅ Renamed group '{old_name}' to '{new_name}'")
         
@@ -390,8 +415,14 @@ class FeatureSet:
             return {"status": "cancelled"}
         
         # Delete via API
-        print("🗑️  Deleting feature set...")
-        response = self.http.delete(f'/api/v1/feature-sets/{self.id}')
-        
-        print(f"✅ Feature set '{self.name}' deleted")
-        return response
+        try:
+            print("🗑️  Deleting feature set...")
+            response = self.http.delete(f'/api/v1/feature-sets/{self.id}')
+            
+            print(f"✅ Feature set '{self.name}' deleted")
+            return response
+        except APIError as e:
+            if e.status_code == 403:
+                print("Not authorized")
+                return {"status": "failed", "message": "Not authorized"}
+            raise

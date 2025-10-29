@@ -2,6 +2,7 @@
 
 from typing import Optional, Any
 from ..http_client import HTTPClient
+from ..exceptions import APIError
 from .builder import Model
 
 
@@ -17,7 +18,7 @@ class ModelManager:
         name: str,
         description: str = "",
         **kwargs
-    ) -> 'Model':
+    ) -> Optional['Model']:
         """
         Create a new model
         
@@ -41,14 +42,20 @@ class ModelManager:
             - model.set_training_period(start="...", end="...")
         """
         # Call API to create model
-        response = self.http.post('/api/v1/models', {
-            "name": name,
-            "description": description
-        })
-        
-        print(f"✅ Model created: {response['name']} (ID: {response['id']})")
-        
-        return Model(self.http, response, interactive=self.interactive)
+        try:
+            response = self.http.post('/api/v1/models', {
+                "name": name,
+                "description": description
+            })
+            
+            print(f"✅ Model created: {response['name']} (ID: {response['id']})")
+            
+            return Model(self.http, response, interactive=self.interactive)
+        except APIError as e:
+            if e.status_code == 403:
+                print("Not authorized")
+                return None
+            raise
     
     def get(self, model_id: str) -> 'Model':
         """
