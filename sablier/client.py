@@ -57,6 +57,12 @@ class SablierClient:
                 print("   3. Or run migration: python migrate_api_key.py")
                 raise ValueError("No API URL provided and no default URL set. Please see setup instructions above.")
         
+        # Persist the resolved API URL as default for future runs
+        try:
+            self.user_settings.set_default_api_url(api_url)
+        except Exception:
+            pass
+        
         # If no API key provided, try to get saved one or register new user
         if not api_key:
             # Try to get default API key first
