@@ -271,7 +271,9 @@ class FeatureSet:
             >>> for group in groups:
             ...     print(f"Group: {group['name']}, Features: {group['features']}")
         """
-        feature_groups = self._data.get('feature_groups', {})
+        feature_groups = self._data.get('feature_groups')
+        if not feature_groups:
+            return []
         groups = feature_groups.get('groups', [])
         
         return groups
