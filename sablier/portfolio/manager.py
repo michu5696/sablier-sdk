@@ -52,7 +52,7 @@ class PortfolioManager:
             # Check current schema version
             cursor = conn.execute("SELECT MAX(version) FROM schema_version")
             result = cursor.fetchone()
-            current_version = result[0] if result else 0
+            current_version = (result[0] if result and result[0] is not None else 0)
             
             # Run migrations to bring database to latest version
             self._run_migrations(conn, current_version, SCHEMA_VERSION)
