@@ -49,10 +49,19 @@ class PortfolioManager:
                 )
             """)
             
-            # Check current schema version
-            cursor = conn.execute("SELECT MAX(version) FROM schema_version")
-            result = cursor.fetchone()
-            current_version = (result[0] if result and result[0] is not None else 0)
+            # Check if schema_version table exists and has any records
+            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
+            schema_version_exists = cursor.fetchone() is not None
+            
+            if schema_version_exists:
+                # Check current schema version
+                cursor = conn.execute("SELECT MAX(version) FROM schema_version")
+                result = cursor.fetchone()
+                current_version = (result[0] if result and result[0] is not None else 0)
+            else:
+                # Old database without schema_version - set to version 0 to force all migrations
+                current_version = 0
+                logger.info("⚠️  Old database detected (no schema_version). Running all migrations...")
             
             # Run migrations to bring database to latest version
             self._run_migrations(conn, current_version, SCHEMA_VERSION)
@@ -120,6 +129,8 @@ class PortfolioManager:
                     sample_results TEXT NOT NULL,  -- JSON array of per-sample metrics
                     aggregated_results TEXT NOT NULL,  -- JSON object
                     summary_stats TEXT NOT NULL,  -- JSON object
+                    time_series_metrics TEXT,  -- JSON object with time-series aggregated data
+                    n_days INTEGER,  -- Number of days in the test period
                     FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
                 )
             """)
@@ -137,7 +148,9 @@ class PortfolioManager:
         for version in range(current_version + 1, target_version + 1):
             if version == 1:
                 # Migration 1: Add asset_configs column to portfolios table
+                # AND Add time_series_metrics and n_days to portfolio_tests table
                 try:
+                    # Add asset_configs to portfolios
                     cursor = conn.execute("PRAGMA table_info(portfolios)")
                     columns = {row[1] for row in cursor.fetchall()}
                     
@@ -146,9 +159,38 @@ class PortfolioManager:
                         logger.info("✅ Applied portfolio migration 1: Added asset_configs column")
                     else:
                         logger.info("ℹ️  Portfolio migration 1: asset_configs column already exists, skipping")
+                    
+                    # Add time_series_metrics and n_days to portfolio_tests
+                    # First, ensure portfolio_tests table exists
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS portfolio_tests (
+                            id TEXT PRIMARY KEY,
+                            portfolio_id TEXT NOT NULL,
+                            scenario_id TEXT NOT NULL,
+                            scenario_name TEXT NOT NULL,
+                            test_date TEXT NOT NULL,
+                            sample_results TEXT NOT NULL,
+                            aggregated_results TEXT NOT NULL,
+                            summary_stats TEXT NOT NULL,
+                            FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+                        )
+                    """)
+                    
+                    # Now check if columns need to be added
+                    cursor = conn.execute("PRAGMA table_info(portfolio_tests)")
+                    columns = {row[1] for row in cursor.fetchall()}
+                    
+                    if 'time_series_metrics' not in columns:
+                        conn.execute("ALTER TABLE portfolio_tests ADD COLUMN time_series_metrics TEXT")
+                        logger.info("✅ Applied portfolio migration 1: Added time_series_metrics column")
+                    
+                    if 'n_days' not in columns:
+                        conn.execute("ALTER TABLE portfolio_tests ADD COLUMN n_days INTEGER")
+                        logger.info("✅ Applied portfolio migration 1: Added n_days column")
+                        
                 except Exception as e:
                     logger.error(f"Portfolio migration 1 failed: {e}")
-                    # Continue anyway - column might already exist
+                    # Continue anyway - columns might already exist
                 
                 # Record migration was applied
                 try:

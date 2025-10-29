@@ -43,10 +43,19 @@ class UserSettingsManager:
                 )
             """)
             
-            # Check current schema version
-            cursor = conn.execute("SELECT MAX(version) FROM schema_version")
-            result = cursor.fetchone()
-            current_version = (result[0] if result and result[0] is not None else 0)
+            # Check if schema_version table exists and has any records
+            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
+            schema_version_exists = cursor.fetchone() is not None
+            
+            if schema_version_exists:
+                # Check current schema version
+                cursor = conn.execute("SELECT MAX(version) FROM schema_version")
+                result = cursor.fetchone()
+                current_version = (result[0] if result and result[0] is not None else 0)
+            else:
+                # Old database without schema_version - set to version 0 to force all migrations
+                current_version = 0
+                logger.info("⚠️  Old database detected (no schema_version). Running all migrations...")
             
             # Run migrations to bring database to latest version
             self._run_migrations(conn, current_version, SCHEMA_VERSION)
