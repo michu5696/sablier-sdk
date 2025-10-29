@@ -62,7 +62,7 @@ class Scenario:
     # SIMULATION
     # ============================================
     
-    def simulate(self, n_samples: int = 1000, force: bool = False) -> Dict[str, Any]:
+    def simulate(self, n_samples: int = 50, force: bool = False) -> Dict[str, Any]:
         """
         Run the scenario simulation by calling the forecast endpoint.
         
@@ -70,7 +70,7 @@ class Scenario:
         overwriting the previous results.
         
         Args:
-            n_samples: Number of forecast samples to generate
+            n_samples: Number of forecast samples to generate (max 1000)
             force: Skip confirmation prompt for re-simulation (default: False)
             
         Returns:
@@ -84,6 +84,11 @@ class Scenario:
         """
         if not self.simulation_date:
             raise ValueError("Scenario must have a simulation_date configured")
+        
+        # Enforce 1000 sample limit
+        if n_samples > 1000:
+            print(f"⚠️  n_samples ({n_samples}) exceeds maximum of 1000. Capping at 1000.")
+            n_samples = 1000
         
         # Check if already simulated
         is_resimulation = bool(self._data.get('output'))

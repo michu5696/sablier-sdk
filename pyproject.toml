@@ -34,8 +34,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "python-dateutil>=2.8.0",
     "matplotlib>=3.5.0",
-    "scikit-optimize>=0.9.0",
-    "scipy>=1.11.0"
+    "scikit-optimize>=0.9.0"
 ]
 
 [project.optional-dependencies]
@@ -44,7 +43,7 @@ viz = [
     "plotly>=5.0.0"
 ]
 stats = [
-    "scipy>=1.9.0",
+    "scipy>=1.11.0",
     "statsmodels>=0.14.0"
 ]
 dev = [
@@ -59,10 +58,8 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/sablier-sdk"
-Documentation = "https://sablier-sdk.readthedocs.io"
-Repository = "https://github.com/yourusername/sablier-sdk"
-Issues = "https://github.com/yourusername/sablier-sdk/issues"
+Repository = "https://github.com/michu5696/sablier-sdk"
+Issues = "https://github.com/michu5696/sablier-sdk/issues"
 
 [tool.setuptools]
 packages = ["sablier"]
