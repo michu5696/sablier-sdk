@@ -59,7 +59,7 @@ class UserSettingsManager:
             conn.commit()
     
     def save_api_key(self, api_key: str, api_url: str, user_email: Optional[str] = None, 
-                     description: Optional[str] = None) -> bool:
+                     description: Optional[str] = None, is_default: bool = False) -> bool:
         """
         Save an API key to the database
         
@@ -67,19 +67,31 @@ class UserSettingsManager:
             api_key: The API key to save
             api_url: The API URL associated with this key
             user_email: Optional user email
-            description: Optional description for the key
+            description: Optional name/description for the key (e.g., "default", "template", "production")
+            is_default: Whether this should be the default key
             
         Returns:
             bool: True if saved successfully
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
+                # If this is the default key, unset any other default keys
+                if is_default:
+                    conn.execute("""
+                        UPDATE api_keys 
+                        SET description = NULL 
+                        WHERE description = 'default'
+                    """)
+                
                 # Deactivate any existing active keys for this URL
                 conn.execute("""
                     UPDATE api_keys 
                     SET is_active = 0 
                     WHERE api_url = ? AND is_active = 1
                 """, (api_url,))
+                
+                # Set description to 'default' if is_default=True
+                final_description = 'default' if is_default else description
                 
                 # Insert new API key
                 conn.execute("""
@@ -92,7 +104,7 @@ class UserSettingsManager:
                     user_email,
                     datetime.utcnow().isoformat() + 'Z',
                     datetime.utcnow().isoformat() + 'Z',
-                    description
+                    final_description
                 ))
                 
                 conn.commit()
@@ -139,12 +151,57 @@ class UserSettingsManager:
             logger.error(f"Failed to get API key: {e}")
             return None
     
+    def get_api_key_by_name(self, name: str) -> Optional[str]:
+        """
+        Get an API key by its name/description
+        
+        Args:
+            name: The name/description of the API key (e.g., "default", "template", "production")
+            
+        Returns:
+            str: The API key, or None if not found
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("""
+                    SELECT api_key FROM api_keys 
+                    WHERE description = ?
+                    LIMIT 1
+                """, (name,))
+                
+                result = cursor.fetchone()
+                if result:
+                    # Update last used timestamp
+                    conn.execute("""
+                        UPDATE api_keys 
+                        SET last_used_at = ? 
+                        WHERE api_key = ?
+                    """, (datetime.utcnow().isoformat() + 'Z', result[0]))
+                    conn.commit()
+                    
+                    return result[0]
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to get API key by name: {e}")
+            return None
+    
+    def get_default_api_key(self) -> Optional[str]:
+        """
+        Get the default API key (the one with description='default')
+        
+        Returns:
+            str: The default API key, or None if not found
+        """
+        return self.get_api_key_by_name('default')
+    
     def list_api_keys(self) -> List[Dict[str, Any]]:
         """
         List all API keys
         
         Returns:
-            List of API key dictionaries
+            List of API key dictionaries with keys: api_key, api_url, user_email, 
+            is_active, created_at, last_used_at, description
         """
         try:
             with sqlite3.connect(self.db_path) as conn:

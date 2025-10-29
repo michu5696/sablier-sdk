@@ -59,22 +59,29 @@ class SablierClient:
         
         # If no API key provided, try to get saved one or register new user
         if not api_key:
-            # Try to get saved API key for this URL
-            saved_api_key = self.user_settings.get_active_api_key(api_url)
+            # Try to get default API key first
+            saved_api_key = self.user_settings.get_default_api_key()
             if saved_api_key:
                 if interactive:
-                    print(f"🔑 Using saved API key for {api_url}")
+                    print(f"🔑 Using default API key")
                 api_key = saved_api_key
             else:
-                # No saved key, register new user
-                if interactive:
-                    print(f"🔑 No saved API key found for {api_url}")
-                    print(f"🔄 Registering new user...")
-                api_key = self._register_and_get_api_key(api_url, interactive)
-                # Save the new API key
-                self.user_settings.save_api_key(api_key, api_url, description="Auto-generated")
-                if interactive:
-                    print(f"💾 API key saved for future use")
+                # No default key, try to get saved API key for this URL
+                saved_api_key = self.user_settings.get_active_api_key(api_url)
+                if saved_api_key:
+                    if interactive:
+                        print(f"🔑 Using saved API key for {api_url}")
+                    api_key = saved_api_key
+                else:
+                    # No saved key, register new user
+                    if interactive:
+                        print(f"🔑 No saved API key found for {api_url}")
+                        print(f"🔄 Registering new user...")
+                    api_key = self._register_and_get_api_key(api_url, interactive)
+                    # Save the new API key as default
+                    self.user_settings.save_api_key(api_key, api_url, description=None, is_default=True)
+                    if interactive:
+                        print(f"💾 API key saved as default")
         
         # Validate API key format
         if not api_key.startswith("sk_") and not api_key.startswith("dummy_"):
@@ -102,14 +109,15 @@ class SablierClient:
     # ============================================
     
     def save_api_key(self, api_key: str, api_url: Optional[str] = None, 
-                     description: Optional[str] = None) -> bool:
+                     description: Optional[str] = None, is_default: bool = False) -> bool:
         """
         Save an API key for future use
         
         Args:
             api_key: The API key to save
             api_url: The API URL (defaults to current client URL)
-            description: Optional description
+            description: Optional name/description (e.g., "default", "template", "production")
+            is_default: Whether this should be the default key
             
         Returns:
             bool: True if saved successfully
@@ -117,7 +125,22 @@ class SablierClient:
         if api_url is None:
             api_url = self.http.base_url
         
-        return self.user_settings.save_api_key(api_key, api_url, description=description)
+        return self.user_settings.save_api_key(api_key, api_url, description=description, is_default=is_default)
+    
+    def get_api_key(self, name: Optional[str] = None) -> Optional[str]:
+        """
+        Get an API key by name, or return the default key
+        
+        Args:
+            name: The name of the API key (e.g., "template", "production").
+                  If None, returns the default key.
+                  
+        Returns:
+            str: The API key, or None if not found
+        """
+        if name is None:
+            return self.user_settings.get_default_api_key()
+        return self.user_settings.get_api_key_by_name(name)
     
     def list_api_keys(self) -> List[Dict[str, Any]]:
         """

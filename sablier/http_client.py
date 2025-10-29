@@ -70,6 +70,56 @@ class HTTPClient:
         
         return response_data
     
+    def _make_request_with_retry(self, method: str, url: str, headers: dict, **kwargs) -> requests.Response:
+        """
+        Make HTTP request with timeout and retry logic for long operations
+        
+        Args:
+            method: HTTP method
+            url: Request URL
+            headers: Request headers
+            **kwargs: Additional request parameters
+            
+        Returns:
+            requests.Response: HTTP response
+        """
+        import time
+        from requests.exceptions import Timeout, ConnectionError
+        
+        # Determine timeout based on endpoint
+        timeout = kwargs.pop('timeout', None)
+        if timeout is None:
+            # Long operations get longer timeout
+            if any(endpoint in url for endpoint in ['/train', '/fit', '/encode']):
+                timeout = 600  # 10 minutes for ML operations
+            else:
+                timeout = 60   # 1 minute for regular operations
+        
+        max_retries = 3
+        retry_delay = 5  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                response = self.session.request(method, url, headers=headers, timeout=timeout, **kwargs)
+                return response
+            except Timeout:
+                if attempt < max_retries - 1:
+                    print(f"⚠️ Request timeout (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    raise APIError(f"Request timed out after {max_retries} attempts. The operation may still be running on the server.")
+            except ConnectionError as e:
+                if attempt < max_retries - 1:
+                    print(f"⚠️ Connection error (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    raise APIError(f"Connection failed after {max_retries} attempts: {str(e)}")
+        
+        # This should never be reached, but just in case
+        raise APIError("Unexpected error in request retry logic")
+    
     def get(self, endpoint: str, params: Optional[dict] = None) -> dict:
         """
         Make a GET request
@@ -89,7 +139,7 @@ class HTTPClient:
         url = self._get_url(endpoint, add_trailing_slash=add_slash)
         headers = self.auth_handler.get_headers()
         
-        response = self.session.get(url, headers=headers, params=params)
+        response = self._make_request_with_retry('GET', url, headers, params=params)
         return self._handle_response(response)
     
     def post(self, endpoint: str, data: Optional[dict] = None) -> dict:
@@ -108,7 +158,7 @@ class HTTPClient:
         url = self._get_url(endpoint, add_trailing_slash=False)
         headers = self.auth_handler.get_headers()
         
-        response = self.session.post(url, headers=headers, json=data, allow_redirects=False)
+        response = self._make_request_with_retry('POST', url, headers, json=data, allow_redirects=False)
         
         # Handle redirects manually (307 for Cloud Run POST, 302 for HTTP->HTTPS)
         # Allow up to 2 levels of redirects to handle HTTP->HTTPS->path/ scenarios
@@ -117,7 +167,7 @@ class HTTPClient:
                 location = response.headers.get('Location')
                 if location:
                     # Explicitly use POST method on redirect, don't let requests auto-change to GET
-                    response = self.session.request('POST', location, headers=headers, json=data, allow_redirects=False)
+                    response = self._make_request_with_retry('POST', location, headers, json=data, allow_redirects=False)
                 else:
                     break
             else:
@@ -130,7 +180,7 @@ class HTTPClient:
         url = self._get_url(endpoint)
         headers = self.auth_handler.get_headers()
         
-        response = self.session.put(url, headers=headers, json=data)
+        response = self._make_request_with_retry('PUT', url, headers, json=data)
         return self._handle_response(response)
     
     def patch(self, endpoint: str, data: Optional[dict] = None) -> dict:
@@ -147,7 +197,7 @@ class HTTPClient:
         url = self._get_url(endpoint)
         headers = self.auth_handler.get_headers()
         
-        response = self.session.patch(url, headers=headers, json=data)
+        response = self._make_request_with_retry('PATCH', url, headers, json=data)
         return self._handle_response(response)
     
     def delete(self, endpoint: str) -> dict:
@@ -155,5 +205,5 @@ class HTTPClient:
         url = self._get_url(endpoint)
         headers = self.auth_handler.get_headers()
         
-        response = self.session.delete(url, headers=headers)
+        response = self._make_request_with_retry('DELETE', url, headers)
         return self._handle_response(response)

@@ -4,14 +4,33 @@ Python SDK for the Sablier Market Scenario Generator - Create scenario-condition
 
 ## Installation
 
+### From PyPI (Coming Soon)
 ```bash
 pip install sablier-sdk
 ```
 
-For development:
+### From Source (Current Method)
+Since the SDK is not yet on PyPI, install from the cloned repository:
+
 ```bash
+# Clone the repository
+git clone https://github.com/yourusername/market-scenario-generator.git
+cd market-scenario-generator/sdk
+
+# Install in editable mode (recommended)
 pip install -e ".[all]"
+
+# OR install with specific dependencies:
+pip install -e ".[viz]"        # For visualization features
+pip install -e ".[stats]"      # For statistical analysis
+pip install -e ".[dev]"        # For development tools
 ```
+
+### Requirements
+- Python 3.8 or higher
+- Core dependencies: requests, pandas, numpy, pydantic, python-dateutil, matplotlib
+
+For detailed installation instructions, see [INSTALLATION.md](../INSTALLATION.md).
 
 ## Quick Start
 
