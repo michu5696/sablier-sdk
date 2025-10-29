@@ -401,7 +401,7 @@ class SablierClient:
             dict: Health status information
         """
         try:
-            # TODO: Add dedicated health endpoint
+            # Health check endpoint not yet implemented
             response = self.http.get('/api/v1/health')
             return response
         except Exception as e:

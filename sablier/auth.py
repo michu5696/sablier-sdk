@@ -48,6 +48,6 @@ class AuthHandler:
         if not self.api_key:
             raise AuthenticationError("No API key provided")
         
-        # TODO: Add health check endpoint call
+        # Health check endpoint not yet implemented
         # For now, assume valid if key is provided
         return True

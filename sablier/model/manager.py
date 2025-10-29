@@ -140,7 +140,7 @@ class ModelManager:
         - Generated samples (normalized and encoded)
         - Normalization parameters
         - Encoding models (database metadata and Cloud Storage files)
-        - Vine Copula model (Cloud Storage file)
+        - Trained model (Cloud Storage file)
         
         Args:
             model_id: Model ID to delete

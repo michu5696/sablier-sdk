@@ -23,7 +23,7 @@ class WorkflowConflict:
         friendly_names = {
             "training_data": "Training data rows",
             "samples": "Generated samples",
-            "encoding_models": "Encoding models (PCA-ICA)",
+            "encoding_models": "Encoding models",
             "trained_model": "Trained model (in storage)",
             "feature_importance": "Feature importance data"
         }
@@ -45,7 +45,7 @@ class WorkflowValidator:
     2. data_collected -> training_data fetched
     3. samples_generated -> samples created
     4. samples_encoded -> encoding done
-    5. model_trained -> Vine Copula model trained
+    5. model_trained -> Statistical model trained
     """
     
     # Define workflow rules

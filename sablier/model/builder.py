@@ -25,7 +25,7 @@ class Model:
     - Data fetching and processing
     - Sample generation
     - Encoding model fitting
-    - QRF training
+    - Model training
     - Forecasting
     """
     
@@ -236,7 +236,7 @@ class Model:
         - Training data
         - Generated samples
         - Encoding models
-        - Trained QRF model (from storage)
+        - Trained model (from storage)
         - All scenarios using this model
         
         Args:
@@ -257,8 +257,7 @@ class Model:
         print("This will delete ALL associated data:")
         print("  - Training data")
         print("  - Generated samples")
-        print("  - Encoding models")
-        print("  - Trained QRF model")
+        print("  - Trained model")
         print("  - All scenarios using this model")
         print()
         print("This action CANNOT be undone.")
@@ -389,11 +388,11 @@ class Model:
         pca_variance_threshold_residuals: float = 0.99
     ) -> Dict[str, Any]:
         """
-        Generate training samples and fit encoding models (PCA-ICA) using model's feature sets
+        Generate training samples and fit encoding models using model's feature sets
         
         This method performs a complete pipeline:
         1. Generate training samples with proper windowing
-        2. Fit PCA-ICA encoding models on training split
+        2. Fit encoding models on training split
         3. Encode all samples using fitted models
         
         Args:
@@ -488,10 +487,10 @@ class Model:
         print(f"   Validation: {split_counts.get('validation', 0)}")
         
         # Step 2: Fit encoding models and encode samples
-        print(f"\n🔧 Fitting PCA-ICA encoding models and encoding samples...")
+        print(f"\n🔧 Fitting encoding models and encoding samples...")
         
         # Fit encoding models
-        print(f"  Step 2/3: Fitting PCA-ICA encoding models on 'training' split...")
+        print(f"  Step 2/3: Fitting encoding models on 'training' split...")
         try:
             fit_response = self.http.post('/api/v1/ml/fit?split=training', {
                 "model_id": self.id,
@@ -551,15 +550,7 @@ class Model:
         }
     
     
-    def _update_metadata(self, updates: Dict[str, Any]):
-        """Helper to update model metadata"""
-        # Update local data
-        self._data.update(updates)
-        
-        # Update in database via backend
-        # The update endpoint expects fields directly in the payload, not nested under "updates"
-        payload = updates.copy()
-        self.http.patch(f'/api/v1/models/{self.id}', payload)
+    
 
     
 
@@ -735,187 +726,8 @@ class Model:
             if verbose:
                 print(f"❌ Failed to list scenarios: {e}")
             return []
+
     
-    def _get_test_sample(self, index: int = 0, include_data: bool = False) -> Optional[Dict]:
-        """
-        Get test sample by index
-        
-        Args:
-            index: Sample index (0 = first test sample)
-            include_data: Whether to include full conditioning_data/target_data
-        
-        Returns:
-            Sample dict or None if not found
-        """
-        try:
-            params = {'split_type': 'test', 'limit': 100}
-            if include_data:
-                params['include_data'] = 'true'
-            
-            response = self.http.get(
-                f'/api/v1/models/{self.id}/samples',
-                params=params
-            )
-            
-            samples = response.get('samples', [])
-            if samples and len(samples) > index:
-                return samples[index]
-            
-            return None
-        except Exception as e:
-            print(f"  ⚠️  Failed to get test sample: {e}")
-            return None
-    
-    
-    
-    
-    
-    def _get_original_past_data(self, sample: Dict, feature: str) -> tuple:
-        """
-        Get original (non-reconstructed) past data for plotting.
-        This ensures alignment with forecast data which is anchored to original values.
-        
-        Args:
-            sample: Full sample dict (with conditioning_data/target_data)
-            feature: Feature name
-        
-        Returns:
-            Tuple of (dates, denormalized_values)
-        """
-        import numpy as np
-        
-        # Find the feature in conditioning_data (all past windows are here)
-        conditioning_data = sample.get('conditioning_data', [])
-        
-        for item in conditioning_data:
-            if item.get('feature') == feature and item.get('temporal_tag') == 'past':
-                dates = item.get('dates', [])
-                normalized_series = item.get('normalized_series', [])
-                
-                if not normalized_series:
-                    raise ValueError(f"No normalized_series found for {feature} past window")
-                
-                # Denormalize using model's normalization params
-                denormalized_values = self._denormalize_values(feature, normalized_series)
-                
-                return dates, denormalized_values
-        
-        raise ValueError(f"Feature {feature} with temporal_tag='past' not found in conditioning_data")
-    
-    def _denormalize_values(self, feature: str, normalized_values: list) -> list:
-        """Denormalize values using model's normalization parameters"""
-        import numpy as np
-        
-        # Get normalization params from model data (separate field, not in metadata)
-        feature_norm_params = self._data.get('feature_normalization_params', {})
-        
-        if not feature_norm_params or feature not in feature_norm_params:
-            # Try fetching from database if not in local data
-            try:
-                model_response = self.http.get(f'/api/v1/models/{self.id}')
-                feature_norm_params = model_response.get('feature_normalization_params', {})
-                # Cache it for future use
-                self._data['feature_normalization_params'] = feature_norm_params
-            except:
-                pass
-        
-        if not feature_norm_params or feature not in feature_norm_params:
-            print(f"  ⚠️  Warning: No normalization params for {feature}, returning normalized values")
-            return normalized_values
-        
-        norm_params = feature_norm_params[feature]
-        mean = norm_params.get('mean', 0.0)
-        std = norm_params.get('std', 1.0)
-        
-        # Denormalize: value = (normalized * std) + mean
-        denormalized = [(val * std) + mean for val in normalized_values]
-        
-        return denormalized
-    
-    def _get_ground_truth_future_data(self, sample: Dict, feature: str) -> tuple:
-        """
-        Extract ground truth future target data from a test sample.
-        
-        This gets the actual realized future values that really happened,
-        which we can compare against our forecasts.
-        
-        Args:
-            sample: Full sample dict (with target_data)
-            feature: Target feature name
-        
-        Returns:
-            Tuple of (dates, values) - both can be None if not found
-        """
-        target_data = sample.get('target_data', [])
-        
-        for item in target_data:
-            if (item.get('feature') == feature and 
-                item.get('temporal_tag') == 'future'):
-                
-                # Get dates and residuals
-                dates = item.get('dates', [])
-                residuals = item.get('normalized_residuals', [])
-                
-                if residuals and dates:
-                    # Get the last normalized past value as reference
-                    past_dates, past_values = self._get_original_past_data(sample, feature)
-                    if past_values:
-                        # Get normalization parameters
-                        norm_params = self._data.get('model_metadata', {}).get('normalization_parameters', {}).get(feature, {})
-                        mean = norm_params.get('mean', 0.0)
-                        std = norm_params.get('std', 1.0)
-                        
-                        # Normalize the last past value to get the reference
-                        last_past_normalized = (past_values[-1] - mean) / std
-                        
-                        # Reconstruct the normalized series: add normalized reference to each residual
-                        reconstructed_normalized = [last_past_normalized + residual for residual in residuals]
-                        
-                        # Denormalize the reconstructed values
-                        denormalized_values = [(val * std) + mean for val in reconstructed_normalized]
-                        return dates, denormalized_values
-        
-        return None, None
-    
-    def _extract_dates_from_sample(self, sample: Dict, feature: str, temporal_tag: str) -> Optional[List[str]]:
-        """Extract date array from sample's conditioning_data or target_data"""
-        # Search in conditioning_data
-        conditioning_data = sample.get('conditioning_data', [])
-        if conditioning_data:
-            for item in conditioning_data:
-                if item.get('feature') == feature and item.get('temporal_tag') == temporal_tag:
-                    dates = item.get('dates')
-                    if dates:
-                        return dates
-        
-        # Search in target_data
-        target_data = sample.get('target_data', [])
-        if target_data:
-            for item in target_data:
-                if item.get('feature') == feature and item.get('temporal_tag') == temporal_tag:
-                    dates = item.get('dates')
-                    if dates:
-                        return dates
-        
-        # If dates not found, generate them from sample metadata
-        # This is a fallback for when dates aren't stored in the sample
-        window_length = 30  # Default, should match the actual window length
-        if temporal_tag == "past":
-            # Use start_date if available
-            start_date = sample.get('start_date')
-            if start_date:
-                from datetime import datetime, timedelta
-                base = datetime.strptime(start_date, '%Y-%m-%d')
-                return [(base + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(window_length)]
-        elif temporal_tag == "future":
-            # Use end_date and work backwards
-            end_date = sample.get('end_date')
-            if end_date:
-                from datetime import datetime, timedelta
-                base = datetime.strptime(end_date, '%Y-%m-%d')
-                return [(base - timedelta(days=window_length - 1 - i)).strftime('%Y-%m-%d') for i in range(window_length)]
-        
-        return None
     
     
     
@@ -926,13 +738,13 @@ class Model:
                   n_regimes: int = 3,
                   compute_validation_ll: bool = False) -> Dict[str, Any]:
         """
-        Train Vine Copula model on encoded samples
+        Train statistical model on encoded samples
         
         Pipeline:
-        - Empirical marginals (smoothed CDF + exponential tails)
-        - EM algorithm with regime-specific vine copulas
-        - Mixed copula families (student, clayton, gumbel, frank, joe)
-        - Optimal truncation level and thread count for performance
+        - Empirical marginals with smoothed distributions
+        - Multi-regime modeling with regime-specific dependencies
+        - Mixed dependence structures optimized for the data
+        - Optimal parameters and thread count for performance
         
         Args:
             n_regimes: Number of mixture components/regimes (default: 3)
@@ -942,7 +754,7 @@ class Model:
             Dict with training results including metrics and model path
             
         Example:
-            >>> # Train Vine Copula model with default settings
+            >>> # Train model with default settings
             >>> result = model.train()
             >>> print(f"Model trained with {result['training_metrics']['n_components']} regimes")
             
@@ -953,10 +765,10 @@ class Model:
             >>> # Train with validation log-likelihood
             >>> result = model.train(n_regimes=3, compute_validation_ll=True)
         """
-        print(f"\n🤖 Training Vine Copula Model")
+        print(f"\n🤖 Training Statistical Model")
         print(f"   Regimes: {n_regimes}")
-        print(f"   Copula family: mixed (optimized)")
-        print(f"   Truncation level: 3 (optimal)")
+        print(f"   Dependence structure: optimized")
+        print(f"   Model parameters: auto-optimized")
         print(f"   Threads: auto-detected")
         
         print(f"\n🚀 Training model...")
@@ -973,7 +785,7 @@ class Model:
         
         train_metrics = result['training_metrics']
         
-        print(f"✅ Vine Copula training completed!")
+        print(f"✅ Model training completed!")
         print(f"   Samples used: {result['n_samples_used']}")
         print(f"   Dimensions: {result['n_dimensions']}")
         print(f"   Regime weights: {train_metrics.get('regime_weights', 'N/A')}")
@@ -1004,14 +816,14 @@ class Model:
                      run_on_training: bool = True,
                      run_on_validation: bool = True) -> Dict[str, Any]:
         """
-        Validate Vine Copula model on held-out data
+        Validate statistical model on held-out data
         
         Computes:
         - Validation log-likelihood (out-of-sample fit)
         - Regime analysis (component assignments)
         - Calibration metrics (forecast quality)
         - Coverage metrics (68% and 95% confidence intervals)
-        - KS p-value for calibration testing
+        - Statistical tests for calibration
         
         Args:
             n_forecast_samples: Number of forecast samples per validation sample (default: 100)
@@ -1026,7 +838,7 @@ class Model:
             >>> print(f"Validation log-likelihood: {validation['validation_metrics']['log_likelihood']['per_sample_log_likelihood']}")
             >>> print(f"Coverage 95%: {validation['calibration_metrics']['calibration']['coverage_95']}")
         """
-        print(f"\n🔍 Validating Vine Copula model...")
+        print(f"\n🔍 Validating statistical model...")
         print(f"   Training set: {run_on_training}")
         print(f"   Validation set: {run_on_validation}")
         print(f"   Forecast samples per validation sample: {n_forecast_samples}")

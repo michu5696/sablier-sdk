@@ -15,9 +15,9 @@ def validate_sample_generation_inputs(
 ):
     """Validate sample generation inputs"""
     
-    # 0. Check minimum window sizes (ensures PCA-ICA has enough dimensions)
+    # 0. Check minimum window sizes (ensures encoding models have enough dimensions)
     MIN_PAST_WINDOW = 30  # At least 30 days of history
-    MIN_FUTURE_WINDOW = 30  # At least 30 days to predict (ensures PCA can fit properly)
+    MIN_FUTURE_WINDOW = 30  # At least 30 days to predict (ensures proper model fitting)
     
     if past_window < MIN_PAST_WINDOW:
         raise ValueError(f"past_window must be at least {MIN_PAST_WINDOW} days (got {past_window})")
@@ -121,7 +121,7 @@ def validate_splits(splits: Dict[str, Dict[str, str]], past_window: int, future_
     if has_test and val_end >= test_start:
         raise ValueError(f"Validation end ({val_end.date()}) must be before test start ({test_start.date()})")
     
-    # Check for sample overlap (critical!)
+    # Check for sample overlap (prevents data leakage)
     sample_size = past_window + future_window
     
     # Gap between training and validation

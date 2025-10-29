@@ -411,7 +411,7 @@ class Scenario:
     
 
     
-    def plot_conditioning_scenario(
+    def plot_conditioning(
         self,
         feature: Optional[str] = None,
         features: Optional[List[str]] = None,
@@ -439,13 +439,13 @@ class Scenario:
             
         Examples:
             >>> # Display a single feature inline
-            >>> scenario.plot_conditioning_scenario(feature="10-Year Treasury Rate")
+            >>> scenario.plot_conditioning(feature="10-Year Treasury Rate")
             
             >>> # Save all features to disk without displaying
-            >>> scenario.plot_conditioning_scenario(save=True, display=False)
+            >>> scenario.plot_conditioning(save=True, display=False)
             
             >>> # Display one feature AND save all features
-            >>> scenario.plot_conditioning_scenario(feature="S&P 500", save=True)
+            >>> scenario.plot_conditioning(feature="S&P 500", save=True)
         """
         if not self.is_simulated:
             # Try to refresh from database
@@ -617,11 +617,6 @@ class Scenario:
             print(f"\n✅ Saved {len(saved_files)} conditioning plots to {save_dir}")
         
         return saved_files
-    
-    # Alias for convenience
-    def plot_conditioning(self, **kwargs) -> List[str]:
-        """Alias for plot_conditioning_scenario()"""
-        return self.plot_conditioning_scenario(**kwargs)
     
     def _get_past_values(self, feature_name: str) -> Optional[List[float]]:
         """Get past values for a feature from the forecast output"""
