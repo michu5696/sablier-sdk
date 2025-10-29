@@ -14,6 +14,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Schema version - increment this when making database schema changes
+SCHEMA_VERSION = 1
+
 
 class UserSettingsManager:
     """Manages user settings including API keys and URLs"""
@@ -31,8 +34,24 @@ class UserSettingsManager:
         # Database path
         self.db_path = os.path.join(sablier_dir, "user_settings.db")
         
-        # Create tables
         with sqlite3.connect(self.db_path) as conn:
+            # Create schema_version table to track migrations
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                )
+            """)
+            
+            # Check current schema version
+            cursor = conn.execute("SELECT MAX(version) FROM schema_version")
+            result = cursor.fetchone()
+            current_version = result[0] if result else 0
+            
+            # Run migrations to bring database to latest version
+            self._run_migrations(conn, current_version, SCHEMA_VERSION)
+            
+            # Create tables
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_settings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,6 +76,39 @@ class UserSettingsManager:
             """)
             
             conn.commit()
+    
+    def _run_migrations(self, conn, current_version: int, target_version: int):
+        """Run migrations to bring database from current_version to target_version"""
+        
+        for version in range(current_version + 1, target_version + 1):
+            if version == 1:
+                # Migration 1: Add description column to api_keys
+                try:
+                    cursor = conn.execute("PRAGMA table_info(api_keys)")
+                    columns = {row[1] for row in cursor.fetchall()}
+                    
+                    if 'description' not in columns:
+                        conn.execute("ALTER TABLE api_keys ADD COLUMN description TEXT")
+                        logger.info("✅ Applied migration 1: Added description column to api_keys")
+                    else:
+                        logger.info("ℹ️  Migration 1: description column already exists, skipping")
+                except Exception as e:
+                    logger.error(f"Migration 1 failed: {e}")
+                    # Continue anyway - column might already exist
+                
+                # Record migration was applied
+                try:
+                    conn.execute("""
+                        INSERT INTO schema_version (version, applied_at) 
+                        VALUES (?, ?)
+                    """, (1, datetime.utcnow().isoformat() + 'Z'))
+                except sqlite3.IntegrityError:
+                    # Version already recorded
+                    pass
+            
+            # Add future migrations here:
+            # if version == 2:
+            #     ...
     
     def save_api_key(self, api_key: str, api_url: str, user_email: Optional[str] = None, 
                      description: Optional[str] = None, is_default: bool = False) -> bool:

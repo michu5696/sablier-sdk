@@ -12,6 +12,9 @@ from .builder import Portfolio
 
 logger = logging.getLogger(__name__)
 
+# Schema version - increment this when making database schema changes
+SCHEMA_VERSION = 1
+
 
 class PortfolioManager:
     """Enhanced portfolio manager with SQLite metadata and JSON data storage"""
@@ -37,8 +40,24 @@ class PortfolioManager:
         # Database path
         self.db_path = os.path.join(sablier_dir, "portfolios.db")
         
-        # Create tables
         with sqlite3.connect(self.db_path) as conn:
+            # Create schema_version table to track migrations
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                )
+            """)
+            
+            # Check current schema version
+            cursor = conn.execute("SELECT MAX(version) FROM schema_version")
+            result = cursor.fetchone()
+            current_version = result[0] if result else 0
+            
+            # Run migrations to bring database to latest version
+            self._run_migrations(conn, current_version, SCHEMA_VERSION)
+            
+            # Create tables
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS portfolios (
                     id TEXT PRIMARY KEY,
@@ -111,6 +130,39 @@ class PortfolioManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_tests_date ON portfolio_tests(test_date)")
             
             conn.commit()
+    
+    def _run_migrations(self, conn, current_version: int, target_version: int):
+        """Run migrations to bring database from current_version to target_version"""
+        
+        for version in range(current_version + 1, target_version + 1):
+            if version == 1:
+                # Migration 1: Add asset_configs column to portfolios table
+                try:
+                    cursor = conn.execute("PRAGMA table_info(portfolios)")
+                    columns = {row[1] for row in cursor.fetchall()}
+                    
+                    if 'asset_configs' not in columns:
+                        conn.execute("ALTER TABLE portfolios ADD COLUMN asset_configs TEXT")
+                        logger.info("✅ Applied portfolio migration 1: Added asset_configs column")
+                    else:
+                        logger.info("ℹ️  Portfolio migration 1: asset_configs column already exists, skipping")
+                except Exception as e:
+                    logger.error(f"Portfolio migration 1 failed: {e}")
+                    # Continue anyway - column might already exist
+                
+                # Record migration was applied
+                try:
+                    conn.execute("""
+                        INSERT INTO schema_version (version, applied_at) 
+                        VALUES (?, ?)
+                    """, (1, datetime.utcnow().isoformat() + 'Z'))
+                except sqlite3.IntegrityError:
+                    # Version already recorded
+                    pass
+            
+            # Add future migrations here:
+            # if version == 2:
+            #     ...
     
     def create(self, name: str, target_set, weights: Optional[Union[Dict[str, float], List[float]]] = None, 
                capital: float = 100000.0, description: Optional[str] = None, 
