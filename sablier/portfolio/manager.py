@@ -13,7 +13,7 @@ from .builder import Portfolio
 logger = logging.getLogger(__name__)
 
 # Schema version - increment this when making database schema changes
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class PortfolioManager:
@@ -61,7 +61,7 @@ class PortfolioManager:
             
             if is_new_database:
                 # New database - skip migrations and mark as up-to-date
-                logger.info("📝 Creating new database with schema version 2")
+                logger.info("📝 Creating new database with schema version 3")
                 try:
                     conn.execute("""
                         INSERT INTO schema_version (version, applied_at) 
@@ -125,12 +125,18 @@ class PortfolioManager:
             logger.info(f"🔧 Applying portfolio migration {version}...")
             
             if version == 1:
-                # Migration 1: Add asset_configs column to portfolios table
+                # Migration 1: Add capital and asset_configs columns to portfolios table
                 # AND Add time_series_metrics and n_days to portfolio_tests table
                 try:
-                    # Add asset_configs to portfolios
+                    # Add capital and asset_configs to portfolios
                     cursor = conn.execute("PRAGMA table_info(portfolios)")
                     columns = {row[1] for row in cursor.fetchall()}
+                    
+                    if 'capital' not in columns:
+                        conn.execute("ALTER TABLE portfolios ADD COLUMN capital REAL NOT NULL DEFAULT 100000.0")
+                        logger.info("✅ Applied portfolio migration 1: Added capital column")
+                    else:
+                        logger.info("ℹ️  Portfolio migration 1: capital column already exists, skipping")
                     
                     if 'asset_configs' not in columns:
                         conn.execute("ALTER TABLE portfolios ADD COLUMN asset_configs TEXT")
@@ -229,6 +235,28 @@ class PortfolioManager:
                         INSERT INTO schema_version (version, applied_at) 
                         VALUES (?, ?)
                     """, (2, datetime.utcnow().isoformat() + 'Z'))
+                except sqlite3.IntegrityError:
+                    pass
+            
+            elif version == 3:
+                # Migration 3: Add capital column to portfolios table (if not already present)
+                try:
+                    cursor = conn.execute("PRAGMA table_info(portfolios)")
+                    columns = {row[1] for row in cursor.fetchall()}
+                    
+                    if 'capital' not in columns:
+                        conn.execute("ALTER TABLE portfolios ADD COLUMN capital REAL NOT NULL DEFAULT 100000.0")
+                        logger.info("✅ Applied portfolio migration 3: Added capital column")
+                    else:
+                        logger.info("ℹ️  Portfolio migration 3: capital column already exists, skipping")
+                except Exception as e:
+                    logger.error(f"❌ Portfolio migration 3 failed: {e}")
+                
+                try:
+                    conn.execute("""
+                        INSERT INTO schema_version (version, applied_at) 
+                        VALUES (?, ?)
+                    """, (3, datetime.utcnow().isoformat() + 'Z'))
                 except sqlite3.IntegrityError:
                     pass
     
@@ -588,8 +616,8 @@ class PortfolioManager:
             conn.execute("""
                 INSERT OR REPLACE INTO portfolios 
                 (id, name, description, target_set_id, target_set_name, assets, 
-                 constraint_type, custom_constraints, weights, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 constraint_type, custom_constraints, weights, capital, asset_configs, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 portfolio_data['id'],
                 portfolio_data['name'],
@@ -600,6 +628,8 @@ class PortfolioManager:
                 portfolio_data['constraint_type'],
                 json.dumps(portfolio_data.get('custom_constraints')),
                 json.dumps(portfolio_data['weights']),
+                portfolio_data.get('capital', 100000.0),
+                json.dumps(portfolio_data.get('asset_configs', {})),
                 portfolio_data['created_at'],
                 portfolio_data['updated_at']
             ))
@@ -619,18 +649,22 @@ class PortfolioManager:
     
     def _row_to_portfolio_data(self, row: sqlite3.Row) -> Dict[str, Any]:
         """Convert database row to portfolio data dictionary"""
+        # sqlite3.Row doesn't have .get(), need to use try/except or check keys
+        row_dict = dict(row)
         return {
-            'id': row['id'],
-            'name': row['name'],
-            'description': row['description'],
-            'target_set_id': row['target_set_id'],
-            'target_set_name': row['target_set_name'],
-            'assets': json.loads(row['assets']),  # Should be list of strings
-            'weights': json.loads(row['weights']) if row['weights'] else {},
-            'constraint_type': row['constraint_type'],
-            'custom_constraints': json.loads(row['custom_constraints']) if row['custom_constraints'] else None,
-            'created_at': row['created_at'],
-            'updated_at': row['updated_at']
+            'id': row_dict['id'],
+            'name': row_dict['name'],
+            'description': row_dict['description'],
+            'target_set_id': row_dict['target_set_id'],
+            'target_set_name': row_dict['target_set_name'],
+            'assets': json.loads(row_dict['assets']),  # Should be list of strings
+            'weights': json.loads(row_dict['weights']) if row_dict['weights'] else {},
+            'constraint_type': row_dict['constraint_type'],
+            'custom_constraints': json.loads(row_dict['custom_constraints']) if row_dict['custom_constraints'] else None,
+            'capital': row_dict.get('capital', 100000.0),
+            'asset_configs': json.loads(row_dict['asset_configs']) if row_dict.get('asset_configs') else {},
+            'created_at': row_dict['created_at'],
+            'updated_at': row_dict['updated_at']
         }
     
     def stats(self) -> Dict[str, Any]:

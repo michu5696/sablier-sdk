@@ -532,8 +532,8 @@ class Portfolio:
             conn.execute("""
                 INSERT OR REPLACE INTO portfolios 
                 (id, name, description, target_set_id, target_set_name, assets, 
-                 constraint_type, custom_constraints, weights, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 constraint_type, custom_constraints, weights, capital, asset_configs, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 self.id,
                 self.name,
@@ -544,6 +544,8 @@ class Portfolio:
                 self.constraint_type,
                 json.dumps(self.custom_constraints),
                 json.dumps(self.weights),
+                self.capital,
+                json.dumps(self.asset_configs),
                 self.created_at,
                 self.updated_at
             ))

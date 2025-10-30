@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Python SDK for Sablier Market Scenario Generator - Create scenario-conditioned synthetic financial data"
 readme = "README.md"
 requires-python = ">=3.8"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "Sablier Team"}
 ]
@@ -17,7 +17,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Financial and Insurance Industry",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
@@ -62,7 +61,7 @@ Repository = "https://github.com/michu5696/sablier-sdk"
 Issues = "https://github.com/michu5696/sablier-sdk/issues"
 
 [tool.setuptools]
-packages = ["sablier"]
+packages = ["sablier", "sablier.model", "sablier.portfolio", "sablier.project", "sablier.scenario"]
 
 [tool.black]
 line-length = 100
