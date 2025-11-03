@@ -148,40 +148,43 @@ class Scenario:
     def plot_forecasts(
         self, 
         feature: Optional[str] = None,
-        features: Optional[List[str]] = None, 
         save: bool = False,
         save_dir: Optional[str] = None,
-        display: bool = True
+        display: bool = True,
+        show_historical_path: bool = True
     ) -> List[str]:
         """
         Plot forecast paths with conditioning and ground truth
         
         Shows:
-        - Past trajectories (historical data)
-        - Future ground truth (if available from historical simulation)
+        - Past trajectories (historical data) - optional
+        - Future ground truth (if available from historical simulation) - optional
         - Confidence intervals (68% and 95%)
         - Limited number of individual forecast paths
         - Median forecast
         
         Args:
             feature: Single feature to plot and display inline (optional)
-            features: List of features to plot when saving (default: all)
-            save: Whether to save plots to disk (default: False)
+            save: Whether to save plots to disk (default: False). When True, saves all features.
             save_dir: Directory to save plots (default: ./forecasts/)
             display: Whether to display plot inline (default: True, only when feature specified)
+            show_historical_path: Whether to show past and future historical paths as reference (default: True)
             
         Returns:
             List of saved plot file paths (empty if save=False)
             
         Examples:
-            >>> # Display a single feature inline
+            >>> # Display a single feature inline with historical path
             >>> scenario.plot_forecasts(feature="10-Year Treasury Rate")
             
-            >>> # Save all features to disk without displaying
+            >>> # Save all features without displaying
             >>> scenario.plot_forecasts(save=True, display=False)
             
             >>> # Display one feature AND save all features
             >>> scenario.plot_forecasts(feature="S&P 500", save=True)
+            
+            >>> # Save all features without historical path reference
+            >>> scenario.plot_forecasts(save=True, display=False, show_historical_path=False)
         """
         if not self.is_simulated:
             # Try to refresh from database
@@ -249,21 +252,16 @@ class Scenario:
                 available = ', '.join(list(feature_forecasts.keys())[:5])
                 raise ValueError(f"Feature '{feature}' not found. Available: {available}...")
         
-        # If saving, determine which features to save
+        # Determine which features to process
+        # - If displaying: use the specified feature
+        # - If saving: save all features
         if save:
-            if features is None:
-                # Save all features
-                save_features = list(feature_forecasts.keys())
-            else:
-                # Save specified features
-                save_features = [f for f in features if f in feature_forecasts]
+            # Save all features (and optionally display one)
+            all_features_to_process = list(feature_forecasts.keys())
+        elif features_to_plot:
+            # Only display the specified feature
+            all_features_to_process = features_to_plot
         else:
-            save_features = []
-        
-        # Combine both lists (for display and/or save)
-        all_features_to_process = list(set(features_to_plot + save_features))
-        
-        if not all_features_to_process and not feature:
             raise ValueError("No features specified. Use feature='name' to display or save=True to save all")
         
         saved_files = []
@@ -271,7 +269,7 @@ class Scenario:
         # Plot each feature
         for feature_name in all_features_to_process:
             should_display_this = (feature_name == feature and display)
-            should_save_this = (save and feature_name in save_features)
+            should_save_this = save  # Save all features when save=True
             fig, ax = plt.subplots(1, 1, figsize=(14, 6))
             
             # Get forecast data
@@ -303,12 +301,12 @@ class Scenario:
                 future_t = np.arange(n_timesteps)
                 use_dates = False
             
-            # Plot ground truth past (black line with markers)
-            if past_values and len(past_t) > 0:
+            # Plot ground truth past (black line with markers) - optional
+            if show_historical_path and past_values and len(past_t) > 0:
                 ax.plot(past_t, past_values, 'o-', color='black', linewidth=2, 
                        markersize=4, alpha=0.8, label='Recent Past', zorder=5)
                 
-                # Plot ground truth future (green line with markers)
+                # Plot ground truth future (green line with markers) - optional
                 if future_gt_values and len(future_gt_values) > 0:
                     # Handle case where ground truth might be longer than forecast
                     if use_dates:
@@ -530,7 +528,7 @@ class Scenario:
         # Plot each feature
         for feature_name in all_features_to_process:
             should_display_this = (feature_name == feature and display)
-            should_save_this = (save and feature_name in save_features)
+            should_save_this = save  # Save all features when save=True
             fig, ax = plt.subplots(1, 1, figsize=(14, 6))
             
             # Get conditioning data
