@@ -62,7 +62,7 @@ class Scenario:
     # SIMULATION
     # ============================================
     
-    def simulate(self, n_samples: int = 50, force: bool = False) -> Dict[str, Any]:
+    def simulate(self, n_samples: int = 50, force: bool = False, random_seed: Optional[int] = None) -> Dict[str, Any]:
         """
         Run the scenario simulation by calling the forecast endpoint.
         
@@ -72,6 +72,7 @@ class Scenario:
         Args:
             n_samples: Number of forecast samples to generate (max 1000)
             force: Skip confirmation prompt for re-simulation (default: False)
+            random_seed: Optional random seed for reproducible forecast sampling (default: None)
             
         Returns:
             Forecast response data
@@ -81,6 +82,8 @@ class Scenario:
             >>> # Re-run with fresh data
             >>> scenario.simulate(n_samples=1000)  # Will prompt for confirmation
             >>> scenario.simulate(n_samples=1000, force=True)  # Skip confirmation
+            >>> # Reproducible simulation
+            >>> scenario.simulate(n_samples=100, random_seed=42)
         """
         if not self.simulation_date:
             raise ValueError("Scenario must have a simulation_date configured")
@@ -109,6 +112,8 @@ class Scenario:
         
         print(f"  Simulation date: {self.simulation_date}")
         print(f"  Number of samples: {n_samples}")
+        if random_seed is not None:
+            print(f"  Random seed: {random_seed}")
         
         # Call forecast endpoint with scenario-based conditioning
         # Use the authenticated user's ID (scenario owner), not the model's user_id
@@ -119,13 +124,19 @@ class Scenario:
             # Fallback: get from HTTP client's auth (if available)
             user_id = getattr(self.http.auth_handler, 'user_id', None)
         
-        response = self.http.post('/api/v1/ml/forecast', {
+        forecast_payload = {
             'user_id': user_id,
             'model_id': self.model_id,
             'conditioning_source': 'scenario',
             'scenario_id': self.id,
             'n_samples': n_samples
-        })
+        }
+        
+        # Add random_seed if provided
+        if random_seed is not None:
+            forecast_payload['random_seed'] = random_seed
+        
+        response = self.http.post('/api/v1/ml/forecast', forecast_payload)
         
         print(f"✅ Simulation complete!")
         print(f"  Status: {response.get('status')}")
