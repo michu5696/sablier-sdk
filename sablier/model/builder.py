@@ -660,8 +660,8 @@ class Model:
         for feature in features:
             valid_names.add(feature.get('name'))
         
-        # Add feature group names (if any)
-        feature_groups = conditioning_set.get('feature_groups', {})
+        # Add feature group names (if any) — handle None safely
+        feature_groups = conditioning_set.get('feature_groups') or {'groups': []}
         groups = feature_groups.get('groups', [])
         for group in groups:
             valid_names.add(group.get('name'))
