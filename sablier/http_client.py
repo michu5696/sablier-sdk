@@ -89,8 +89,11 @@ class HTTPClient:
         # Determine timeout based on endpoint
         timeout = kwargs.pop('timeout', None)
         if timeout is None:
-            # Long operations get longer timeout
-            if any(endpoint in url for endpoint in ['/train', '/fit', '/encode', '/fetch-data', '/generate-samples']):
+            # Validation can take a very long time (reconstruction for multiple samples)
+            if '/validate' in url:
+                timeout = 1800  # 30 minutes for validation (can be very slow with reconstruction)
+            # Other long operations
+            elif any(endpoint in url for endpoint in ['/train', '/fit', '/encode', '/fetch-data', '/generate-samples']):
                 timeout = 600  # 10 minutes for ML operations and data fetching
             else:
                 timeout = 60   # 1 minute for regular operations
