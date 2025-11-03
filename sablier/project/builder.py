@@ -417,6 +417,42 @@ class Project:
         self._data = response
         return self
     
+    def rename(self, new_name: str) -> 'Project':
+        """
+        Rename the project
+        
+        Args:
+            new_name: New name for the project
+            
+        Returns:
+            self (for chaining)
+            
+        Note:
+            Currently requires admin access AND ownership on the backend.
+            This is more restrictive than model renaming (which only requires ownership).
+            
+        Example:
+            >>> project.rename("Updated Project Name")
+            ✅ Project renamed from 'Old Name' to 'Updated Project Name'
+        """
+        try:
+            response = self.http.patch(f'/api/v1/projects/{self.id}', {"name": new_name})
+            
+            # Update local data
+            self._data = response
+            
+            old_name = self.name
+            self.name = new_name
+            
+            print(f"✅ Project renamed from '{old_name}' to '{new_name}'")
+            
+            return self
+        except APIError as e:
+            if e.status_code == 403:
+                print("❌ Not authorized: Admin access required to rename projects")
+                return self
+            raise
+    
     def update_training_period(self, 
                               start_date: str, 
                               end_date: str) -> 'Project':
