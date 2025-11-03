@@ -454,9 +454,7 @@ class Model:
         past_window: int = 100,
         future_window: int = 80,
         stride: int = 5,
-        splits: Optional[Dict[str, Any]] = None,
-        pca_variance_threshold_series: float = 0.99,
-        pca_variance_threshold_residuals: float = 0.99
+        splits: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Generate training samples and fit encoding models using model's feature sets
@@ -565,9 +563,7 @@ class Model:
         try:
             fit_response = self.http.post('/api/v1/ml/fit?split=training', {
                 "model_id": self.id,
-                "encoding_type": "pca-ica",
-                "pca_variance_threshold_series": 0.95,
-                "pca_variance_threshold_residuals": 0.99
+                "encoding_type": "pca-ica"
             })
             
             models_fitted = fit_response.get('models_fitted', 0)
