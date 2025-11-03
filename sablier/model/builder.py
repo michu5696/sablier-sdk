@@ -637,43 +637,56 @@ class Model:
         """
         from datetime import datetime, timedelta
         
-        try:
-            # Get validation split dates from sample_config
-            sample_config = self._data.get('sample_config', {})
-            splits = sample_config.get('splits', {})
-            
-            # Get validation split start and end dates
-            if 'validation' in splits:
-                val_split = splits['validation']
-                if 'start' in val_split and 'end' in val_split:
-                    val_start_str = val_split['start']
-                    val_end_str = val_split['end']
-                    
-                    # Parse dates
-                    val_start = datetime.strptime(val_start_str, '%Y-%m-%d')
-                    val_end = datetime.strptime(val_end_str, '%Y-%m-%d')
-                    
-                    # Calculate middle date
-                    total_days = (val_end - val_start).days
-                    middle_date = val_start + timedelta(days=total_days // 2)
-                    
-                    return middle_date.strftime('%Y-%m-%d')
-            
-            # If no validation split info, raise error
+        # Get date range from project (simplest approach)
+        project_id = self._data.get('project_id')
+        if not project_id:
             raise ValueError(
-                "Could not determine default simulation_date. "
-                "Please specify a simulation_date that exists in your training or validation samples. "
-                "The simulation_date must match a date covered by your samples."
+                "Model missing project_id. "
+                "Please specify a simulation_date explicitly, for example: "
+                "model.create_scenario(name='My Scenario', simulation_date='2020-03-15')"
             )
+        
+        try:
+            project_response = self.http.get(f'/api/v1/projects/{project_id}')
+            if not project_response:
+                raise ValueError("Could not fetch project information")
+            
+            training_start = project_response.get('training_start_date')
+            training_end = project_response.get('training_end_date')
+            
+            if not training_start or not training_end:
+                raise ValueError("Project missing training date range")
+            
+            # Parse dates and calculate middle
+            if isinstance(training_start, str):
+                # Handle ISO format with or without time
+                if 'T' in training_start:
+                    training_start = datetime.fromisoformat(training_start.replace('Z', '+00:00'))
+                else:
+                    training_start = datetime.strptime(training_start, '%Y-%m-%d')
+            
+            if isinstance(training_end, str):
+                # Handle ISO format with or without time
+                if 'T' in training_end:
+                    training_end = datetime.fromisoformat(training_end.replace('Z', '+00:00'))
+                else:
+                    training_end = datetime.strptime(training_end, '%Y-%m-%d')
+            
+            # Calculate middle date of training period
+            total_days = (training_end - training_start).days
+            middle_date = training_start + timedelta(days=total_days // 2)
+            
+            return middle_date.strftime('%Y-%m-%d')
             
         except ValueError:
-            # Re-raise our custom error
+            # Re-raise our custom errors
             raise
         except Exception as e:
-            # If parsing fails, provide helpful error
+            # If API query fails, provide helpful error
             raise ValueError(
                 f"Could not determine default simulation_date: {str(e)}. "
-                "Please specify a simulation_date that exists in your training or validation samples."
+                "Please specify a simulation_date explicitly, for example: "
+                "model.create_scenario(name='My Scenario', simulation_date='2020-03-15')"
             )
     
     def _validate_feature_simulation_dates(self, feature_simulation_dates: Dict[str, str]):
