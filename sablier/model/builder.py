@@ -952,10 +952,113 @@ class Model:
         
         return result
     
+    def _get_crps_quality(self, crps_value: float) -> Dict[str, str]:
+        """Determine CRPS quality based on normalized value (as fraction of central 80% data range)
+        
+        Args:
+            crps_value: Normalized CRPS (CRPS / (90th percentile - 10th percentile))
+        """
+        if crps_value < 0.3:
+            return {
+                'quality': 'excellent',
+                'icon': '🟢',
+                'interpretation': f'Excellent forecast quality - average error < 0.3x central data range (90th-10th percentile)'
+            }
+        elif crps_value < 1.0:
+            return {
+                'quality': 'good',
+                'icon': '🟢',
+                'interpretation': f'Good forecast quality - average error ~{crps_value:.2f}x central data range (90th-10th percentile)'
+            }
+        elif crps_value < 2.0:
+            return {
+                'quality': 'moderate',
+                'icon': '🟡',
+                'interpretation': f'Moderate forecast quality - average error ~{crps_value:.2f}x central data range (90th-10th percentile)'
+            }
+        else:
+            return {
+                'quality': 'poor',
+                'icon': '🔴',
+                'interpretation': f'Poor forecast quality - average error ~{crps_value:.2f}x central data range (90th-10th percentile), exceeds typical variation'
+            }
+    
+    def _get_sharpness_quality(self, sharpness_value: float) -> Dict[str, str]:
+        """Determine Sharpness quality based on normalized 90% interval width (as fraction of median value)
+        
+        Args:
+            sharpness_value: Normalized sharpness (interval_width / median_ground_truth)
+        """
+        if sharpness_value < 0.05:
+            return {
+                'quality': 'excellent',
+                'icon': '🟢',
+                'interpretation': f'Excellent sharpness - 90% prediction interval < 5% of median value'
+            }
+        elif sharpness_value < 0.10:
+            return {
+                'quality': 'good',
+                'icon': '🟢',
+                'interpretation': f'Good sharpness - 90% prediction interval ~{sharpness_value*100:.1f}% of median value'
+            }
+        elif sharpness_value < 0.20:
+            return {
+                'quality': 'moderate',
+                'icon': '🟡',
+                'interpretation': f'Moderate sharpness - 90% prediction interval ~{sharpness_value*100:.1f}% of median value'
+            }
+        else:
+            return {
+                'quality': 'poor',
+                'icon': '🔴',
+                'interpretation': f'Poor sharpness - 90% prediction interval ~{sharpness_value*100:.1f}% of median value'
+            }
+    
+    def _get_ece_quality(self, ece_value: float) -> Dict[str, str]:
+        """Determine ECE quality based on value (already normalized 0-1)"""
+        if ece_value < 0.1:
+            return {
+                'quality': 'good',
+                'icon': '🟢',
+                'interpretation': 'Good calibration - predicted probabilities match observed frequencies well'
+            }
+        elif ece_value < 0.25:
+            return {
+                'quality': 'moderate',
+                'icon': '🟡',
+                'interpretation': 'Moderate calibration - some mismatch between predicted and observed probabilities'
+            }
+        else:
+            return {
+                'quality': 'poor',
+                'icon': '🔴',
+                'interpretation': 'Poor calibration - significant mismatch between predicted and observed probabilities'
+            }
+    
+    def _format_crps_display(self, crps: Dict[str, Any], indent: str = "   ") -> List[str]:
+        """
+        Helper to format CRPS display, computing quality flags on-the-fly.
+        
+        Args:
+            crps: CRPS metrics dict with 'normalized_value'
+            indent: Not used (kept for API compatibility)
+            
+        Returns:
+            List of strings to print
+        """
+        lines = []
+        if 'normalized_value' in crps:
+            quality_info = self._get_crps_quality(crps['normalized_value'])
+            lines.append(f"{quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()})")
+        else:
+            lines.append(f"🔴 CRPS: N/A (normalized value not found)")
+        return lines
+    
     def validate(self,
                      n_forecast_samples: int = 100,
                      run_on_training: bool = True,
-                     run_on_validation: bool = True) -> Dict[str, Any]:
+                     run_on_validation: bool = True,
+                     random_seed: int = 42) -> Dict[str, Any]:
         """
         Validate statistical model on held-out data
         
@@ -970,6 +1073,7 @@ class Model:
             n_forecast_samples: Number of forecast samples per validation sample (default: 100)
             run_on_training: Also run validation on training set (default: True)
             run_on_validation: Run validation on validation set (default: True)
+            random_seed: Random seed for reproducible forecast sampling (default: 42)
             
         Returns:
             Dict with validation metrics
@@ -989,7 +1093,8 @@ class Model:
             'model_id': self.id,
             'n_forecast_samples': n_forecast_samples,
             'run_on_training': run_on_training,
-            'run_on_validation': run_on_validation
+            'run_on_validation': run_on_validation,
+            'random_seed': random_seed
         })
         
         # Display results
@@ -1041,25 +1146,28 @@ class Model:
                 # CRPS
                 if 'crps' in overall_metrics:
                     crps = overall_metrics['crps']
-                    # Display normalized value (scale-invariant) as primary, absolute value as secondary
+                    # Display normalized value (scale-invariant) as primary
+                    for line in self._format_crps_display(crps):
+                        print(line)
                     if 'normalized_value' in crps:
-                        print(f"{crps['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {crps['quality'].title()})")
-                        print(f"   Raw CRPS: {crps['value']:.4f} (in data units)")
-                    else:
-                        print(f"{crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()})")
-                    print(f"   {crps['interpretation']}")
+                        quality_info = self._get_crps_quality(crps['normalized_value'])
+                        print(f"   {quality_info['interpretation']}")
                 
                 # Sharpness
                 if 'sharpness' in overall_metrics:
                     sharpness = overall_metrics['sharpness']
-                    print(f"{sharpness['icon']} Sharpness: {sharpness['value']:.4f} ({sharpness['quality'].title()})")
-                    print(f"   {sharpness['interpretation']}")
+                    sharpness_value = sharpness.get('normalized_value', 0)
+                    quality_info = self._get_sharpness_quality(sharpness_value)
+                    print(f"{quality_info['icon']} Sharpness: {sharpness_value:.4f} ({quality_info['quality'].title()})")
+                    print(f"   {quality_info['interpretation']}")
                 
                 # Reliability (ECE)
                 if 'reliability' in overall_metrics:
                     reliability = overall_metrics['reliability']
-                    print(f"{reliability['icon']} Reliability (ECE): {reliability['ece']:.4f} ({reliability['quality'].title()})")
-                    print(f"   {reliability['interpretation']}")
+                    ece_value = reliability.get('ece', 0)
+                    quality_info = self._get_ece_quality(ece_value)
+                    print(f"{quality_info['icon']} Reliability (ECE): {ece_value:.4f} ({quality_info['quality'].title()})")
+                    print(f"   {quality_info['interpretation']}")
                 
                 # Tail metrics (overall)
                 if 'left_tail' in overall_metrics and overall_metrics['left_tail']:
@@ -1067,40 +1175,46 @@ class Model:
                     print(f"\n📊 Left Tail Metrics (10th percentile - extreme lows):")
                     if 'crps' in left_tail:
                         crps = left_tail['crps']
+                        sample_text = f", {crps.get('n_samples', 0)} samples" if crps.get('n_samples') else ""
                         if 'normalized_value' in crps:
-                            print(f"  {crps['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
-                            print(f"     Raw CRPS: {crps['value']:.4f} (in data units)")
-                        else:
-                            print(f"  {crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
-                        print(f"     {crps['interpretation']}")
+                            quality_info = self._get_crps_quality(crps['normalized_value'])
+                            print(f"  {quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()}{sample_text})")
+                            print(f"     {quality_info['interpretation']}")
                     if 'sharpness' in left_tail:
                         sharpness = left_tail['sharpness']
-                        print(f"  {sharpness['icon']} Sharpness: {sharpness['value']:.4f} ({sharpness['quality'].title()})")
-                        print(f"     {sharpness['interpretation']}")
+                        sharpness_value = sharpness.get('normalized_value', 0)
+                        quality_info = self._get_sharpness_quality(sharpness_value)
+                        print(f"  {quality_info['icon']} Sharpness: {sharpness_value:.4f} ({quality_info['quality'].title()})")
+                        print(f"     {quality_info['interpretation']}")
                     if 'reliability' in left_tail:
                         reliability = left_tail['reliability']
-                        print(f"  {reliability['icon']} Reliability: {reliability['ece']:.4f} ({reliability['quality'].title()})")
-                        print(f"     {reliability['interpretation']}")
+                        ece_value = reliability.get('ece', 0)
+                        quality_info = self._get_ece_quality(ece_value)
+                        print(f"  {quality_info['icon']} Reliability: {ece_value:.4f} ({quality_info['quality'].title()})")
+                        print(f"     {quality_info['interpretation']}")
                 
                 if 'right_tail' in overall_metrics and overall_metrics['right_tail']:
                     right_tail = overall_metrics['right_tail']
                     print(f"\n📊 Right Tail Metrics (90th percentile - extreme highs):")
                     if 'crps' in right_tail:
                         crps = right_tail['crps']
+                        sample_text = f", {crps.get('n_samples', 0)} samples" if crps.get('n_samples') else ""
                         if 'normalized_value' in crps:
-                            print(f"  {crps['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
-                            print(f"     Raw CRPS: {crps['value']:.4f} (in data units)")
-                        else:
-                            print(f"  {crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
-                        print(f"     {crps['interpretation']}")
+                            quality_info = self._get_crps_quality(crps['normalized_value'])
+                            print(f"  {quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()}{sample_text})")
+                            print(f"     {quality_info['interpretation']}")
                     if 'sharpness' in right_tail:
                         sharpness = right_tail['sharpness']
-                        print(f"  {sharpness['icon']} Sharpness: {sharpness['value']:.4f} ({sharpness['quality'].title()})")
-                        print(f"     {sharpness['interpretation']}")
+                        sharpness_value = sharpness.get('normalized_value', 0)
+                        quality_info = self._get_sharpness_quality(sharpness_value)
+                        print(f"  {quality_info['icon']} Sharpness: {sharpness_value:.4f} ({quality_info['quality'].title()})")
+                        print(f"     {quality_info['interpretation']}")
                     if 'reliability' in right_tail:
                         reliability = right_tail['reliability']
-                        print(f"  {reliability['icon']} Reliability: {reliability['ece']:.4f} ({reliability['quality'].title()})")
-                        print(f"     {reliability['interpretation']}")
+                        ece_value = reliability.get('ece', 0)
+                        quality_info = self._get_ece_quality(ece_value)
+                        print(f"  {quality_info['icon']} Reliability: {ece_value:.4f} ({quality_info['quality'].title()})")
+                        print(f"     {quality_info['interpretation']}")
                 
                 # Show conditioning effectiveness
                 if 'conditioning_effectiveness' in cal_metrics:
@@ -1126,20 +1240,22 @@ class Model:
                         if 'crps' in horizon_metrics:
                             crps = horizon_metrics['crps']
                             if 'normalized_value' in crps:
-                                print(f"  {crps['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {crps['quality'].title()})")
-                                print(f"     Raw: {crps['value']:.4f} (data units)")
-                            else:
-                                print(f"  {crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()})")
+                                quality_info = self._get_crps_quality(crps['normalized_value'])
+                                print(f"  {quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()})")
                         
                         # Sharpness
                         if 'sharpness' in horizon_metrics:
                             sharpness = horizon_metrics['sharpness']
-                            print(f"  {sharpness['icon']} Sharpness: {sharpness['value']:.4f} ({sharpness['quality'].title()})")
+                            sharpness_value = sharpness.get('normalized_value', 0)
+                            quality_info = self._get_sharpness_quality(sharpness_value)
+                            print(f"  {quality_info['icon']} Sharpness: {sharpness_value:.4f} ({quality_info['quality'].title()})")
                         
                         # Reliability (ECE)
                         if 'reliability' in horizon_metrics:
                             reliability = horizon_metrics['reliability']
-                            print(f"  {reliability['icon']} Reliability: {reliability['ece']:.4f} ({reliability['quality'].title()})")
+                            ece_value = reliability.get('ece', 0)
+                            quality_info = self._get_ece_quality(ece_value)
+                            print(f"  {quality_info['icon']} Reliability: {ece_value:.4f} ({quality_info['quality'].title()})")
                         
                         # Tail metrics for this horizon
                         if 'left_tail' in horizon_metrics and horizon_metrics['left_tail']:
@@ -1147,28 +1263,30 @@ class Model:
                             print(f"    Left Tail:")
                             if 'crps' in left_tail:
                                 crps = left_tail['crps']
+                                sample_text = f", {crps.get('n_samples', 0)} samples" if crps.get('n_samples') else ""
                                 if 'normalized_value' in crps:
-                                    print(f"      {crps['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
-                                    print(f"         Raw: {crps['value']:.4f} (data units)")
-                                else:
-                                    print(f"      {crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
+                                    quality_info = self._get_crps_quality(crps['normalized_value'])
+                                    print(f"      {quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()}{sample_text})")
                             if 'reliability' in left_tail:
                                 reliability = left_tail['reliability']
-                                print(f"      {reliability['icon']} Reliability: {reliability['ece']:.4f} ({reliability['quality'].title()})")
+                                ece_value = reliability.get('ece', 0)
+                                quality_info = self._get_ece_quality(ece_value)
+                                print(f"      {quality_info['icon']} Reliability: {ece_value:.4f} ({quality_info['quality'].title()})")
                         
                         if 'right_tail' in horizon_metrics and horizon_metrics['right_tail']:
                             right_tail = horizon_metrics['right_tail']
                             print(f"    Right Tail:")
                             if 'crps' in right_tail:
                                 crps = right_tail['crps']
+                                sample_text = f", {crps.get('n_samples', 0)} samples" if crps.get('n_samples') else ""
                                 if 'normalized_value' in crps:
-                                    print(f"      {crps['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
-                                    print(f"         Raw: {crps['value']:.4f} (data units)")
-                                else:
-                                    print(f"      {crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
+                                    quality_info = self._get_crps_quality(crps['normalized_value'])
+                                    print(f"      {quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()}{sample_text})")
                             if 'reliability' in right_tail:
                                 reliability = right_tail['reliability']
-                                print(f"      {reliability['icon']} Reliability: {reliability['ece']:.4f} ({reliability['quality'].title()})")
+                                ece_value = reliability.get('ece', 0)
+                                quality_info = self._get_ece_quality(ece_value)
+                                print(f"      {quality_info['icon']} Reliability: {ece_value:.4f} ({quality_info['quality'].title()})")
                 
                 # Show future window info
                 if 'future_window' in cal_metrics:
@@ -1180,23 +1298,25 @@ class Model:
                 if 'crps' in cal_metrics:
                     crps = cal_metrics['crps']
                     if 'normalized_value' in crps:
-                        print(f"{crps['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {crps['quality'].title()})")
-                        print(f"   Raw CRPS: {crps['value']:.4f} (in data units)")
-                    else:
-                        print(f"{crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()})")
-                    print(f"   {crps['interpretation']}")
+                        quality_info = self._get_crps_quality(crps['normalized_value'])
+                        print(f"{quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()})")
+                        print(f"   {quality_info['interpretation']}")
                 
                 # Sharpness
                 if 'sharpness' in cal_metrics:
                     sharpness = cal_metrics['sharpness']
-                    print(f"{sharpness['icon']} Sharpness: {sharpness['value']:.4f} ({sharpness['quality'].title()})")
-                    print(f"   {sharpness['interpretation']}")
+                    sharpness_value = sharpness.get('normalized_value', sharpness.get('value', 0))
+                    quality_info = self._get_sharpness_quality(sharpness_value)
+                    print(f"{quality_info['icon']} Sharpness: {sharpness_value:.4f} ({quality_info['quality'].title()})")
+                    print(f"   {quality_info['interpretation']}")
                 
                 # Reliability (ECE)
                 if 'reliability' in cal_metrics:
                     reliability = cal_metrics['reliability']
-                    print(f"{reliability['icon']} Reliability (ECE): {reliability['ece']:.4f} ({reliability['quality'].title()})")
-                    print(f"   {reliability['interpretation']}")
+                    ece_value = reliability.get('ece', 0)
+                    quality_info = self._get_ece_quality(ece_value)
+                    print(f"{quality_info['icon']} Reliability (ECE): {ece_value:.4f} ({quality_info['quality'].title()})")
+                    print(f"   {quality_info['interpretation']}")
             
             print(f"{'─'*70}")
         
@@ -1239,30 +1359,16 @@ class Model:
         self.refresh()
         
         validation_metrics = self._data.get('validation_metrics')
-        validation_timestamp = self._data.get('validation_timestamp')
         
         if not validation_metrics:
             print(f"\n⚠️  No validation metrics found for model '{self.name}'")
             print(f"   Run validation first with: model.validate()")
             return None
         
-        # Parse validation_timestamp if it's a string
-        if validation_timestamp:
-            from datetime import datetime
-            if isinstance(validation_timestamp, str):
-                try:
-                    validation_timestamp = datetime.fromisoformat(validation_timestamp.replace('Z', '+00:00'))
-                except:
-                    pass
-        
         # Display header
         print(f"\n" + "="*70)
         print(f"📊 Model Validation Metrics - {self.name}")
         print(f"="*70)
-        
-        if validation_timestamp:
-            timestamp_str = validation_timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(validation_timestamp, 'strftime') else str(validation_timestamp)
-            print(f"   Validated on: {timestamp_str}")
         
         n_forecast_samples = validation_metrics.get('n_forecast_samples', 'N/A')
         print(f"   Forecast samples per validation sample: {n_forecast_samples}")
@@ -1322,25 +1428,28 @@ class Model:
                 # CRPS
                 if 'crps' in overall_metrics:
                     crps = overall_metrics['crps']
-                    # Display normalized value (scale-invariant) as primary, absolute value as secondary
+                    # Display normalized value (scale-invariant) as primary
+                    for line in self._format_crps_display(crps):
+                        print(line)
                     if 'normalized_value' in crps:
-                        print(f"{crps['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {crps['quality'].title()})")
-                        print(f"   Raw CRPS: {crps['value']:.4f} (in data units)")
-                    else:
-                        print(f"{crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()})")
-                    print(f"   {crps['interpretation']}")
+                        quality_info = self._get_crps_quality(crps['normalized_value'])
+                        print(f"   {quality_info['interpretation']}")
                 
                 # Sharpness
                 if 'sharpness' in overall_metrics:
                     sharpness = overall_metrics['sharpness']
-                    print(f"{sharpness['icon']} Sharpness: {sharpness['value']:.4f} ({sharpness['quality'].title()})")
-                    print(f"   {sharpness['interpretation']}")
+                    sharpness_value = sharpness.get('normalized_value', 0)
+                    quality_info = self._get_sharpness_quality(sharpness_value)
+                    print(f"{quality_info['icon']} Sharpness: {sharpness_value:.4f} ({quality_info['quality'].title()})")
+                    print(f"   {quality_info['interpretation']}")
                 
                 # Reliability (ECE)
                 if 'reliability' in overall_metrics:
                     reliability = overall_metrics['reliability']
-                    print(f"{reliability['icon']} Reliability (ECE): {reliability['ece']:.4f} ({reliability['quality'].title()})")
-                    print(f"   {reliability['interpretation']}")
+                    ece_value = reliability.get('ece', 0)
+                    quality_info = self._get_ece_quality(ece_value)
+                    print(f"{quality_info['icon']} Reliability (ECE): {ece_value:.4f} ({quality_info['quality'].title()})")
+                    print(f"   {quality_info['interpretation']}")
                 
                 # Tail metrics (overall)
                 if 'left_tail' in overall_metrics and overall_metrics['left_tail']:
@@ -1348,40 +1457,46 @@ class Model:
                     print(f"\n📊 Left Tail Metrics (10th percentile - extreme lows):")
                     if 'crps' in left_tail:
                         crps = left_tail['crps']
+                        sample_text = f", {crps.get('n_samples', 0)} samples" if crps.get('n_samples') else ""
                         if 'normalized_value' in crps:
-                            print(f"  {crps['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
-                            print(f"     Raw CRPS: {crps['value']:.4f} (in data units)")
-                        else:
-                            print(f"  {crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
-                        print(f"     {crps['interpretation']}")
+                            quality_info = self._get_crps_quality(crps['normalized_value'])
+                            print(f"  {quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()}{sample_text})")
+                            print(f"     {quality_info['interpretation']}")
                     if 'sharpness' in left_tail:
                         sharpness = left_tail['sharpness']
-                        print(f"  {sharpness['icon']} Sharpness: {sharpness['value']:.4f} ({sharpness['quality'].title()})")
-                        print(f"     {sharpness['interpretation']}")
+                        sharpness_value = sharpness.get('normalized_value', 0)
+                        quality_info = self._get_sharpness_quality(sharpness_value)
+                        print(f"  {quality_info['icon']} Sharpness: {sharpness_value:.4f} ({quality_info['quality'].title()})")
+                        print(f"     {quality_info['interpretation']}")
                     if 'reliability' in left_tail:
                         reliability = left_tail['reliability']
-                        print(f"  {reliability['icon']} Reliability: {reliability['ece']:.4f} ({reliability['quality'].title()})")
-                        print(f"     {reliability['interpretation']}")
+                        ece_value = reliability.get('ece', 0)
+                        quality_info = self._get_ece_quality(ece_value)
+                        print(f"  {quality_info['icon']} Reliability: {ece_value:.4f} ({quality_info['quality'].title()})")
+                        print(f"     {quality_info['interpretation']}")
                 
                 if 'right_tail' in overall_metrics and overall_metrics['right_tail']:
                     right_tail = overall_metrics['right_tail']
                     print(f"\n📊 Right Tail Metrics (90th percentile - extreme highs):")
                     if 'crps' in right_tail:
                         crps = right_tail['crps']
+                        sample_text = f", {crps.get('n_samples', 0)} samples" if crps.get('n_samples') else ""
                         if 'normalized_value' in crps:
-                            print(f"  {crps['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
-                            print(f"     Raw CRPS: {crps['value']:.4f} (in data units)")
-                        else:
-                            print(f"  {crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
-                        print(f"     {crps['interpretation']}")
+                            quality_info = self._get_crps_quality(crps['normalized_value'])
+                            print(f"  {quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()}{sample_text})")
+                            print(f"     {quality_info['interpretation']}")
                     if 'sharpness' in right_tail:
                         sharpness = right_tail['sharpness']
-                        print(f"  {sharpness['icon']} Sharpness: {sharpness['value']:.4f} ({sharpness['quality'].title()})")
-                        print(f"     {sharpness['interpretation']}")
+                        sharpness_value = sharpness.get('normalized_value', 0)
+                        quality_info = self._get_sharpness_quality(sharpness_value)
+                        print(f"  {quality_info['icon']} Sharpness: {sharpness_value:.4f} ({quality_info['quality'].title()})")
+                        print(f"     {quality_info['interpretation']}")
                     if 'reliability' in right_tail:
                         reliability = right_tail['reliability']
-                        print(f"  {reliability['icon']} Reliability: {reliability['ece']:.4f} ({reliability['quality'].title()})")
-                        print(f"     {reliability['interpretation']}")
+                        ece_value = reliability.get('ece', 0)
+                        quality_info = self._get_ece_quality(ece_value)
+                        print(f"  {quality_info['icon']} Reliability: {ece_value:.4f} ({quality_info['quality'].title()})")
+                        print(f"     {quality_info['interpretation']}")
                 
                 # Show conditioning effectiveness
                 if 'conditioning_effectiveness' in cal_metrics:
@@ -1407,20 +1522,22 @@ class Model:
                         if 'crps' in horizon_metrics:
                             crps = horizon_metrics['crps']
                             if 'normalized_value' in crps:
-                                print(f"  {crps['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {crps['quality'].title()})")
-                                print(f"     Raw: {crps['value']:.4f} (data units)")
-                            else:
-                                print(f"  {crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()})")
+                                quality_info = self._get_crps_quality(crps['normalized_value'])
+                                print(f"  {quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()})")
                         
                         # Sharpness
                         if 'sharpness' in horizon_metrics:
                             sharpness = horizon_metrics['sharpness']
-                            print(f"  {sharpness['icon']} Sharpness: {sharpness['value']:.4f} ({sharpness['quality'].title()})")
+                            sharpness_value = sharpness.get('normalized_value', 0)
+                            quality_info = self._get_sharpness_quality(sharpness_value)
+                            print(f"  {quality_info['icon']} Sharpness: {sharpness_value:.4f} ({quality_info['quality'].title()})")
                         
                         # Reliability (ECE)
                         if 'reliability' in horizon_metrics:
                             reliability = horizon_metrics['reliability']
-                            print(f"  {reliability['icon']} Reliability: {reliability['ece']:.4f} ({reliability['quality'].title()})")
+                            ece_value = reliability.get('ece', 0)
+                            quality_info = self._get_ece_quality(ece_value)
+                            print(f"  {quality_info['icon']} Reliability: {ece_value:.4f} ({quality_info['quality'].title()})")
                         
                         # Tail metrics for this horizon
                         if 'left_tail' in horizon_metrics and horizon_metrics['left_tail']:
@@ -1428,28 +1545,30 @@ class Model:
                             print(f"    Left Tail:")
                             if 'crps' in left_tail:
                                 crps = left_tail['crps']
+                                sample_text = f", {crps.get('n_samples', 0)} samples" if crps.get('n_samples') else ""
                                 if 'normalized_value' in crps:
-                                    print(f"      {crps['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
-                                    print(f"         Raw: {crps['value']:.4f} (data units)")
-                                else:
-                                    print(f"      {crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
+                                    quality_info = self._get_crps_quality(crps['normalized_value'])
+                                    print(f"      {quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()}{sample_text})")
                             if 'reliability' in left_tail:
                                 reliability = left_tail['reliability']
-                                print(f"      {reliability['icon']} Reliability: {reliability['ece']:.4f} ({reliability['quality'].title()})")
+                                ece_value = reliability.get('ece', 0)
+                                quality_info = self._get_ece_quality(ece_value)
+                                print(f"      {quality_info['icon']} Reliability: {ece_value:.4f} ({quality_info['quality'].title()})")
                         
                         if 'right_tail' in horizon_metrics and horizon_metrics['right_tail']:
                             right_tail = horizon_metrics['right_tail']
                             print(f"    Right Tail:")
                             if 'crps' in right_tail:
                                 crps = right_tail['crps']
+                                sample_text = f", {crps.get('n_samples', 0)} samples" if crps.get('n_samples') else ""
                                 if 'normalized_value' in crps:
-                                    print(f"      {crps['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
-                                    print(f"         Raw: {crps['value']:.4f} (data units)")
-                                else:
-                                    print(f"      {crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()}, {crps.get('n_samples', 0)} samples)")
+                                    quality_info = self._get_crps_quality(crps['normalized_value'])
+                                    print(f"      {quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()}{sample_text})")
                             if 'reliability' in right_tail:
                                 reliability = right_tail['reliability']
-                                print(f"      {reliability['icon']} Reliability: {reliability['ece']:.4f} ({reliability['quality'].title()})")
+                                ece_value = reliability.get('ece', 0)
+                                quality_info = self._get_ece_quality(ece_value)
+                                print(f"      {quality_info['icon']} Reliability: {ece_value:.4f} ({quality_info['quality'].title()})")
                 
                 # Show future window info
                 if 'future_window' in cal_metrics:
@@ -1461,23 +1580,25 @@ class Model:
                 if 'crps' in cal_metrics:
                     crps = cal_metrics['crps']
                     if 'normalized_value' in crps:
-                        print(f"{crps['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {crps['quality'].title()})")
-                        print(f"   Raw CRPS: {crps['value']:.4f} (in data units)")
-                    else:
-                        print(f"{crps['icon']} CRPS: {crps['value']:.4f} ({crps['quality'].title()})")
-                    print(f"   {crps['interpretation']}")
+                        quality_info = self._get_crps_quality(crps['normalized_value'])
+                        print(f"{quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()})")
+                        print(f"   {quality_info['interpretation']}")
                 
                 # Sharpness
                 if 'sharpness' in cal_metrics:
                     sharpness = cal_metrics['sharpness']
-                    print(f"{sharpness['icon']} Sharpness: {sharpness['value']:.4f} ({sharpness['quality'].title()})")
-                    print(f"   {sharpness['interpretation']}")
+                    sharpness_value = sharpness.get('normalized_value', sharpness.get('value', 0))
+                    quality_info = self._get_sharpness_quality(sharpness_value)
+                    print(f"{quality_info['icon']} Sharpness: {sharpness_value:.4f} ({quality_info['quality'].title()})")
+                    print(f"   {quality_info['interpretation']}")
                 
                 # Reliability (ECE)
                 if 'reliability' in cal_metrics:
                     reliability = cal_metrics['reliability']
-                    print(f"{reliability['icon']} Reliability (ECE): {reliability['ece']:.4f} ({reliability['quality'].title()})")
-                    print(f"   {reliability['interpretation']}")
+                    ece_value = reliability.get('ece', 0)
+                    quality_info = self._get_ece_quality(ece_value)
+                    print(f"{quality_info['icon']} Reliability (ECE): {ece_value:.4f} ({quality_info['quality'].title()})")
+                    print(f"   {quality_info['interpretation']}")
             
             print(f"{'─'*70}")
         
