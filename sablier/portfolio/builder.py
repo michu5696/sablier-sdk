@@ -600,11 +600,23 @@ class Portfolio:
         max_drawdowns = np.array([r['max_drawdown'] for r in sample_results])
         sharpe_ratios = np.array([r['sharpe_ratio'] for r in sample_results])
         sortino_ratios = np.array([r['sortino_ratio'] for r in sample_results])
-        calmar_ratios = np.array([r['calmar_ratio'] for r in sample_results])
         
-        # NEW: Extract additional risk metrics
+        # Extract additional risk metrics
         average_drawdowns = np.array([r['average_drawdown'] for r in sample_results])
         downside_deviations = np.array([r['downside_deviation'] for r in sample_results])
+        
+        # Calculate annualized volatility for each sample
+        annualized_volatilities = []
+        for r in sample_results:
+            daily_returns = np.array(r.get('daily_returns', []))
+            if len(daily_returns) > 0:
+                # Annualized volatility = std(daily returns) * sqrt(252 trading days per year)
+                daily_std = np.std(daily_returns)
+                ann_vol = daily_std * np.sqrt(252)
+                annualized_volatilities.append(ann_vol)
+            else:
+                annualized_volatilities.append(0.0)
+        annualized_volatilities = np.array(annualized_volatilities)
         
         # Compute VaR
         var_95 = np.percentile(total_returns, 5)  # 95% VaR (5th percentile)
@@ -614,11 +626,9 @@ class Portfolio:
         cvar_95 = np.mean(total_returns[total_returns <= var_95])
         cvar_99 = np.mean(total_returns[total_returns <= var_99])
         
-        # Compute survival metrics
+        # Compute profitability metrics
         profitable_samples = sum(1 for r in sample_results if r['is_profitable'])
-        surviving_samples = sum(1 for r in sample_results if r['survives'])
-        survival_rate = surviving_samples / len(sample_results)
-        profit_probability = profitable_samples / len(sample_results)
+        profitability_rate = profitable_samples / len(sample_results)  # Percentage of profitable paths
         
         # NEW: Compute Tail Ratio (upside vs downside)
         tail_ratio = np.percentile(total_returns, 95) / np.percentile(total_returns, 5) if np.percentile(total_returns, 5) != 0 else 0
@@ -676,10 +686,8 @@ class Portfolio:
             'var_99': float(var_99),
             'cvar_95': float(cvar_95),
             'cvar_99': float(cvar_99),
-            'survival_rate': float(survival_rate),
-            'profit_probability': float(profit_probability),
+            'profitability_rate': float(profitability_rate),
             'profitable_samples': profitable_samples,
-            'surviving_samples': surviving_samples,
             'total_samples': len(sample_results),
             'tail_ratio': float(tail_ratio),
             'return_distribution': {
@@ -714,55 +722,16 @@ class Portfolio:
                 'min': float(np.min(downside_deviations)),
                 'max': float(np.max(downside_deviations))
             },
-            # NEW: Time-series aggregated metrics
+            'annualized_volatility_distribution': {
+                'mean': float(np.mean(annualized_volatilities)),
+                'median': float(np.median(annualized_volatilities)),
+                'std': float(np.std(annualized_volatilities)),
+                'min': float(np.min(annualized_volatilities)),
+                'max': float(np.max(annualized_volatilities))
+            },
+            # Time-series aggregated metrics
             'time_series': time_series_metrics,
             'n_days': n_days
-        }
-    
-    def _compute_summary_stats(self, sample_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Compute summary statistics"""
-        import numpy as np
-        
-        if not sample_results:
-            return {}
-        
-        total_returns = np.array([r['total_return'] for r in sample_results])
-        sharpe_ratios = np.array([r['sharpe_ratio'] for r in sample_results])
-        max_drawdowns = np.array([r['max_drawdown'] for r in sample_results])
-        
-        # NEW: Extract additional risk metrics
-        average_drawdowns = np.array([r['average_drawdown'] for r in sample_results])
-        downside_deviations = np.array([r['downside_deviation'] for r in sample_results])
-        
-        return {
-            'total_return': {
-                'mean': float(np.mean(total_returns)),
-                'median': float(np.median(total_returns)),
-                'std': float(np.std(total_returns)),
-                'percentile_25': float(np.percentile(total_returns, 25)),
-                'percentile_75': float(np.percentile(total_returns, 75))
-            },
-            'sharpe_ratio': {
-                'mean': float(np.mean(sharpe_ratios)),
-                'median': float(np.median(sharpe_ratios)),
-                'std': float(np.std(sharpe_ratios))
-            },
-            'max_drawdown': {
-                'mean': float(np.mean(max_drawdowns)),
-                'median': float(np.median(max_drawdowns)),
-                'max': float(np.max(max_drawdowns))
-            },
-            # NEW: Additional risk metric summaries
-            'average_drawdown': {
-                'mean': float(np.mean(average_drawdowns)),
-                'median': float(np.median(average_drawdowns)),
-                'std': float(np.std(average_drawdowns))
-            },
-            'downside_deviation': {
-                'mean': float(np.mean(downside_deviations)),
-                'median': float(np.median(downside_deviations)),
-                'std': float(np.std(downside_deviations))
-            }
         }
     
     def _compute_skewness(self, data):
@@ -1238,13 +1207,9 @@ class Portfolio:
                 downside_returns = daily_returns[daily_returns < 0]
                 downside_deviation = np.std(downside_returns) if len(downside_returns) > 0 else 0
                 
-                # Calmar ratio - FIXED!
-                # Calmar = Annual Return / Max Drawdown
-                calmar_ratio = total_return / max_drawdown if max_drawdown > 0 else 0
-                
             else:
-                sharpe_ratio = sortino_ratio = calmar_ratio = 0
-                max_drawdown = average_drawdown = downside_deviation = 0
+                sharpe_ratio = sortino_ratio = 0
+                max_drawdown = average_drawdown = downside_deviation = 0.0
             
             # Daily metrics for time-series analysis
             daily_metrics = []
@@ -1270,13 +1235,11 @@ class Portfolio:
                 'max_drawdown': float(max_drawdown),
                 'sharpe_ratio': float(sharpe_ratio),
                 'sortino_ratio': float(sortino_ratio),
-                'calmar_ratio': float(calmar_ratio),
                 'average_drawdown': float(average_drawdown),
                 'downside_deviation': float(downside_deviation),
                 'daily_returns': daily_returns.tolist(),
                 'cumulative_returns': cumulative_returns.tolist(),
                 'is_profitable': bool(pnl > 0),
-                'survives': bool(total_return > -0.5),
                 'daily_metrics': daily_metrics,
                 'initial_value': float(initial_value),
                 'final_value': float(final_value)
@@ -1298,7 +1261,6 @@ class Portfolio:
         
         # Count samples
         profitable_samples = sum(1 for s in sample_results if s['is_profitable'])
-        surviving_samples = sum(1 for s in sample_results if s['survives'])
         total_samples = len(sample_results)
         
         # Compute VaR and CVaR
@@ -1375,16 +1337,26 @@ class Portfolio:
                     }
                 }
         
+        # Calculate annualized volatility for each sample
+        annualized_volatilities = []
+        for s in sample_results:
+            daily_returns = np.array(s.get('daily_returns', []))
+            if len(daily_returns) > 0:
+                daily_std = np.std(daily_returns)
+                ann_vol = daily_std * np.sqrt(252)
+                annualized_volatilities.append(ann_vol)
+            else:
+                annualized_volatilities.append(0.0)
+        annualized_volatilities = np.array(annualized_volatilities)
+        
         return {
-            'survival_rate': surviving_samples / total_samples,
-            'profit_probability': profitable_samples / total_samples,
+            'profitability_rate': profitable_samples / total_samples,
             'tail_ratio': float(tail_ratio),
             'var_95': float(var_95),
             'var_99': float(var_99),
             'cvar_95': float(cvar_95),
             'cvar_99': float(cvar_99),
             'profitable_samples': profitable_samples,
-            'surviving_samples': surviving_samples,
             'total_samples': total_samples,
             'return_distribution': {
                 'mean': float(np.mean(total_returns)),
@@ -1415,6 +1387,13 @@ class Portfolio:
                 'std': float(np.std(downside_deviations)),
                 'min': float(np.min(downside_deviations)),
                 'max': float(np.max(downside_deviations))
+            },
+            'annualized_volatility_distribution': {
+                'mean': float(np.mean(annualized_volatilities)),
+                'median': float(np.median(annualized_volatilities)),
+                'std': float(np.std(annualized_volatilities)),
+                'min': float(np.min(annualized_volatilities)),
+                'max': float(np.max(annualized_volatilities))
             },
             'time_series': time_series_metrics,
             'n_days': n_days if sample_results else 0

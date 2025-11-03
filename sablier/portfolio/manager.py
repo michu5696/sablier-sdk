@@ -12,8 +12,47 @@ from .builder import Portfolio
 
 logger = logging.getLogger(__name__)
 
-# Schema version - increment this when making database schema changes
-SCHEMA_VERSION = 3
+# Desired table schemas - modify these when you need to change the schema
+# The schema diffing system will automatically detect and apply differences
+DESIRED_SCHEMAS = {
+    'portfolios': {
+        'columns': [
+            {'name': 'id', 'type': 'TEXT', 'constraints': 'PRIMARY KEY'},
+            {'name': 'name', 'type': 'TEXT', 'constraints': 'NOT NULL'},
+            {'name': 'description', 'type': 'TEXT', 'constraints': None},
+            {'name': 'target_set_id', 'type': 'TEXT', 'constraints': 'NOT NULL'},
+            {'name': 'target_set_name', 'type': 'TEXT', 'constraints': 'NOT NULL'},
+            {'name': 'assets', 'type': 'TEXT', 'constraints': 'NOT NULL'},
+            {'name': 'constraint_type', 'type': 'TEXT', 'constraints': "NOT NULL DEFAULT 'long_short'"},
+            {'name': 'custom_constraints', 'type': 'TEXT', 'constraints': None},
+            {'name': 'weights', 'type': 'TEXT', 'constraints': None},
+            {'name': 'capital', 'type': 'REAL', 'constraints': 'NOT NULL DEFAULT 100000.0'},
+            {'name': 'asset_configs', 'type': 'TEXT', 'constraints': None},
+            {'name': 'created_at', 'type': 'TEXT', 'constraints': 'NOT NULL'},
+            {'name': 'updated_at', 'type': 'TEXT', 'constraints': 'NOT NULL'},
+        ],
+        'table_constraints': ['UNIQUE(name)']
+    },
+    'portfolio_tests': {
+        'columns': [
+            {'name': 'id', 'type': 'TEXT', 'constraints': 'PRIMARY KEY'},
+            {'name': 'portfolio_id', 'type': 'TEXT', 'constraints': 'NOT NULL'},
+            {'name': 'scenario_id', 'type': 'TEXT', 'constraints': 'NOT NULL'},
+            {'name': 'scenario_name', 'type': 'TEXT', 'constraints': 'NOT NULL'},
+            {'name': 'test_date', 'type': 'TEXT', 'constraints': 'NOT NULL'},
+            {'name': 'sample_results', 'type': 'TEXT', 'constraints': 'NOT NULL'},
+            {'name': 'aggregated_results', 'type': 'TEXT', 'constraints': 'NOT NULL'},
+            {'name': 'summary_stats', 'type': 'TEXT', 'constraints': 'NOT NULL'},
+            {'name': 'time_series_metrics', 'type': 'TEXT', 'constraints': None},
+            {'name': 'n_days', 'type': 'INTEGER', 'constraints': None},
+        ],
+        'foreign_keys': [{
+            'column': 'portfolio_id',
+            'references': 'portfolios(id)',
+            'on_delete': 'CASCADE'
+        }]
+    }
+}
 
 
 class PortfolioManager:
@@ -32,7 +71,7 @@ class PortfolioManager:
         self._init_database()
     
     def _init_database(self):
-        """Initialize SQLite database for portfolio metadata"""
+        """Initialize SQLite database for portfolio metadata using schema diffing"""
         # Create directory
         sablier_dir = os.path.expanduser("~/.sablier")
         os.makedirs(sablier_dir, exist_ok=True)
@@ -41,224 +80,119 @@ class PortfolioManager:
         self.db_path = os.path.join(sablier_dir, "portfolios.db")
         
         with sqlite3.connect(self.db_path) as conn:
-            # Create schema_version table to track migrations
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS schema_version (
-                    version INTEGER PRIMARY KEY,
-                    applied_at TEXT NOT NULL
-                )
-            """)
-            
-            # Check current schema version
-            cursor = conn.execute("SELECT MAX(version) FROM schema_version")
-            result = cursor.fetchone()
-            current_version = (result[0] if result and result[0] is not None else 0)
-            
             # Check if this is a new database (no tables exist yet)
             cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('portfolios', 'portfolio_tests')")
             existing_tables = {row[0] for row in cursor.fetchall()}
             is_new_database = 'portfolios' not in existing_tables
             
             if is_new_database:
-                # New database - skip migrations and mark as up-to-date
-                logger.info("📝 Creating new database with schema version 3")
-                try:
-                    conn.execute("""
-                        INSERT INTO schema_version (version, applied_at) 
-                        VALUES (?, ?)
-                    """, (SCHEMA_VERSION, datetime.utcnow().isoformat() + 'Z'))
-                except sqlite3.IntegrityError:
-                    pass
-            elif current_version < SCHEMA_VERSION:
-                # Existing database - run migrations
-                logger.info(f"🔧 Database version {current_version}, migrating to {SCHEMA_VERSION}")
-                self._run_migrations(conn, current_version, SCHEMA_VERSION)
-            
-            # Create tables with latest schema (includes asset_configs)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS portfolios (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    description TEXT,
-                    target_set_id TEXT NOT NULL,
-                    target_set_name TEXT NOT NULL,
-                    assets TEXT NOT NULL,  -- JSON array of asset names
-                    constraint_type TEXT NOT NULL DEFAULT 'long_short',
-                    custom_constraints TEXT,  -- JSON object
-                    weights TEXT,  -- JSON object
-                    capital REAL NOT NULL DEFAULT 100000.0,
-                    asset_configs TEXT,  -- Added in schema version 1
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(name)
-                )
-            """)
-            
-            # Add portfolio_tests table for comprehensive scenario testing
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS portfolio_tests (
-                    id TEXT PRIMARY KEY,
-                    portfolio_id TEXT NOT NULL,
-                    scenario_id TEXT NOT NULL,
-                    scenario_name TEXT NOT NULL,
-                    test_date TEXT NOT NULL,
-                    sample_results TEXT NOT NULL,  -- JSON array of per-sample metrics
-                    aggregated_results TEXT NOT NULL,  -- JSON object
-                    summary_stats TEXT NOT NULL,  -- JSON object
-                    time_series_metrics TEXT,  -- JSON object with time-series aggregated data
-                    n_days INTEGER,  -- Number of days in the test period
-                    FOREIGN KEY (portfolio_id) REFERENCES portfolios(id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Create indexes for portfolio_tests
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_tests_portfolio_id ON portfolio_tests(portfolio_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_tests_scenario_id ON portfolio_tests(scenario_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_tests_date ON portfolio_tests(test_date)")
+                # New database - create all tables with latest schema directly
+                logger.info("📝 Creating new database with latest schema")
+                self._create_tables(conn, DESIRED_SCHEMAS)
+                self._create_indexes(conn)
+            else:
+                # Existing database - apply schema diffing to update to latest schema
+                logger.info("🔧 Existing database detected - applying schema updates")
+                self._apply_schema_diff(conn, DESIRED_SCHEMAS)
             
             conn.commit()
     
-    def _run_migrations(self, conn, current_version: int, target_version: int):
-        """Run migrations to bring database from current_version to target_version"""
+    def _create_tables(self, conn, schemas: Dict[str, Dict[str, Any]]):
+        """Create tables with the desired schema"""
+        for table_name, schema in schemas.items():
+            columns_sql = []
+            for col in schema['columns']:
+                col_def = f"{col['name']} {col['type']}"
+                if col['constraints']:
+                    col_def += f" {col['constraints']}"
+                columns_sql.append(col_def)
+            
+            # Add table-level constraints
+            if 'table_constraints' in schema:
+                columns_sql.extend(schema['table_constraints'])
+            
+            # Add foreign keys
+            if 'foreign_keys' in schema:
+                for fk in schema['foreign_keys']:
+                    fk_sql = f"FOREIGN KEY ({fk['column']}) REFERENCES {fk['references']}"
+                    if 'on_delete' in fk:
+                        fk_sql += f" ON DELETE {fk['on_delete']}"
+                    columns_sql.append(fk_sql)
+            
+            create_sql = f"""
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    {', '.join(columns_sql)}
+                )
+            """
+            conn.execute(create_sql)
+            logger.info(f"✅ Created/verified table: {table_name}")
+    
+    def _create_indexes(self, conn):
+        """Create indexes for portfolio_tests table"""
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_tests_portfolio_id ON portfolio_tests(portfolio_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_tests_scenario_id ON portfolio_tests(scenario_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_tests_date ON portfolio_tests(test_date)")
+    
+    def _apply_schema_diff(self, conn, desired_schemas: Dict[str, Dict[str, Any]]):
+        """
+        Apply schema differences between existing database and desired schema.
+        This automatically detects missing columns and adds them.
         
-        for version in range(current_version + 1, target_version + 1):
-            logger.info(f"🔧 Applying portfolio migration {version}...")
+        For new users: If database doesn't exist, tables are created directly.
+        For existing users: Missing columns are automatically added.
+        """
+        for table_name, desired_schema in desired_schemas.items():
+            # Check if table exists
+            cursor = conn.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name=?
+            """, (table_name,))
+            if not cursor.fetchone():
+                # Table doesn't exist - create it
+                logger.info(f"📋 Table {table_name} doesn't exist - creating it")
+                self._create_tables(conn, {table_name: desired_schema})
+                continue
             
-            if version == 1:
-                # Migration 1: Add capital and asset_configs columns to portfolios table
-                # AND Add time_series_metrics and n_days to portfolio_tests table
-                try:
-                    # Add capital and asset_configs to portfolios
-                    cursor = conn.execute("PRAGMA table_info(portfolios)")
-                    columns = {row[1] for row in cursor.fetchall()}
-                    
-                    if 'capital' not in columns:
-                        conn.execute("ALTER TABLE portfolios ADD COLUMN capital REAL NOT NULL DEFAULT 100000.0")
-                        logger.info("✅ Applied portfolio migration 1: Added capital column")
-                    else:
-                        logger.info("ℹ️  Portfolio migration 1: capital column already exists, skipping")
-                    
-                    if 'asset_configs' not in columns:
-                        conn.execute("ALTER TABLE portfolios ADD COLUMN asset_configs TEXT")
-                        logger.info("✅ Applied portfolio migration 1: Added asset_configs column")
-                    else:
-                        logger.info("ℹ️  Portfolio migration 1: asset_configs column already exists, skipping")
-                    
-                    # Add time_series_metrics and n_days to portfolio_tests
-                    # First, ensure portfolio_tests table exists
-                    conn.execute("""
-                        CREATE TABLE IF NOT EXISTS portfolio_tests (
-                            id TEXT PRIMARY KEY,
-                            portfolio_id TEXT NOT NULL,
-                            scenario_id TEXT NOT NULL,
-                            scenario_name TEXT NOT NULL,
-                            test_date TEXT NOT NULL,
-                            sample_results TEXT NOT NULL,
-                            aggregated_results TEXT NOT NULL,
-                            summary_stats TEXT NOT NULL,
-                            FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
-                        )
-                    """)
-                    
-                    # Now check if columns need to be added
-                    cursor = conn.execute("PRAGMA table_info(portfolio_tests)")
-                    columns = {row[1] for row in cursor.fetchall()}
-                    
-                    if 'time_series_metrics' not in columns:
-                        conn.execute("ALTER TABLE portfolio_tests ADD COLUMN time_series_metrics TEXT")
-                        logger.info("✅ Applied portfolio migration 1: Added time_series_metrics column")
-                    
-                    if 'n_days' not in columns:
-                        conn.execute("ALTER TABLE portfolio_tests ADD COLUMN n_days INTEGER")
-                        logger.info("✅ Applied portfolio migration 1: Added n_days column")
+            # Get existing columns
+            cursor = conn.execute(f"PRAGMA table_info({table_name})")
+            existing_columns = {row[1]: {'type': row[2], 'notnull': row[3], 'dflt_value': row[4]} 
+                               for row in cursor.fetchall()}
+            
+            # Compare with desired columns
+            desired_column_names = {col['name'] for col in desired_schema['columns']}
+            existing_column_names = set(existing_columns.keys())
+            
+            # Find missing columns
+            missing_columns = desired_column_names - existing_column_names
+            
+            if missing_columns:
+                logger.info(f"🔧 Table {table_name}: Adding {len(missing_columns)} missing column(s)")
+                for col in desired_schema['columns']:
+                    if col['name'] in missing_columns:
+                        # Build column definition
+                        col_def = f"{col['name']} {col['type']}"
+                        if col['constraints']:
+                            col_def += f" {col['constraints']}"
                         
-                except Exception as e:
-                    logger.error(f"Portfolio migration 1 failed: {e}")
-                    # Continue anyway - columns might already exist
-                
-                # Record migration was applied
-                try:
-                    conn.execute("""
-                        INSERT INTO schema_version (version, applied_at) 
-                        VALUES (?, ?)
-                    """, (1, datetime.utcnow().isoformat() + 'Z'))
-                except sqlite3.IntegrityError:
-                    # Version already recorded
-                    pass
+                        # Add column using ALTER TABLE
+                        try:
+                            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_def}")
+                            logger.info(f"  ✅ Added column: {col['name']} ({col['type']})")
+                        except sqlite3.OperationalError as e:
+                            # Column might already exist (race condition) or error adding
+                            if "duplicate column" in str(e).lower():
+                                logger.info(f"  ℹ️  Column {col['name']} already exists, skipping")
+                            else:
+                                logger.warning(f"  ⚠️  Failed to add column {col['name']}: {e}")
             
-            elif version == 2:
-                # Migration 2: Remove legacy tables and add CASCADE deletion to portfolio_tests
-                try:
-                    logger.info("   Removing legacy tables and adding CASCADE deletion...")
-                    
-                    # Drop legacy tables (these were never used in the current implementation)
-                    conn.execute("DROP TABLE IF EXISTS portfolio_optimizations")
-                    conn.execute("DROP TABLE IF EXISTS portfolio_evaluations")
-                    logger.info("   Dropped legacy portfolio_optimizations and portfolio_evaluations tables")
-                    
-                    # Drop and recreate portfolio_tests with CASCADE
-                    conn.execute("DROP TABLE IF EXISTS portfolio_tests_backup")
-                    conn.execute("""
-                        CREATE TABLE portfolio_tests_backup AS 
-                        SELECT * FROM portfolio_tests
-                    """)
-                    conn.execute("DROP TABLE portfolio_tests")
-                    conn.execute("""
-                        CREATE TABLE portfolio_tests (
-                            id TEXT PRIMARY KEY,
-                            portfolio_id TEXT NOT NULL,
-                            scenario_id TEXT NOT NULL,
-                            scenario_name TEXT NOT NULL,
-                            test_date TEXT NOT NULL,
-                            sample_results TEXT NOT NULL,
-                            aggregated_results TEXT NOT NULL,
-                            summary_stats TEXT NOT NULL,
-                            time_series_metrics TEXT,
-                            n_days INTEGER,
-                            FOREIGN KEY (portfolio_id) REFERENCES portfolios(id) ON DELETE CASCADE
-                        )
-                    """)
-                    conn.execute("INSERT INTO portfolio_tests SELECT * FROM portfolio_tests_backup")
-                    conn.execute("DROP TABLE portfolio_tests_backup")
-                    
-                    # Recreate indexes
-                    conn.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_tests_portfolio_id ON portfolio_tests(portfolio_id)")
-                    conn.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_tests_scenario_id ON portfolio_tests(scenario_id)")
-                    conn.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_tests_date ON portfolio_tests(test_date)")
-                    
-                    logger.info("✅ Applied portfolio migration 2: Removed legacy tables and added CASCADE deletion")
-                except Exception as e:
-                    logger.error(f"❌ Portfolio migration 2 failed: {e}")
-                
-                try:
-                    conn.execute("""
-                        INSERT INTO schema_version (version, applied_at) 
-                        VALUES (?, ?)
-                    """, (2, datetime.utcnow().isoformat() + 'Z'))
-                except sqlite3.IntegrityError:
-                    pass
+            # Verify indexes
+            self._create_indexes(conn)
             
-            elif version == 3:
-                # Migration 3: Add capital column to portfolios table (if not already present)
-                try:
-                    cursor = conn.execute("PRAGMA table_info(portfolios)")
-                    columns = {row[1] for row in cursor.fetchall()}
-                    
-                    if 'capital' not in columns:
-                        conn.execute("ALTER TABLE portfolios ADD COLUMN capital REAL NOT NULL DEFAULT 100000.0")
-                        logger.info("✅ Applied portfolio migration 3: Added capital column")
-                    else:
-                        logger.info("ℹ️  Portfolio migration 3: capital column already exists, skipping")
-                except Exception as e:
-                    logger.error(f"❌ Portfolio migration 3 failed: {e}")
-                
-                try:
-                    conn.execute("""
-                        INSERT INTO schema_version (version, applied_at) 
-                        VALUES (?, ?)
-                    """, (3, datetime.utcnow().isoformat() + 'Z'))
-                except sqlite3.IntegrityError:
-                    pass
+            # Note: We don't handle:
+            # - Dropping columns (SQLite limitation - would need table recreation)
+            # - Changing column types (SQLite limitation - would need table recreation)
+            # - Modifying constraints (complex, usually not needed)
+            # These are rare operations that would require manual migration if needed.
     
     def create(self, name: str, target_set, weights: Optional[Union[Dict[str, float], List[float]]] = None, 
                capital: float = 100000.0, description: Optional[str] = None, 
