@@ -1,72 +1,103 @@
 # Sablier SDK
 
-Python SDK for the Sablier Market Scenario Generator - Create scenario-conditioned synthetic financial data for portfolio testing and risk analysis.
+Sablier SDK is a Python toolkit for scenario‑conditioned synthetic financial data generation, portfolio testing, and risk analysis. It lets you simulate market regimes (e.g., risk‑off, inflation shocks), generate realistic multi‑asset paths, and evaluate portfolios under those scenarios.
+
+---
+
+## Why Synthetic Time-Series Data?
+
+Synthetic data are statistically realistic series generated from learned patterns of historical data. In finance, this enables you to:
+- Stress test beyond history: Generate regimes that are short or missing in real data and probe model robustness.
+- Blend regimes on purpose: Mix features like COVID-style volatility with 2022-level inflation to craft targeted scenarios.
+- Explore tail risk at scale: Sample thousands of paths to study distributional uncertainty, drawdowns, and path dependence.
+- Enable forward-looking analysis: Move beyond backtesting to “fore-testing” — exploring how strategies might perform under unseen future conditions.
+- Accelerate experimentation: Prototype, train, and validate AI models or trading strategies faster without costly data-licensing or collection.
+- Overcome data scarcity: Create longer histories or regime-specific datasets that may not exist historically.
+
+## Explainable Synthetic Data Generation
+
+Sablier uses an interpretable blend of models to generate synthetic series you can actually understand. Instead of black-box models such as GANs, we decompose signals into meaningful factors, model their dependencies transparently, then recombine them to produce realistic new paths. The result is statistically sound, interpretable, and controllable synthetic data — enabling confidence and accountability in financial modeling.
+
+---
+
+## Key Capabilities
+
+- Template Projects: Access pre-trained models immediately
+- Scenario Generation: Define custom market scenarios with historical or synthetic conditions
+- Synthetic Data: Generate thousands of realistic market paths
+- Portfolio Testing: Test portfolios against synthetic scenarios with comprehensive metrics
+- Visualization: Built-in plotting for scenarios, forecasts, and portfolio performance
+
+---
 
 ## Installation
 
-### From PyPI
+From PyPI (when available):
 ```bash
 pip install sablier-sdk
 ```
 
-### From Source
+For local development (editable install):
 ```bash
-# Clone the repository
+# Clone
 git clone https://github.com/michu5696/sablier-sdk.git
-cd sablier-sdk/sdk
+cd sablier-sdk
 
-# Install in editable mode
-pip install -e ".[all]"
+# Install (editable)
+pip install -e ".[all]"    # or: pip install -e .
 ```
 
-### Requirements
-- Python 3.8 or higher
-- Core dependencies: requests, pandas, numpy, pydantic, python-dateutil, matplotlib
+Recommended: use a virtual environment (e.g., venv).
 
-## Quick Start
+---
 
-### Using Template Projects 
+## Quickstart
 
-Template projects provide pre-configured models that you can use immediately. This is the fastest way to get started:
+At present, you can browse existing projects/models provided by the backend, then create scenarios and portfolios locally to test them. 
+Note: In our next version, you’ll be able to create your own projects and train custom models directly within the SDK.
 
 ```python
 from sablier import SablierClient
 
-# Initialize client with your API URL
-client = SablierClient(api_url="https://your-backend.run.app")
+# 1) Initialize client (auto-registers an API key if none exists)
+client = SablierClient(api_url="https://<your-api-url>")
 
-# List available projects (includes template projects)
-projects = client.list_projects()
+# 2) List existing projects and pick one
+projects = client.list_projects(include_templates=True)
 
-# Find the template project
-template_project = [p for p in projects if p.is_template][0]
-print(f"Using template: {template_project.name}")
-
-# Get the first model from the template
-models = template_project.list_models()
+# 3) List models in the project and pick template
+models = project.list_models()
 model = models[0]
-print(f"Model: {model.name}")
 
-# Create a scenario on the template model
+# 4) Explore the model’s internal structure: identify available conditioning and target features.
+# Conditioning features represent the factors expected to influence your model’s behavior.
+# Target features represent the assets you aim to simulate.
+conditioning_set = model.get_conditioning_set()
+target_set = model.get_target_set()
+
+# 5) Create a scenario on the selected model 
 scenario = model.create_scenario(
-    simulation_date="2020-03-15",  # COVID crash date
-    name="COVID Scenario"
+    simulation_date="2022-06-15", # Default date for conditional features if nothing else specified
+    name="Inflation + Hikes",
+    feature_simulation_dates={
+        # Use exact conditioning feature names available on your model
+        "Consumer Price Index": "2022-06-01", # CPI YoY peak month
+        "Federal Funds Rate": "2022-06-15", # fast 75bp liftoff phase
+        "VIX Volatility Index": "2020-03-16", # modern vol shock
+    }
 )
 
-# Simulate the scenario to generate synthetic market paths
-result = scenario.simulate(n_samples=50)
+# 6) Simulate forecasts (number of paths)
+result = scenario.simulate(n_samples=100)
 
-# Access the forecast data
-forecast_data = result.get('forecast_windows', [])
-print(f"Generated {len(forecast_data)} forecast samples")
+# 7) Access and visualize the forecast data
+scenario.plot_forecasts(feature="30-Year Treasury Constant Maturity Rate",save=True, save_dir="./forecasts")
 
-# Visualize the forecasts
-scenario.plot_forecasts(save=True, save_dir="./forecasts")
-
-# Test a portfolio against the scenario
+# 7) Create a portfolio from the model's target set (you CAN create portfolios)
 portfolio = client.create_portfolio(
     name="Test Portfolio",
     target_set=model.get_target_set(),
+    weights=[0.3,0.3,0.4],
     asset_configs={
         "10-Year Treasury Constant Maturity Rate": {
             "type": "treasury_bond",
@@ -98,83 +129,22 @@ portfolio = client.create_portfolio(
     }
 )
 
-# Set portfolio weights
-portfolio.set_weights({
-    "10-Year Treasury Constant Maturity Rate": 0.4,
-    "20-Year Treasury Constant Maturity Rate": -0.3,
-    "30-Year Treasury Constant Maturity Rate": 0.3
-})
-
-# Run portfolio test
+# 8) Test the portfolio against the scenario
 test = portfolio.test(scenario)
+metrics = test.report_aggregated_metrics()
 
-# View portfolio metrics
-print(f"Sharpe Ratio: {test.summary_stats['sharpe']:.3f}")
-print(f"Total Return: {test.summary_stats['total_return']:.2%}")
-print(f"Max Drawdown: {test.summary_stats['max_drawdown']:.2%}")
+print(f"Sharpe (mean): {metrics['sharpe_distribution']['mean']:.3f}")
+print(f"Total Return (mean): {metrics['return_distribution']['mean']:.2%}")
+print(f"Max Drawdown (mean): {metrics['drawdown_distribution']['mean']:.2%}")
 
-# Plot portfolio performance evolution
-test.plot_evolution('pnl')
-test.plot_evolution('drawdown')
-```
-
-
-## Features
-
-- **Template Projects**: Access pre-trained models immediately
-- **Scenario Generation**: Define custom market scenarios with historical or synthetic conditions
-- **Synthetic Data**: Generate thousands of realistic market paths
-- **Portfolio Testing**: Test portfolios against synthetic scenarios with comprehensive metrics
-- **Visualization**: Built-in plotting for scenarios, forecasts, and portfolio performance
-
-## Portfolio Testing
-
-The SDK includes comprehensive portfolio testing capabilities:
-
-```python
-# Create portfolio with asset configurations (for bonds, equities, etc.)
-portfolio = client.create_portfolio(
-    name="Treasury Portfolio",
-    target_set=target_set,
-    asset_configs={
-        "DGS10": {
-            "type": "treasury_bond",
-            "params": {
-                "coupon_rate": 0.04,
-                "face_value": 1000,
-                "issue_date": "2018-08-15",
-                "payment_frequency": 2
-            }
-        }
-    }
-)
-
-# Set portfolio weights
-portfolio.set_weights({
-    "DGS10": 0.6,
-    "DGS30": 0.4
-})
-
-# Test portfolio against multiple scenarios
-test = portfolio.test(scenario)
-
-# Access comprehensive metrics
-print(test.summary_stats)
-# Returns: Sharpe Ratio, Sortino Ratio, Calmar Ratio, VaR, CVaR, Total Return, Max Drawdown
-
-# Plot time-series evolution
-test.plot_evolution('pnl')
-test.plot_evolution('returns')
-test.plot_evolution('drawdown')
-test.plot_evolution('portfolio_value')
-
-# Plot distributions
-test.plot_distribution('sharpe_ratio')
+# Plot
 test.plot_distribution('total_return')
-test.plot_distribution('max_drawdown')
+test.plot_evolution('portfolio_value')
 ```
 
-## API Key Management
+---
+
+## API Key Management & Client
 
 The SDK automatically manages API keys and settings in a local SQLite database:
 
@@ -197,10 +167,82 @@ client = SablierClient(api_url="https://your-backend.run.app")
 # Will use the default key automatically
 ```
 
-## Examples
+---
 
-See the `examples/` directory for detailed usage examples.
+## Jupyter Template Notebook
+
+A prebuilt Jupyter notebook named `Example.ipynb` is provided in the `testing/` folder of this repo to:
+- Initialize the client and list projects/models/scenarios
+- Create and simulate scenarios
+- Build portfolios and run tests
+- Plot distributions and time‑series (VaR/CVaR bands, drawdowns, etc.)
+
+Launch:
+```bash
+cd testing
+python -m venv venv
+source venv/bin/activate  # On Windows use: venv\Scripts\activate
+jupyter notebook "Template.ipynb"
+```
+
+---
+
+## Common API Surface (First‑use Functions)
+
+- Projects (browse existing)
+  - `client.list_projects(include_templates=True)`
+  - `client.get_project(name_or_index)`
+
+- Models (read-only)
+  - `project.list_models()`
+  - `model.list_features()`
+  - `model.get_target_set()`
+  - `model.list_scenarios(verbose=True)`
+
+- Scenarios (create & simulate)
+  - `model.create_scenario(simulation_date, name, feature_simulation_dates={...})`
+  - `scenario.simulate(n_samples=100)`
+  - `scenario.plot_forecasts(feature=...)`
+  - `scenario.plot_conditioning(feature=...)`
+
+- Portfolios & Tests
+  - `portfolio = client.create_portfolio(name, target_set, weights={...}, capital=..., constraint_type=...)`
+  - `test = portfolio.test(scenario)`
+  - `test.report_aggregated_metrics()` / `test.report_sample_metrics(sample_idx)`
+  - `test.plot_distribution('total_return' | 'sharpe_ratio' | ...)`
+  - `test.plot_evolution('pnl' | 'returns' | 'portfolio_value' | 'drawdown')`
+  - `portfolio.compare_scenarios([scenario_a, scenario_b], labels=[...])`
+  - `portfolio.plot_scenario_comparison([scenario_a, scenario_b], labels=[...])`
+
+---
+
+## Typical Workflows
+
+- From scratch
+  1) Select project from template
+  2) Select model from template
+  3) Create scenario → simulate → plot
+  4) Create portfolio → test sccenarios → analyze metrics/plots
+
+- Using existing resources
+  - `projects = client.list_projects()` → pick one
+  - `model = projects[0].list_models()[0]`
+  - `scenarios = model.list_scenarios()` → pick one (avoid re‑simulating to keep results stable)
+  - `portfolio = client.list_portfolios()[0]` → `portfolio.test(scenario)`
+
+---
+
+## Notes & Tips
+
+- Select scenarios by name/ID rather than index; list order can change.
+- For stable tails, use larger `n_samples` (e.g., ≥ 100) and avoid re‑simulation between comparisons.
+- Portfolio tests are stored locally in `~/.sablier/portfolios.db`.
+
+---
 
 ## License
 
-MIT License
+MIT
+
+---
+
