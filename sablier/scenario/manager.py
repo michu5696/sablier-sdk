@@ -1,6 +1,6 @@
 """Scenario Manager for handling scenario operations"""
 
-from typing import List, Optional
+from typing import List, Optional, Dict
 from ..http_client import HTTPClient
 from .builder import Scenario
 
@@ -29,7 +29,9 @@ class ScenarioManager:
         name: str,
         model = None,
         model_id: str = None,
-        description: str = ""
+        simulation_date: Optional[str] = None,
+        description: str = "",
+        feature_simulation_dates: Optional[Dict[str, str]] = None
     ) -> Scenario:
         """
         Create a new scenario
@@ -38,7 +40,10 @@ class ScenarioManager:
             name: Scenario name
             model: Model instance to use (either this or model_id required)
             model_id: Model ID to use (either this or model required)
+            simulation_date: Optional simulation date for all features (YYYY-MM-DD).
+                           Defaults to today's date if not specified.
             description: Optional scenario description
+            feature_simulation_dates: Optional dict mapping feature names to specific simulation dates
         Returns:
             Scenario instance
         
@@ -48,28 +53,41 @@ class ScenarioManager:
             ...     name="Bull Market 2025",
             ...     model=model
             ... )
+            
+            # With specific simulation date
+            >>> scenario = client.scenarios.create(
+            ...     name="COVID Crash",
+            ...     model=model,
+            ...     simulation_date="2020-03-15"
+            ... )
         """
-        # Determine model_id
+        # Determine model_id and model instance
         if model is not None:
             model_id = model.id
         elif model_id is None:
             raise ValueError("Either 'model' or 'model_id' must be provided")
+        else:
+            # Fetch the model if only model_id was provided
+            model = self.model_manager.get(model_id)
+        
+        # Set default simulation_date from model if not provided
+        if simulation_date is None:
+            simulation_date = model._get_default_simulation_date()
         
         print(f"[Scenario] Creating scenario: {name}")
         print(f"  Model ID: {model_id}")
+        print(f"  Simulation date: {simulation_date}")
         
         # Create via API
         response = self.http.post('/api/v1/scenarios', {
             'model_id': model_id,
             'name': name,
-            'description': description
+            'description': description,
+            'simulation_date': simulation_date,
+            'feature_simulation_dates': feature_simulation_dates or {}
         })
         
         print(f"✅ Scenario created: {response.get('id')}")
-        
-        # Fetch the model if not provided
-        if model is None:
-            model = self.model_manager.get(model_id)
         
         return Scenario(self.http, response, model)
     

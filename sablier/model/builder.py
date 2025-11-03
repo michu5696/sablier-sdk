@@ -625,6 +625,57 @@ class Model:
     # SCENARIO CREATION
     # ============================================
     
+    def _get_default_simulation_date(self) -> str:
+        """
+        Get default simulation date as the middle date of the validation split.
+        
+        Returns:
+            Date string (YYYY-MM-DD) - middle date between validation split start and end
+            
+        Raises:
+            ValueError: If no validation split information is available
+        """
+        from datetime import datetime, timedelta
+        
+        try:
+            # Get validation split dates from sample_config
+            sample_config = self._data.get('sample_config', {})
+            splits = sample_config.get('splits', {})
+            
+            # Get validation split start and end dates
+            if 'validation' in splits:
+                val_split = splits['validation']
+                if 'start' in val_split and 'end' in val_split:
+                    val_start_str = val_split['start']
+                    val_end_str = val_split['end']
+                    
+                    # Parse dates
+                    val_start = datetime.strptime(val_start_str, '%Y-%m-%d')
+                    val_end = datetime.strptime(val_end_str, '%Y-%m-%d')
+                    
+                    # Calculate middle date
+                    total_days = (val_end - val_start).days
+                    middle_date = val_start + timedelta(days=total_days // 2)
+                    
+                    return middle_date.strftime('%Y-%m-%d')
+            
+            # If no validation split info, raise error
+            raise ValueError(
+                "Could not determine default simulation_date. "
+                "Please specify a simulation_date that exists in your training or validation samples. "
+                "The simulation_date must match a date covered by your samples."
+            )
+            
+        except ValueError:
+            # Re-raise our custom error
+            raise
+        except Exception as e:
+            # If parsing fails, provide helpful error
+            raise ValueError(
+                f"Could not determine default simulation_date: {str(e)}. "
+                "Please specify a simulation_date that exists in your training or validation samples."
+            )
+    
     def _validate_feature_simulation_dates(self, feature_simulation_dates: Dict[str, str]):
         """
         Validate that feature_simulation_dates keys correspond to valid conditioning features/groups.
@@ -677,8 +728,8 @@ class Model:
     
     def create_scenario(
         self,
-        simulation_date: str,
         name: str,
+        simulation_date: Optional[str] = None,
         description: str = "",
         feature_simulation_dates: Optional[Dict[str, str]] = None
     ):
@@ -689,8 +740,9 @@ class Model:
         to access client.scenarios.create().
         
         Args:
-            simulation_date: Default simulation date for all features (YYYY-MM-DD)
             name: Scenario name
+            simulation_date: Optional simulation date for all features (YYYY-MM-DD).
+                           Defaults to today's date if not specified.
             description: Optional scenario description
             feature_simulation_dates: Optional dict mapping feature names to specific simulation dates
         
@@ -699,18 +751,27 @@ class Model:
         
         Example:
             >>> scenario = model.create_scenario(
-            ...     simulation_date="2020-03-15",
             ...     name="COVID Crash Scenario",
+            ...     simulation_date="2020-03-15",
             ...     description="Simulating March 2020 conditions",
             ...     feature_simulation_dates={
             ...         "5-Year Treasury Rate": "2008-09-15",  # Lehman crisis
             ...         "VIX Volatility Index": "2020-02-28"   # Different date
             ...     }
             ... )
+            
+            # Use today's date as default
+            >>> scenario = model.create_scenario(
+            ...     name="Current Market Scenario"
+            ... )
         """
         # Check if model is trained
         if self.status not in ['trained', 'model_trained']:
             raise ValueError(f"Model must be trained to create scenarios. Current status: {self.status}")
+        
+        # Set default simulation_date to latest validation sample date if not provided
+        if simulation_date is None:
+            simulation_date = self._get_default_simulation_date()
         
         # Validate feature_simulation_dates if provided
         if feature_simulation_dates:
