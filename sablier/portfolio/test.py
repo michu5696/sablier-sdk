@@ -44,21 +44,20 @@ class Test:
     def report_aggregated_metrics(self) -> Dict[str, Any]:
         """Report all aggregated static metrics across all samples"""
         return {
-            'survival_rate': self.aggregated_results['survival_rate'],
-            'profit_probability': self.aggregated_results['profit_probability'],
+            'profitability_rate': self.aggregated_results['profitability_rate'],
             'tail_ratio': self.aggregated_results['tail_ratio'],
             'var_95': self.aggregated_results['var_95'],
             'var_99': self.aggregated_results['var_99'],
             'cvar_95': self.aggregated_results['cvar_95'],
             'cvar_99': self.aggregated_results['cvar_99'],
             'profitable_samples': self.aggregated_results['profitable_samples'],
-            'surviving_samples': self.aggregated_results['surviving_samples'],
             'total_samples': self.aggregated_results['total_samples'],
             'return_distribution': self.aggregated_results['return_distribution'],
             'sharpe_distribution': self.aggregated_results['sharpe_distribution'],
             'drawdown_distribution': self.aggregated_results['drawdown_distribution'],
             'average_drawdown_distribution': self.aggregated_results['average_drawdown_distribution'],
-            'downside_deviation_distribution': self.aggregated_results['downside_deviation_distribution']
+            'downside_deviation_distribution': self.aggregated_results['downside_deviation_distribution'],
+            'annualized_volatility_distribution': self.aggregated_results['annualized_volatility_distribution']
         }
     
     def report_sample_metrics(self, sample_idx: int) -> Dict[str, Any]:
@@ -73,12 +72,10 @@ class Test:
             'pnl': sample['pnl'],
             'sharpe_ratio': sample['sharpe_ratio'],
             'sortino_ratio': sample['sortino_ratio'],
-            'calmar_ratio': sample['calmar_ratio'],
             'max_drawdown': sample['max_drawdown'],
             'average_drawdown': sample['average_drawdown'],
             'downside_deviation': sample['downside_deviation'],
             'is_profitable': sample['is_profitable'],
-            'survives': sample['survives'],
             'initial_value': sample['initial_value'],
             'final_value': sample['final_value']
         }
@@ -92,7 +89,7 @@ class Test:
         
         Args:
             metric: Metric name ('total_return', 'sharpe_ratio', 'sortino_ratio', 
-                   'max_drawdown', 'average_drawdown', 'downside_deviation', 'calmar_ratio')
+                   'max_drawdown', 'average_drawdown', 'downside_deviation')
             save: Whether to save the plot
             save_dir: Directory to save plots (default: './portfolio_plots/')
             display: Whether to display the plot
@@ -108,7 +105,7 @@ class Test:
         
         # Extract metric values from sample results (end-of-path metrics only)
         end_of_path_metrics = ['total_return', 'sharpe_ratio', 'sortino_ratio', 'max_drawdown', 
-                              'average_drawdown', 'downside_deviation', 'calmar_ratio']
+                              'average_drawdown', 'downside_deviation']
         
         if metric not in end_of_path_metrics:
             raise ValueError(f"Unsupported end-of-path metric: {metric}. Available: {end_of_path_metrics}")
