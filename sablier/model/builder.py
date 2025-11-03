@@ -1035,6 +1035,37 @@ class Model:
                 'interpretation': 'Poor calibration - significant mismatch between predicted and observed probabilities'
             }
     
+    def _get_rmse_quality(self, rmse_value: float) -> Dict[str, str]:
+        """Determine RMSE quality based on normalized value (RMSE / (90th-10th percentile range))
+        
+        Args:
+            rmse_value: Normalized RMSE (RMSE / (90th percentile - 10th percentile))
+        """
+        if rmse_value < 0.3:
+            return {
+                'quality': 'excellent',
+                'icon': '🟢',
+                'interpretation': f'Excellent trajectory fit - RMSE < 0.3x central data range (90th-10th percentile)'
+            }
+        elif rmse_value < 1.0:
+            return {
+                'quality': 'good',
+                'icon': '🟢',
+                'interpretation': f'Good trajectory fit - RMSE ~{rmse_value:.2f}x central data range (90th-10th percentile)'
+            }
+        elif rmse_value < 2.0:
+            return {
+                'quality': 'moderate',
+                'icon': '🟡',
+                'interpretation': f'Moderate trajectory fit - RMSE ~{rmse_value:.2f}x central data range (90th-10th percentile)'
+            }
+        else:
+            return {
+                'quality': 'poor',
+                'icon': '🔴',
+                'interpretation': f'Poor trajectory fit - RMSE ~{rmse_value:.2f}x central data range (90th-10th percentile), exceeds typical variation'
+            }
+    
     def _format_crps_display(self, crps: Dict[str, Any], indent: str = "   ") -> List[str]:
         """
         Helper to format CRPS display, computing quality flags on-the-fly.
@@ -1167,6 +1198,14 @@ class Model:
                     ece_value = reliability.get('ece', 0)
                     quality_info = self._get_ece_quality(ece_value)
                     print(f"{quality_info['icon']} Reliability (ECE): {ece_value:.4f} ({quality_info['quality'].title()})")
+                    print(f"   {quality_info['interpretation']}")
+                
+                # Median Forecast Bias (Normalized RMSE)
+                if 'median_forecast_bias' in overall_metrics:
+                    rmse_metrics = overall_metrics['median_forecast_bias']
+                    rmse_value = rmse_metrics.get('normalized_value', 0)
+                    quality_info = self._get_rmse_quality(rmse_value)
+                    print(f"{quality_info['icon']} Median Forecast Bias (RMSE): {rmse_value:.4f} (normalized, {quality_info['quality'].title()})")
                     print(f"   {quality_info['interpretation']}")
                 
                 # Tail metrics (overall)
@@ -1449,6 +1488,14 @@ class Model:
                     ece_value = reliability.get('ece', 0)
                     quality_info = self._get_ece_quality(ece_value)
                     print(f"{quality_info['icon']} Reliability (ECE): {ece_value:.4f} ({quality_info['quality'].title()})")
+                    print(f"   {quality_info['interpretation']}")
+                
+                # Median Forecast Bias (Normalized RMSE)
+                if 'median_forecast_bias' in overall_metrics:
+                    rmse_metrics = overall_metrics['median_forecast_bias']
+                    rmse_value = rmse_metrics.get('normalized_value', 0)
+                    quality_info = self._get_rmse_quality(rmse_value)
+                    print(f"{quality_info['icon']} Median Forecast Bias (RMSE): {rmse_value:.4f} (normalized, {quality_info['quality'].title()})")
                     print(f"   {quality_info['interpretation']}")
                 
                 # Tail metrics (overall)
