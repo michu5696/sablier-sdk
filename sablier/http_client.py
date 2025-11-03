@@ -90,8 +90,8 @@ class HTTPClient:
         timeout = kwargs.pop('timeout', None)
         if timeout is None:
             # Long operations get longer timeout
-            if any(endpoint in url for endpoint in ['/train', '/fit', '/encode']):
-                timeout = 600  # 10 minutes for ML operations
+            if any(endpoint in url for endpoint in ['/train', '/fit', '/encode', '/fetch-data', '/generate-samples']):
+                timeout = 600  # 10 minutes for ML operations and data fetching
             else:
                 timeout = 60   # 1 minute for regular operations
         
