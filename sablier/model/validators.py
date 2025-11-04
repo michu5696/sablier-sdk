@@ -15,7 +15,7 @@ def validate_sample_generation_inputs(
 ):
     """Validate sample generation inputs"""
     
-    # 0. Check minimum window sizes (ensures encoding models have enough dimensions)
+    # 0. Check minimum window sizes (ensures models have enough data)
     MIN_PAST_WINDOW = 30  # At least 30 days of history
     MIN_FUTURE_WINDOW = 30  # At least 30 days to predict (ensures proper model fitting)
     
