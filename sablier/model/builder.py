@@ -5,7 +5,6 @@ import numpy as np
 from typing import Optional, Any, List, Dict
 from ..http_client import HTTPClient
 from ..exceptions import APIError
-from ..workflow import WorkflowValidator, WorkflowConflict
 from .validators import (
     validate_sample_generation_inputs,
     validate_splits,
@@ -357,93 +356,6 @@ class Model:
                 return {"status": "failed", "message": "Not authorized"}
             raise
     
-    # ============================================
-    # WORKFLOW VALIDATION
-    # ============================================
-    
-    def _check_and_handle_conflict(self, operation: str, confirm: Optional[bool] = None) -> bool:
-        """
-        Check for workflow conflict and handle it
-        
-        Args:
-            operation: Operation name
-            confirm: Explicit confirmation (None = prompt if interactive)
-            
-        Returns:
-            True if operation should proceed, False if cancelled
-        """
-        conflict = WorkflowValidator.check_conflict(operation, self.status)
-        
-        if not conflict:
-            # No conflict, proceed
-            return True
-        
-        # Conflict detected
-        print(conflict.format_warning())
-        
-        # Get confirmation
-        if confirm is None and self.interactive:
-            response = input("\nContinue? [y/N]: ")
-            confirm = response.lower() == 'y'
-        elif confirm is None:
-            # Non-interactive mode without explicit confirm, cancel
-            print("❌ Operation cancelled (interactive=False, no confirmation provided)")
-            return False
-        
-        if not confirm:
-            print("❌ Operation cancelled")
-            return False
-        
-        # User confirmed, proceed with cleanup
-        print("🗑️  Cleaning up dependent data...")
-        self._cleanup_dependent_data(conflict.items_to_delete)
-        
-        return True
-    
-    def _cleanup_dependent_data(self, items_to_delete: List[str]):
-        """
-        Clean up dependent data before operation
-        
-        Args:
-            items_to_delete: List of items to delete
-        """
-        client = self.http
-        
-        for item in items_to_delete:
-            try:
-                if item == "training_data":
-                    # Delete all training_data for this model
-                    # Note: We use the backend's Supabase client, not direct deletion
-                    print(f"  - Deleting training data...")
-                    # Will be handled by regenerating samples
-                    
-                elif item == "samples":
-                    # Delete all samples for this model
-                    print(f"  - Deleting samples...")
-                    # Cascade delete via database FKs
-                    
-                elif item == "encoding_models":
-                    # Delete all encoding models for this model
-                    print(f"  - Deleting encoding models...")
-                    # Cascade delete via database FKs
-                    
-                elif item == "trained_model":
-                    # Delete trained model from storage
-                    print(f"  - Deleting trained model from storage...")
-                    # Handled by model deletion if model_path exists
-                    
-                elif item == "feature_importance":
-                    # Feature importance is in model_metadata
-                    print(f"  - Clearing feature importance...")
-                    # Will be overwritten on next training
-                    
-            except Exception as e:
-                print(f"    ⚠️  Warning: Failed to delete {item}: {e}")
-        
-        print("✅ Cleanup complete (dependent data will be overwritten)")
-    
-   
-    
     
     # ============================================
     # SAMPLE GENERATION
@@ -479,10 +391,6 @@ class Model:
             >>> model.generate_samples()  # Uses defaults: 100 past, 80 future, stride 5, 80/20 split
             >>> model.generate_samples(past_window=50, future_window=30)  # Custom windows
         """
-        # Check for conflicts
-        if not self._check_and_handle_conflict("generate_samples", True):
-            return {"status": "cancelled"}
-        
         print(f"[Model {self.name}] Generating samples...")
         print(f"  Past window: {past_window} days")
         print(f"  Future window: {future_window} days")
