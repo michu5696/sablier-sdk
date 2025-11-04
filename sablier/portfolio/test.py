@@ -62,7 +62,7 @@ class Test:
             'drawdown_distribution': self.aggregated_results['drawdown_distribution'],
             'average_drawdown_distribution': self.aggregated_results['average_drawdown_distribution'],
             'downside_deviation_distribution': self.aggregated_results['downside_deviation_distribution'],
-            'annualized_volatility_distribution': self.aggregated_results['annualized_volatility_distribution']
+            'volatility_distribution': self.aggregated_results['volatility_distribution']
         }
     
     def report_sample_metrics(self, sample_idx: int) -> Dict[str, Any]:

@@ -577,18 +577,17 @@ class Portfolio:
         average_drawdowns = np.array([r['average_drawdown'] for r in sample_results])
         downside_deviations = np.array([r['downside_deviation'] for r in sample_results])
         
-        # Calculate annualized volatility for each sample
-        annualized_volatilities = []
+        # Calculate period volatility (matches Sharpe/Sortino period-based calculations)
+        period_volatilities = []
         for r in sample_results:
             daily_returns = np.array(r.get('daily_returns', []))
             if len(daily_returns) > 0:
-                # Annualized volatility = std(daily returns) * sqrt(252 trading days per year)
-                daily_std = np.std(daily_returns)
-                ann_vol = daily_std * np.sqrt(252)
-                annualized_volatilities.append(ann_vol)
+                # Period volatility = std(daily returns) - matches Sharpe/Sortino period-based calculations
+                period_vol = np.std(daily_returns)
+                period_volatilities.append(period_vol)
             else:
-                annualized_volatilities.append(0.0)
-        annualized_volatilities = np.array(annualized_volatilities)
+                period_volatilities.append(0.0)
+        period_volatilities = np.array(period_volatilities)
         
         # Compute VaR
         var_95 = np.percentile(total_returns, 5)  # 95% VaR (5th percentile)
@@ -694,12 +693,12 @@ class Portfolio:
                 'min': float(np.min(downside_deviations)),
                 'max': float(np.max(downside_deviations))
             },
-            'annualized_volatility_distribution': {
-                'mean': float(np.mean(annualized_volatilities)),
-                'median': float(np.median(annualized_volatilities)),
-                'std': float(np.std(annualized_volatilities)),
-                'min': float(np.min(annualized_volatilities)),
-                'max': float(np.max(annualized_volatilities))
+            'volatility_distribution': {
+                'mean': float(np.mean(period_volatilities)),
+                'median': float(np.median(period_volatilities)),
+                'std': float(np.std(period_volatilities)),
+                'min': float(np.min(period_volatilities)),
+                'max': float(np.max(period_volatilities))
             },
             # Time-series aggregated metrics
             'time_series': time_series_metrics,
@@ -1149,14 +1148,18 @@ class Portfolio:
             
             # Compute risk metrics
             if len(daily_returns) > 0:
-                # Sharpe ratio (excess return over risk-free rate / volatility)
-                risk_free_rate_daily = 0.02 / 252  # 2% annual risk-free rate
+                # Sharpe ratio (excess return over risk-free rate / period volatility)
+                # Note: Returns and volatility are both period-based (e.g., over 80 days), not annualized
+                # This matches the actual return period of the scenario, not an annualized projection
+                risk_free_rate_daily = 0.02 / 252  # 2% annual risk-free rate, converted to daily
                 excess_returns = daily_returns - risk_free_rate_daily
-                sharpe_ratio = np.mean(excess_returns) / np.std(daily_returns) * np.sqrt(252) if np.std(daily_returns) > 0 else 0
+                sharpe_ratio = np.mean(excess_returns) / np.std(daily_returns) if np.std(daily_returns) > 0 else 0
+                
                 # Sortino ratio (excess return over risk-free rate / downside deviation)
+                # Note: Same as Sharpe - period-based, not annualized
                 negative_returns = daily_returns[daily_returns < 0]
                 downside_deviation = np.std(negative_returns) if len(negative_returns) > 0 else 0
-                sortino_ratio = np.mean(excess_returns) / downside_deviation * np.sqrt(252) if downside_deviation > 0 else 0
+                sortino_ratio = np.mean(excess_returns) / downside_deviation if downside_deviation > 0 else 0
                 
                 # Max drawdown - CORRECTED VERSION
                 # Drawdown = (Current - Peak) / Peak (negative when below peak)
@@ -1164,15 +1167,11 @@ class Portfolio:
                 drawdowns = (portfolio_values - running_max) / running_max
                 max_drawdown = np.min(drawdowns)  # Most negative drawdown (worst case)
                 
-                
-                
                 # Average drawdown - FIXED!
                 # Average of all drawdowns (including zeros)
                 average_drawdown = np.mean(drawdowns)
                 
-                # Downside deviation
-                downside_returns = daily_returns[daily_returns < 0]
-                downside_deviation = np.std(downside_returns) if len(downside_returns) > 0 else 0
+                # Note: downside_deviation already calculated above for Sortino ratio
                 
             else:
                 sharpe_ratio = sortino_ratio = 0
@@ -1304,17 +1303,17 @@ class Portfolio:
                     }
                 }
         
-        # Calculate annualized volatility for each sample
-        annualized_volatilities = []
+        # Calculate period volatility (matches Sharpe/Sortino period-based calculations)
+        period_volatilities = []
         for s in sample_results:
             daily_returns = np.array(s.get('daily_returns', []))
             if len(daily_returns) > 0:
-                daily_std = np.std(daily_returns)
-                ann_vol = daily_std * np.sqrt(252)
-                annualized_volatilities.append(ann_vol)
+                # Period volatility = std(daily returns) - matches Sharpe/Sortino period-based calculations
+                period_vol = np.std(daily_returns)
+                period_volatilities.append(period_vol)
             else:
-                annualized_volatilities.append(0.0)
-        annualized_volatilities = np.array(annualized_volatilities)
+                period_volatilities.append(0.0)
+        period_volatilities = np.array(period_volatilities)
         
         return {
             'profitability_rate': profitable_samples / total_samples,
@@ -1355,12 +1354,12 @@ class Portfolio:
                 'min': float(np.min(downside_deviations)),
                 'max': float(np.max(downside_deviations))
             },
-            'annualized_volatility_distribution': {
-                'mean': float(np.mean(annualized_volatilities)),
-                'median': float(np.median(annualized_volatilities)),
-                'std': float(np.std(annualized_volatilities)),
-                'min': float(np.min(annualized_volatilities)),
-                'max': float(np.max(annualized_volatilities))
+            'volatility_distribution': {
+                'mean': float(np.mean(period_volatilities)),
+                'median': float(np.median(period_volatilities)),
+                'std': float(np.std(period_volatilities)),
+                'min': float(np.min(period_volatilities)),
+                'max': float(np.max(period_volatilities))
             },
             'time_series': time_series_metrics,
             'n_days': n_days if sample_results else 0

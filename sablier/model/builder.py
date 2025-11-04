@@ -1378,6 +1378,93 @@ class Model:
         
         return result
     
+    def info(self) -> None:
+        """
+        Display model information including configuration and status.
+        
+        Shows:
+        - Basic information (name, description, status)
+        - Window configuration (past/future windows, stride)
+        - Training and validation splits (date ranges and sample counts)
+        - Whether validation metrics exist
+        
+        Returns:
+            None (only prints output)
+            
+        Example:
+            >>> model.info()
+            📊 Model Information - My Model
+            ...
+        """
+        # Refresh model data to get latest info
+        self.refresh()
+        
+        print(f"\n📊 Model Information - {self.name}")
+        print("=" * 60)
+        
+        # Basic info
+        print(f"\n📋 Basic Information:")
+        if self.description:
+            print(f"   Description: {self.description}")
+        print(f"   Status: {self.status}")
+        has_validation = self._data.get('validation_metrics') is not None
+        print(f"   Validation metrics: {'✅ Available' if has_validation else '❌ Not available'}")
+        
+        # Window configuration
+        sample_config = self._data.get('sample_config')
+        if sample_config:
+            print(f"\n⏱️  Window Configuration:")
+            past_window = sample_config.get('pastWindow', 'N/A')
+            future_window = sample_config.get('futureWindow', 'N/A')
+            stride = sample_config.get('stride', 'N/A')
+            print(f"   Past window: {past_window} days")
+            print(f"   Future window: {future_window} days")
+            print(f"   Stride: {stride} days")
+            
+            # Training and validation splits
+            splits = sample_config.get('splits', {})
+            if splits:
+                print(f"\n📅 Data Splits:")
+                
+                # Training split
+                if 'training' in splits:
+                    train_split = splits['training']
+                    train_start = train_split.get('start', 'N/A')
+                    train_end = train_split.get('end', 'N/A')
+                    # Try to get sample count from validation metrics if available
+                    train_samples = 'N/A'
+                    if has_validation:
+                        val_metrics = self._data.get('validation_metrics', {})
+                        train_metrics = val_metrics.get('training_metrics', {})
+                        if train_metrics:
+                            train_samples = train_metrics.get('n_samples', 'N/A')
+                    print(f"   Training: {train_start} to {train_end} ({train_samples} samples)")
+                
+                # Validation split
+                if 'validation' in splits:
+                    val_split = splits['validation']
+                    val_start = val_split.get('start', 'N/A')
+                    val_end = val_split.get('end', 'N/A')
+                    # Try to get sample count from validation metrics if available
+                    val_samples = 'N/A'
+                    if has_validation:
+                        val_metrics = self._data.get('validation_metrics', {})
+                        val_metrics_data = val_metrics.get('validation_metrics', {})
+                        if val_metrics_data:
+                            val_samples = val_metrics_data.get('n_samples', 'N/A')
+                    print(f"   Validation: {val_start} to {val_end} ({val_samples} samples)")
+                
+                # Test split (if exists)
+                if 'test' in splits:
+                    test_split = splits['test']
+                    test_start = test_split.get('start', 'N/A')
+                    test_end = test_split.get('end', 'N/A')
+                    print(f"   Test: {test_start} to {test_end}")
+        else:
+            print(f"\n⚠️  No sample configuration found (samples not generated yet)")
+        
+        print()
+    
     def show_validation_metrics(self) -> None:
         """
         Display stored validation metrics for this model.

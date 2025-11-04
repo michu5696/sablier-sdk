@@ -1,4 +1,9 @@
-"""Portfolio optimization and evaluation logic"""
+"""Portfolio optimization and evaluation logic
+
+NOTE: This module is not currently used in the portfolio testing workflow.
+It is planned for future implementation of portfolio weight optimization.
+The current portfolio testing uses builder.py for all metric calculations.
+"""
 
 import numpy as np
 from typing import Dict, List, Any, Optional
