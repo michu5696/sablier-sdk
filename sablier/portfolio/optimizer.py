@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 def optimize_weights(portfolio, scenario, metric: str = "sharpe", n_iterations: int = 100,
-                    constraint_type: str = "long_short", **kwargs) -> Dict[str, Any]:
+                    **kwargs) -> Dict[str, Any]:
     """
     Optimize portfolio weights using Bayesian optimization
     
@@ -17,11 +17,14 @@ def optimize_weights(portfolio, scenario, metric: str = "sharpe", n_iterations: 
         scenario: Scenario instance with forecast data
         metric: Optimization metric ("sharpe", "return", "risk_adjusted")
         n_iterations: Number of optimization iterations
-        constraint_type: Weight constraints ("long_only", "long_short", "custom")
         **kwargs: Additional optimization parameters
         
     Returns:
         Dictionary with optimized weights and metrics
+        
+    Note:
+        Portfolios support long-short positions (negative weights allowed).
+        Optimized weights are normalized so sum of absolute values equals 1.0.
     """
     try:
         from skopt import gp_minimize
@@ -34,18 +37,11 @@ def optimize_weights(portfolio, scenario, metric: str = "sharpe", n_iterations: 
     # Extract scenario data
     scenario_data = extract_scenario_data(scenario, portfolio.assets)
     
-    # Define search space for weights
+    # Define search space for weights (always long-short: -1 to 1)
     n_assets = len(portfolio.assets)
     dimensions = []
-    
-    if constraint_type == "long_only":
-        # All weights between 0 and 1
-        for i in range(n_assets):
-            dimensions.append(Real(0.0, 1.0, name=f'weight_{i}'))
-    else:
-        # Weights between -1 and 1 (long/short)
-        for i in range(n_assets):
-            dimensions.append(Real(-1.0, 1.0, name=f'weight_{i}'))
+    for i in range(n_assets):
+        dimensions.append(Real(-1.0, 1.0, name=f'weight_{i}'))
     
     # Objective function
     @use_named_args(dimensions=dimensions)
@@ -53,8 +49,8 @@ def optimize_weights(portfolio, scenario, metric: str = "sharpe", n_iterations: 
         weights = [params[f'weight_{i}'] for i in range(n_assets)]
         weights_dict = dict(zip(portfolio.assets, weights))
         
-        # Apply constraints
-        weights_dict = _apply_constraints(weights_dict, constraint_type)
+        # Normalize weights (sum of absolute values = 1.0)
+        weights_dict = _apply_constraints(weights_dict)
         
         # Calculate portfolio returns
         returns_data = calculate_portfolio_returns(scenario_data, weights_dict)
@@ -79,9 +75,9 @@ def optimize_weights(portfolio, scenario, metric: str = "sharpe", n_iterations: 
         random_state=42
     )
     
-    # Extract optimized weights
+    # Extract optimized weights and normalize
     optimized_weights = dict(zip(portfolio.assets, result.x))
-    optimized_weights = _apply_constraints(optimized_weights, constraint_type)
+    optimized_weights = _apply_constraints(optimized_weights)
     
     # Calculate final metrics
     final_returns = calculate_portfolio_returns(scenario_data, optimized_weights)
@@ -268,24 +264,24 @@ def calculate_portfolio_returns(scenario_data: Dict[str, Any], weights: Dict[str
     }
 
 
-def _apply_constraints(weights: Dict[str, float], constraint_type: str) -> Dict[str, float]:
-    """Apply portfolio constraints to weights"""
-    if constraint_type == "long_only":
-        # Ensure all weights are non-negative
-        weights = {asset: max(0, weight) for asset, weight in weights.items()}
-    elif constraint_type == "long_short":
-        # Allow negative weights (no change needed)
-        pass
-    elif constraint_type == "custom":
-        # Apply custom constraints if defined
-        pass
+def _apply_constraints(weights: Dict[str, float]) -> Dict[str, float]:
+    """
+    Normalize portfolio weights so sum of absolute values equals 1.0
     
-    # Normalize weights to sum to 1
-    total_weight = sum(weights.values())
-    if abs(total_weight) > 1e-6:  # Avoid division by zero
-        weights = {asset: weight / total_weight for asset, weight in weights.items()}
-    
-    return weights
+    Args:
+        weights: Dictionary of asset weights
+        
+    Returns:
+        Normalized weights dictionary
+    """
+    # Normalize absolute weights to sum to 1.0
+    abs_total = sum(abs(w) for w in weights.values())
+    if abs_total < 1e-6:  # Avoid division by zero
+        # Equal weights if all weights are zero
+        n_assets = len(weights)
+        return {asset: 1.0 / n_assets for asset in weights.keys()}
+    else:
+        return {asset: weight / abs_total for asset, weight in weights.items()}
 
 
 def _save_optimization_history(portfolio, scenario, metric: str, n_iterations: int, 

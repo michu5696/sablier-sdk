@@ -62,7 +62,7 @@ class Scenario:
     # SIMULATION
     # ============================================
     
-    def simulate(self, n_samples: int = 50, force: bool = False, random_seed: Optional[int] = None) -> Dict[str, Any]:
+    def simulate(self, n_samples: int = 50, force: bool = False, random_seed: Optional[int] = None) -> None:
         """
         Run the scenario simulation by calling the forecast endpoint.
         
@@ -75,7 +75,11 @@ class Scenario:
             random_seed: Optional random seed for reproducible forecast sampling (default: None)
             
         Returns:
-            Forecast response data
+            None (only prints summary output)
+            
+        Note:
+            The forecast data is stored in scenario.output after simulation completes.
+            Use scenario.plot_forecasts() to visualize the results.
             
         Example:
             >>> scenario.simulate(n_samples=1000)
@@ -84,6 +88,8 @@ class Scenario:
             >>> scenario.simulate(n_samples=1000, force=True)  # Skip confirmation
             >>> # Reproducible simulation
             >>> scenario.simulate(n_samples=100, random_seed=42)
+            >>> # Access output data
+            >>> output = scenario.output
         """
         if not self.simulation_date:
             raise ValueError("Scenario must have a simulation_date configured")
@@ -102,7 +108,7 @@ class Scenario:
             response = input("   Continue? (y/N): ").strip().lower()
             if response != 'y':
                 print("❌ Re-simulation cancelled.")
-                return self._data.get('output', {})
+                return
             print()
         
         if is_resimulation:
@@ -149,8 +155,6 @@ class Scenario:
         self._data.update(refreshed_data)
         self.output = refreshed_data.get('output')
         self.status = refreshed_data.get('status', 'simulation_done')
-        
-        return response
     
     # ============================================
     # PLOTTING AND ANALYSIS

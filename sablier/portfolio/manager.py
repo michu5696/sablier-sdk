@@ -23,8 +23,6 @@ DESIRED_SCHEMAS = {
             {'name': 'target_set_id', 'type': 'TEXT', 'constraints': 'NOT NULL'},
             {'name': 'target_set_name', 'type': 'TEXT', 'constraints': 'NOT NULL'},
             {'name': 'assets', 'type': 'TEXT', 'constraints': 'NOT NULL'},
-            {'name': 'constraint_type', 'type': 'TEXT', 'constraints': "NOT NULL DEFAULT 'long_short'"},
-            {'name': 'custom_constraints', 'type': 'TEXT', 'constraints': None},
             {'name': 'weights', 'type': 'TEXT', 'constraints': None},
             {'name': 'capital', 'type': 'REAL', 'constraints': 'NOT NULL DEFAULT 100000.0'},
             {'name': 'asset_configs', 'type': 'TEXT', 'constraints': None},
@@ -196,7 +194,7 @@ class PortfolioManager:
     
     def create(self, name: str, target_set, weights: Optional[Union[Dict[str, float], List[float]]] = None, 
                capital: float = 100000.0, description: Optional[str] = None, 
-               constraint_type: str = "long_short", asset_configs: Optional[Dict[str, Dict[str, Any]]] = None) -> Portfolio:
+               asset_configs: Optional[Dict[str, Dict[str, Any]]] = None) -> Portfolio:
         """
         Create a new portfolio from a target set
         
@@ -204,16 +202,19 @@ class PortfolioManager:
             name: Portfolio name
             target_set: Target feature set instance
             weights: Either:
-                - Dict[str, float]: Dictionary of asset weights (must sum to 1.0)
-                - List[float]: List of weights assigned to assets in order (must sum to 1.0)
-                - None: Random weights will be generated (sum to 1.0)
+                - Dict[str, float]: Dictionary of asset weights (sum of absolute values must equal 1.0)
+                - List[float]: List of weights assigned to assets in order (sum of absolute values must equal 1.0)
+                - None: Random weights will be generated (sum of absolute values = 1.0)
             capital: Total capital allocation (default $100k)
             description: Optional description
-            constraint_type: "long_only", "long_short", or "custom"
             asset_configs: Optional dict mapping asset names to their return calculation config
             
         Returns:
             New Portfolio instance
+            
+        Note:
+            Portfolios support long-short positions (negative weights allowed).
+            The sum of absolute values of weights must equal 1.0.
         """
         # Check if name already exists
         if self._portfolio_exists(name):
@@ -225,8 +226,8 @@ class PortfolioManager:
         # Get assets from target set (extract feature names)
         assets = [feature.get('name', feature.get('id', str(feature))) for feature in target_set.features]
         
-        # Process weights based on type
-        processed_weights = self._process_weights(weights, assets, constraint_type)
+        # Process weights based on type (always long-short)
+        processed_weights = self._process_weights(weights, assets)
         
         # Create portfolio data
         portfolio_data = {
@@ -238,8 +239,6 @@ class PortfolioManager:
             "assets": assets,
             "weights": processed_weights,
             "capital": capital,
-            "constraint_type": constraint_type,
-            "custom_constraints": None,
             "asset_configs": asset_configs or {},
             "created_at": datetime.utcnow().isoformat() + 'Z',
             "updated_at": datetime.utcnow().isoformat() + 'Z'
@@ -255,91 +254,63 @@ class PortfolioManager:
         return portfolio
     
     def _process_weights(self, weights: Optional[Union[Dict[str, float], List[float]]], 
-                        assets: List[str], constraint_type: str) -> Dict[str, float]:
+                        assets: List[str]) -> Dict[str, float]:
         """
         Process weights based on input type and generate random weights if None
         
         Args:
             weights: Input weights (Dict, List, or None)
             assets: List of asset names
-            constraint_type: Constraint type for validation
             
         Returns:
-            Dict[str, float]: Processed weights dictionary
+            Dict[str, float]: Processed weights dictionary (sum of absolute values = 1.0)
         """
         import random
         
         if weights is None:
             # Generate random weights
-            return self._generate_random_weights(assets, constraint_type)
+            return self._generate_random_weights(assets)
         elif isinstance(weights, list):
             # Convert list to dict by assigning to assets in order
-            return self._convert_list_to_dict(weights, assets, constraint_type)
+            return self._convert_list_to_dict(weights, assets)
         elif isinstance(weights, dict):
             # Validate dict weights
-            self._validate_dict_weights(weights, assets, constraint_type)
+            self._validate_dict_weights(weights, assets)
             return weights
         else:
             raise ValueError("Weights must be Dict[str, float], List[float], or None")
     
-    def _generate_random_weights(self, assets: List[str], constraint_type: str) -> Dict[str, float]:
-        """Generate random weights that sum to 1.0"""
+    def _generate_random_weights(self, assets: List[str]) -> Dict[str, float]:
+        """Generate random weights where sum of absolute values equals 1.0"""
         import random
         
         n_assets = len(assets)
-        
-        if constraint_type == 'long_only':
-            # Generate positive random numbers
-            random_values = [random.uniform(0.01, 1.0) for _ in range(n_assets)]
-            # Normalize to sum to 1.0
-            total = sum(random_values)
-            if abs(total) < 1e-10:  # Avoid division by zero
-                normalized_weights = [1.0 / n_assets] * n_assets
-            else:
-                normalized_weights = [w / total for w in random_values]
+        # Generate random numbers (can be negative for long-short)
+        random_values = [random.uniform(-0.5, 1.0) for _ in range(n_assets)]
+        # Normalize absolute values to sum to 1.0
+        abs_total = sum(abs(w) for w in random_values)
+        if abs_total < 1e-10:  # Avoid division by zero
+            normalized_weights = [1.0 / n_assets] * n_assets
         else:
-            # Generate random numbers (can be negative for long_short)
-            random_values = [random.uniform(-0.5, 1.0) for _ in range(n_assets)]
-            # For long-short: normalize absolute values to sum to 1.0
-            abs_total = sum(abs(w) for w in random_values)
-            if abs_total < 1e-10:  # Avoid division by zero
-                normalized_weights = [1.0 / n_assets] * n_assets
-            else:
-                normalized_weights = [w / abs_total for w in random_values]
+            normalized_weights = [w / abs_total for w in random_values]
         
         # Create dictionary
         return {asset: weight for asset, weight in zip(assets, normalized_weights)}
     
-    def _convert_list_to_dict(self, weights: List[float], assets: List[str], 
-                             constraint_type: str) -> Dict[str, float]:
+    def _convert_list_to_dict(self, weights: List[float], assets: List[str]) -> Dict[str, float]:
         """Convert list of weights to dictionary"""
         if len(weights) != len(assets):
             raise ValueError(f"Number of weights ({len(weights)}) must match number of assets ({len(assets)})")
         
-        # Check for negative weights if not long_short
-        if constraint_type == 'long_only':
-            negative_indices = [i for i, w in enumerate(weights) if w < 0]
-            if negative_indices:
-                negative_assets = [assets[i] for i in negative_indices]
-                raise ValueError(f"Long-only constraint violated for assets: {negative_assets}")
-        
-        # Check weight sum based on constraint type
-        if constraint_type == 'long_only':
-            # For long-only: raw weights must sum to 1.0
-            weight_sum = sum(weights)
-            if abs(weight_sum - 1.0) > 1e-6:
-                raise ValueError(f"Weights must sum to 1.0, got {weight_sum:.6f}")
-        else:
-            # For long-short: absolute weights must sum to 1.0
-            abs_weight_sum = sum(abs(w) for w in weights)
-            if abs(abs_weight_sum - 1.0) > 1e-6:
-                raise ValueError(f"Absolute weights must sum to 1.0, got {abs_weight_sum:.6f}")
+        # Check that absolute weights sum to 1.0
+        abs_weight_sum = sum(abs(w) for w in weights)
+        if abs(abs_weight_sum - 1.0) > 1e-6:
+            raise ValueError(f"Absolute weights must sum to 1.0, got {abs_weight_sum:.6f}")
         
         # Create dictionary
         return {asset: weight for asset, weight in zip(assets, weights)}
     
-    def _validate_dict_weights(self, weights: Dict[str, float], assets: List[str], 
-                              constraint_type: str) -> None:
+    def _validate_dict_weights(self, weights: Dict[str, float], assets: List[str]) -> None:
         """Validate dictionary weights"""
         # Check that all assets have weights
         missing_assets = set(assets) - set(weights.keys())
@@ -351,23 +322,10 @@ class PortfolioManager:
         if extra_assets:
             raise ValueError(f"Extra weights for assets not in portfolio: {extra_assets}")
         
-        # Check for negative weights if not long_short
-        if constraint_type == 'long_only':
-            negative_weights = [asset for asset, weight in weights.items() if weight < 0]
-            if negative_weights:
-                raise ValueError(f"Long-only constraint violated for assets: {negative_weights}")
-        
-        # Check weight sum based on constraint type
-        if constraint_type == 'long_only':
-            # For long-only: raw weights must sum to 1.0
-            weight_sum = sum(weights.values())
-            if abs(weight_sum - 1.0) > 1e-6:
-                raise ValueError(f"Weights must sum to 1.0, got {weight_sum:.6f}")
-        else:
-            # For long-short: absolute weights must sum to 1.0
-            abs_weight_sum = sum(abs(w) for w in weights.values())
-            if abs(abs_weight_sum - 1.0) > 1e-6:
-                raise ValueError(f"Absolute weights must sum to 1.0, got {abs_weight_sum:.6f}")
+        # Check that absolute weights sum to 1.0
+        abs_weight_sum = sum(abs(w) for w in weights.values())
+        if abs(abs_weight_sum - 1.0) > 1e-6:
+            raise ValueError(f"Absolute weights must sum to 1.0, got {abs_weight_sum:.6f}")
     
     def get(self, portfolio_id: str) -> Optional[Portfolio]:
         """
@@ -550,8 +508,8 @@ class PortfolioManager:
             conn.execute("""
                 INSERT OR REPLACE INTO portfolios 
                 (id, name, description, target_set_id, target_set_name, assets, 
-                 constraint_type, custom_constraints, weights, capital, asset_configs, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 weights, capital, asset_configs, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 portfolio_data['id'],
                 portfolio_data['name'],
@@ -559,8 +517,6 @@ class PortfolioManager:
                 portfolio_data['target_set_id'],
                 portfolio_data['target_set_name'],
                 json.dumps(portfolio_data['assets']),
-                portfolio_data['constraint_type'],
-                json.dumps(portfolio_data.get('custom_constraints')),
                 json.dumps(portfolio_data['weights']),
                 portfolio_data.get('capital', 100000.0),
                 json.dumps(portfolio_data.get('asset_configs', {})),
@@ -585,7 +541,7 @@ class PortfolioManager:
         """Convert database row to portfolio data dictionary"""
         # sqlite3.Row doesn't have .get(), need to use try/except or check keys
         row_dict = dict(row)
-        return {
+        portfolio_data = {
             'id': row_dict['id'],
             'name': row_dict['name'],
             'description': row_dict['description'],
@@ -593,13 +549,13 @@ class PortfolioManager:
             'target_set_name': row_dict['target_set_name'],
             'assets': json.loads(row_dict['assets']),  # Should be list of strings
             'weights': json.loads(row_dict['weights']) if row_dict['weights'] else {},
-            'constraint_type': row_dict['constraint_type'],
-            'custom_constraints': json.loads(row_dict['custom_constraints']) if row_dict['custom_constraints'] else None,
             'capital': row_dict.get('capital', 100000.0),
             'asset_configs': json.loads(row_dict['asset_configs']) if row_dict.get('asset_configs') else {},
             'created_at': row_dict['created_at'],
             'updated_at': row_dict['updated_at']
         }
+        # Backward compatibility: if constraint_type exists in DB, ignore it (legacy)
+        return portfolio_data
     
     def stats(self) -> Dict[str, Any]:
         """Get portfolio statistics for this project"""

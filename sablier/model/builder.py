@@ -1378,7 +1378,7 @@ class Model:
         
         return result
     
-    def show_validation_metrics(self) -> Optional[Dict[str, Any]]:
+    def show_validation_metrics(self) -> None:
         """
         Display stored validation metrics for this model.
         
@@ -1387,7 +1387,7 @@ class Model:
         All users (including those using template models) can view these metrics.
         
         Returns:
-            Dict with validation metrics if available, None if no validation metrics found
+            None (only prints output)
             
         Example:
             >>> model.show_validation_metrics()
@@ -1404,15 +1404,6 @@ class Model:
             print(f"   Run validation first with: model.validate()")
             return None
         
-        # Display header
-        print(f"\n" + "="*70)
-        print(f"📊 Model Validation Metrics - {self.name}")
-        print(f"="*70)
-        
-        n_forecast_samples = validation_metrics.get('n_forecast_samples', 'N/A')
-        print(f"   Forecast samples per validation sample: {n_forecast_samples}")
-        print()
-        
         # Extract metrics (same structure as validate() returns)
         result = {
             'training_metrics': validation_metrics.get('training_metrics'),
@@ -1421,251 +1412,201 @@ class Model:
             'calibration_metrics': validation_metrics.get('calibration_metrics')
         }
         
-        # Reuse the same display logic from validate() method
-        # Training metrics
+        # Compact header
+        n_forecast_samples = validation_metrics.get('n_forecast_samples', 'N/A')
+        train_samples = result.get('training_metrics', {}).get('n_samples', 'N/A')
+        val_samples = result.get('validation_metrics', {}).get('n_samples', 'N/A')
+        print(f"\n📊 Validation Metrics - {self.name}")
+        print(f"Samples: {n_forecast_samples} | Training: {train_samples} | Validation: {val_samples}")
+        
+        # Training/Validation - compact one line each
         if result.get('training_metrics'):
             train_metrics = result['training_metrics']
             train_ll = train_metrics.get('log_likelihood', {})
-            print(f"\n📊 Training Set Metrics:")
-            print(f"   Log-likelihood: {train_ll.get('per_sample_log_likelihood', 'N/A'):.4f}")
-            print(f"   BIC: {train_ll.get('bic', 'N/A'):.2f}")
-            print(f"   AIC: {train_ll.get('aic', 'N/A'):.2f}")
-            print(f"   Samples: {train_metrics.get('n_samples', 'N/A')}")
+            train_ll_val = train_ll.get('per_sample_log_likelihood', 'N/A')
+            train_bic = train_ll.get('bic', 'N/A')
+            train_aic = train_ll.get('aic', 'N/A')
+            train_ll_str = f'{train_ll_val:.2f}' if train_ll_val != 'N/A' and isinstance(train_ll_val, (int, float)) else 'N/A'
+            train_bic_str = f'{train_bic:.0f}' if train_bic != 'N/A' and isinstance(train_bic, (int, float)) else 'N/A'
+            train_aic_str = f'{train_aic:.0f}' if train_aic != 'N/A' and isinstance(train_aic, (int, float)) else 'N/A'
+            print(f"Training:   LL: {train_ll_str} | BIC: {train_bic_str} | AIC: {train_aic_str}")
         
         # Validation metrics
         if result.get('validation_metrics'):
             val_metrics = result['validation_metrics']
             val_ll = val_metrics.get('log_likelihood', {})
-            print(f"\n📊 Validation Set Metrics:")
             val_ll_per_sample = val_ll.get('per_sample_log_likelihood', 'N/A')
             val_bic = val_ll.get('bic', 'N/A')
             val_aic = val_ll.get('aic', 'N/A')
-            print(f"   Log-likelihood: {val_ll_per_sample if val_ll_per_sample == 'N/A' else f'{val_ll_per_sample:.4f}'}")
-            print(f"   BIC: {val_bic if val_bic == 'N/A' else f'{val_bic:.2f}'}")
-            print(f"   AIC: {val_aic if val_aic == 'N/A' else f'{val_aic:.2f}'}")
-            print(f"   Samples: {val_metrics.get('n_samples', 'N/A')}")
+            val_ll_str = f'{val_ll_per_sample:.2f}' if val_ll_per_sample != 'N/A' and isinstance(val_ll_per_sample, (int, float)) else 'N/A'
+            val_bic_str = f'{val_bic:.0f}' if val_bic != 'N/A' and isinstance(val_bic, (int, float)) else 'N/A'
+            val_aic_str = f'{val_aic:.0f}' if val_aic != 'N/A' and isinstance(val_aic, (int, float)) else 'N/A'
+            print(f"Validation: LL: {val_ll_str} | BIC: {val_bic_str} | AIC: {val_aic_str}")
             
-            # Generalization gap
-            if result.get('training_metrics') and result.get('validation_metrics'):
+            # Generalization gap inline
+            if result.get('training_metrics'):
                 train_ll_val = result['training_metrics'].get('log_likelihood', {}).get('per_sample_log_likelihood', 0)
                 val_ll_val = val_ll.get('per_sample_log_likelihood', 0)
                 if train_ll_val != 'N/A' and val_ll_val != 'N/A' and isinstance(train_ll_val, (int, float)) and isinstance(val_ll_val, (int, float)):
                     gap = train_ll_val - val_ll_val
-                    print(f"   Generalization gap: {gap:.4f}")
+                    print(f"Gap: {gap:.2f}")
         
-        # Calibration metrics - reuse same display logic
+        # Calibration metrics - condensed format
         if result.get('calibration_metrics'):
             cal_metrics = result['calibration_metrics']
-            
-            print(f"\n🎯 Forecast Quality Metrics:")
-            print(f"{'─'*70}")
             
             # Handle new reconstructed metrics structure
             if 'overall' in cal_metrics:
                 overall_metrics = cal_metrics['overall']
                 
-                # CRPS
+                # Overall quality - compact line starting on new line
+                parts = []
                 if 'crps' in overall_metrics:
                     crps = overall_metrics['crps']
-                    # Display normalized value (scale-invariant) as primary
-                    for line in self._format_crps_display(crps):
-                        print(line)
                     if 'normalized_value' in crps:
                         quality_info = self._get_crps_quality(crps['normalized_value'])
-                        print(f"   {quality_info['interpretation']}")
-                
-                # Sharpness
+                        parts.append(f"{quality_info['icon']} CRPS: {crps['normalized_value']:.3f} ({quality_info['quality'].title()})")
                 if 'sharpness' in overall_metrics:
                     sharpness = overall_metrics['sharpness']
                     sharpness_value = sharpness.get('normalized_value', 0)
                     quality_info = self._get_sharpness_quality(sharpness_value)
-                    print(f"{quality_info['icon']} Sharpness: {sharpness_value:.4f} ({quality_info['quality'].title()})")
-                    print(f"   {quality_info['interpretation']}")
-                
-                # Reliability (ECE)
+                    parts.append(f"{quality_info['icon']} Sharpness: {sharpness_value:.3f} ({quality_info['quality'].title()})")
                 if 'reliability' in overall_metrics:
                     reliability = overall_metrics['reliability']
                     ece_value = reliability.get('ece', 0)
                     quality_info = self._get_ece_quality(ece_value)
-                    print(f"{quality_info['icon']} Reliability (ECE): {ece_value:.4f} ({quality_info['quality'].title()})")
-                    print(f"   {quality_info['interpretation']}")
-                
-                # Median Forecast Bias (Normalized RMSE)
+                    parts.append(f"{quality_info['icon']} Reliability: {ece_value:.3f} ({quality_info['quality'].title()})")
                 if 'median_forecast_bias' in overall_metrics:
                     rmse_metrics = overall_metrics['median_forecast_bias']
                     rmse_value = rmse_metrics.get('normalized_value', 0)
                     quality_info = self._get_rmse_quality(rmse_value)
-                    print(f"{quality_info['icon']} Median Forecast Bias (RMSE): {rmse_value:.4f} (normalized, {quality_info['quality'].title()})")
-                    print(f"   {quality_info['interpretation']}")
+                    parts.append(f"{quality_info['icon']} RMSE: {rmse_value:.3f} ({quality_info['quality'].title()})")
                 
-                # Tail metrics (overall)
+                if parts:
+                    print(f"\n🎯 Overall:")
+                    print(f"   {' | '.join(parts)}")
+                
+                # Tail metrics - compact
                 if 'left_tail' in overall_metrics and overall_metrics['left_tail']:
                     left_tail = overall_metrics['left_tail']
-                    print(f"\n📊 Left Tail Metrics (10th percentile - extreme lows):")
-                    if 'crps' in left_tail:
-                        crps = left_tail['crps']
-                        sample_text = f", {crps.get('n_samples', 0)} samples" if crps.get('n_samples') else ""
-                        if 'normalized_value' in crps:
-                            quality_info = self._get_crps_quality(crps['normalized_value'])
-                            print(f"  {quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()}{sample_text})")
-                            print(f"     {quality_info['interpretation']}")
-                    if 'sharpness' in left_tail:
-                        sharpness = left_tail['sharpness']
-                        sharpness_value = sharpness.get('normalized_value', 0)
-                        quality_info = self._get_sharpness_quality(sharpness_value)
-                        print(f"  {quality_info['icon']} Sharpness: {sharpness_value:.4f} ({quality_info['quality'].title()})")
-                        print(f"     {quality_info['interpretation']}")
+                    parts = []
+                    if 'crps' in left_tail and 'normalized_value' in left_tail['crps']:
+                        quality_info = self._get_crps_quality(left_tail['crps']['normalized_value'])
+                        parts.append(f"{quality_info['icon']} CRPS: {left_tail['crps']['normalized_value']:.3f}")
+                    if 'sharpness' in left_tail and 'normalized_value' in left_tail['sharpness']:
+                        quality_info = self._get_sharpness_quality(left_tail['sharpness']['normalized_value'])
+                        parts.append(f"{quality_info['icon']} Sharpness: {left_tail['sharpness']['normalized_value']:.3f}")
                     if 'reliability' in left_tail:
-                        reliability = left_tail['reliability']
-                        ece_value = reliability.get('ece', 0)
-                        quality_info = self._get_ece_quality(ece_value)
-                        print(f"  {quality_info['icon']} Reliability: {ece_value:.4f} ({quality_info['quality'].title()})")
-                        print(f"     {quality_info['interpretation']}")
+                        quality_info = self._get_ece_quality(left_tail['reliability'].get('ece', 0))
+                        parts.append(f"{quality_info['icon']} Reliability: {left_tail['reliability'].get('ece', 0):.3f}")
+                    
+                    n_samples = left_tail.get('crps', {}).get('n_samples', 0) or left_tail.get('reliability', {}).get('n_samples', 0)
+                    if parts:
+                        print(f"Left Tail ({n_samples}s): {' | '.join(parts)}")
                 
                 if 'right_tail' in overall_metrics and overall_metrics['right_tail']:
                     right_tail = overall_metrics['right_tail']
-                    print(f"\n📊 Right Tail Metrics (90th percentile - extreme highs):")
-                    if 'crps' in right_tail:
-                        crps = right_tail['crps']
-                        sample_text = f", {crps.get('n_samples', 0)} samples" if crps.get('n_samples') else ""
-                        if 'normalized_value' in crps:
-                            quality_info = self._get_crps_quality(crps['normalized_value'])
-                            print(f"  {quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()}{sample_text})")
-                            print(f"     {quality_info['interpretation']}")
-                    if 'sharpness' in right_tail:
-                        sharpness = right_tail['sharpness']
-                        sharpness_value = sharpness.get('normalized_value', 0)
-                        quality_info = self._get_sharpness_quality(sharpness_value)
-                        print(f"  {quality_info['icon']} Sharpness: {sharpness_value:.4f} ({quality_info['quality'].title()})")
-                        print(f"     {quality_info['interpretation']}")
+                    parts = []
+                    if 'crps' in right_tail and 'normalized_value' in right_tail['crps']:
+                        quality_info = self._get_crps_quality(right_tail['crps']['normalized_value'])
+                        parts.append(f"{quality_info['icon']} CRPS: {right_tail['crps']['normalized_value']:.3f}")
+                    if 'sharpness' in right_tail and 'normalized_value' in right_tail['sharpness']:
+                        quality_info = self._get_sharpness_quality(right_tail['sharpness']['normalized_value'])
+                        parts.append(f"{quality_info['icon']} Sharpness: {right_tail['sharpness']['normalized_value']:.3f}")
                     if 'reliability' in right_tail:
-                        reliability = right_tail['reliability']
-                        ece_value = reliability.get('ece', 0)
-                        quality_info = self._get_ece_quality(ece_value)
-                        print(f"  {quality_info['icon']} Reliability: {ece_value:.4f} ({quality_info['quality'].title()})")
-                        print(f"     {quality_info['interpretation']}")
+                        quality_info = self._get_ece_quality(right_tail['reliability'].get('ece', 0))
+                        parts.append(f"{quality_info['icon']} Reliability: {right_tail['reliability'].get('ece', 0):.3f}")
+                    
+                    n_samples = right_tail.get('crps', {}).get('n_samples', 0) or right_tail.get('reliability', {}).get('n_samples', 0)
+                    if parts:
+                        print(f"Right Tail ({n_samples}s): {' | '.join(parts)}")
                 
-                # Show conditioning effectiveness
-                if 'conditioning_effectiveness' in cal_metrics:
-                    eff = cal_metrics['conditioning_effectiveness']
-                    eff_status = "Good" if 0.4 <= eff <= 0.6 else "Poor"
-                    print(f"   📊 Conditioning effectiveness: {eff:.3f} ({eff_status})")
-                
-                # Show note if available
-                if cal_metrics.get('note'):
-                    print(f"   📝 {cal_metrics['note']}")
-                
-                # Horizon-specific metrics
+                # Horizon-specific metrics - compact table
                 if 'horizons' in cal_metrics:
                     horizons = cal_metrics['horizons']
-                    print(f"\n📈 Horizon-Specific Metrics:")
-                    print(f"{'─'*50}")
+                    print(f"\n📈 Horizons:")
+                    print(f"{'Horizon':<12} {'CRPS':<18} {'Sharpness':<18} {'Reliability':<18}")
+                    print("-" * 68)
                     
                     for horizon_name, horizon_metrics in horizons.items():
                         horizon_display = horizon_name.replace('_', ' ').title()
-                        print(f"\n{horizon_display}:")
+                        crps_str = "-"
+                        sharp_str = "-"
+                        rel_str = "-"
                         
-                        # CRPS
-                        if 'crps' in horizon_metrics:
-                            crps = horizon_metrics['crps']
-                            if 'normalized_value' in crps:
-                                quality_info = self._get_crps_quality(crps['normalized_value'])
-                                print(f"  {quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()})")
+                        if 'crps' in horizon_metrics and 'normalized_value' in horizon_metrics['crps']:
+                            quality_info = self._get_crps_quality(horizon_metrics['crps']['normalized_value'])
+                            crps_str = f"{quality_info['icon']} {horizon_metrics['crps']['normalized_value']:.3f}"
                         
-                        # Sharpness
-                        if 'sharpness' in horizon_metrics:
-                            sharpness = horizon_metrics['sharpness']
-                            sharpness_value = sharpness.get('normalized_value', 0)
-                            quality_info = self._get_sharpness_quality(sharpness_value)
-                            print(f"  {quality_info['icon']} Sharpness: {sharpness_value:.4f} ({quality_info['quality'].title()})")
+                        if 'sharpness' in horizon_metrics and 'normalized_value' in horizon_metrics['sharpness']:
+                            quality_info = self._get_sharpness_quality(horizon_metrics['sharpness']['normalized_value'])
+                            sharp_str = f"{quality_info['icon']} {horizon_metrics['sharpness']['normalized_value']:.3f}"
                         
-                        # Reliability (ECE)
                         if 'reliability' in horizon_metrics:
-                            reliability = horizon_metrics['reliability']
-                            ece_value = reliability.get('ece', 0)
-                            quality_info = self._get_ece_quality(ece_value)
-                            print(f"  {quality_info['icon']} Reliability: {ece_value:.4f} ({quality_info['quality'].title()})")
+                            quality_info = self._get_ece_quality(horizon_metrics['reliability'].get('ece', 0))
+                            rel_str = f"{quality_info['icon']} {horizon_metrics['reliability'].get('ece', 0):.3f}"
                         
-                        # Tail metrics for this horizon
+                        print(f"{horizon_display:<12} {crps_str:<18} {sharp_str:<18} {rel_str:<18}")
+                        
+                        # Tail metrics for this horizon - compact inline
+                        tail_parts = []
                         if 'left_tail' in horizon_metrics and horizon_metrics['left_tail']:
                             left_tail = horizon_metrics['left_tail']
-                            print(f"    Left Tail:")
-                            if 'crps' in left_tail:
-                                crps = left_tail['crps']
-                                sample_text = f", {crps.get('n_samples', 0)} samples" if crps.get('n_samples') else ""
-                                if 'normalized_value' in crps:
-                                    quality_info = self._get_crps_quality(crps['normalized_value'])
-                                    print(f"      {quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()}{sample_text})")
+                            if 'crps' in left_tail and 'normalized_value' in left_tail['crps']:
+                                quality_info = self._get_crps_quality(left_tail['crps']['normalized_value'])
+                                n_samples = left_tail['crps'].get('n_samples', 0)
+                                tail_parts.append(f"L:{quality_info['icon']}{left_tail['crps']['normalized_value']:.3f}({n_samples}s)")
                             if 'reliability' in left_tail:
-                                reliability = left_tail['reliability']
-                                ece_value = reliability.get('ece', 0)
-                                quality_info = self._get_ece_quality(ece_value)
-                                print(f"      {quality_info['icon']} Reliability: {ece_value:.4f} ({quality_info['quality'].title()})")
+                                quality_info = self._get_ece_quality(left_tail['reliability'].get('ece', 0))
+                                tail_parts.append(f"L-Rel:{quality_info['icon']}{left_tail['reliability'].get('ece', 0):.3f}")
                         
                         if 'right_tail' in horizon_metrics and horizon_metrics['right_tail']:
                             right_tail = horizon_metrics['right_tail']
-                            print(f"    Right Tail:")
-                            if 'crps' in right_tail:
-                                crps = right_tail['crps']
-                                sample_text = f", {crps.get('n_samples', 0)} samples" if crps.get('n_samples') else ""
-                                if 'normalized_value' in crps:
-                                    quality_info = self._get_crps_quality(crps['normalized_value'])
-                                    print(f"      {quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()}{sample_text})")
+                            if 'crps' in right_tail and 'normalized_value' in right_tail['crps']:
+                                quality_info = self._get_crps_quality(right_tail['crps']['normalized_value'])
+                                n_samples = right_tail['crps'].get('n_samples', 0)
+                                tail_parts.append(f"R:{quality_info['icon']}{right_tail['crps']['normalized_value']:.3f}({n_samples}s)")
                             if 'reliability' in right_tail:
-                                reliability = right_tail['reliability']
-                                ece_value = reliability.get('ece', 0)
-                                quality_info = self._get_ece_quality(ece_value)
-                                print(f"      {quality_info['icon']} Reliability: {ece_value:.4f} ({quality_info['quality'].title()})")
-                
-                # Show future window info
-                if 'future_window' in cal_metrics:
-                    print(f"\n📅 Future Window: {cal_metrics['future_window']} days")
+                                quality_info = self._get_ece_quality(right_tail['reliability'].get('ece', 0))
+                                tail_parts.append(f"R-Rel:{quality_info['icon']}{right_tail['reliability'].get('ece', 0):.3f}")
+                        
+                        if tail_parts:
+                            print(f"  {' | '.join(tail_parts)}")
                     
             else:
-                # Fallback to old structure
-                # CRPS
+                # Fallback to old structure - compact
+                parts = []
                 if 'crps' in cal_metrics:
                     crps = cal_metrics['crps']
                     if 'normalized_value' in crps:
                         quality_info = self._get_crps_quality(crps['normalized_value'])
-                        print(f"{quality_info['icon']} CRPS: {crps['normalized_value']:.4f} (normalized, {quality_info['quality'].title()})")
-                        print(f"   {quality_info['interpretation']}")
-                
-                # Sharpness
+                        parts.append(f"{quality_info['icon']} CRPS: {crps['normalized_value']:.3f} ({quality_info['quality'].title()})")
                 if 'sharpness' in cal_metrics:
                     sharpness = cal_metrics['sharpness']
                     sharpness_value = sharpness.get('normalized_value', sharpness.get('value', 0))
                     quality_info = self._get_sharpness_quality(sharpness_value)
-                    print(f"{quality_info['icon']} Sharpness: {sharpness_value:.4f} ({quality_info['quality'].title()})")
-                    print(f"   {quality_info['interpretation']}")
-                
-                # Reliability (ECE)
+                    parts.append(f"{quality_info['icon']} Sharpness: {sharpness_value:.3f} ({quality_info['quality'].title()})")
                 if 'reliability' in cal_metrics:
                     reliability = cal_metrics['reliability']
                     ece_value = reliability.get('ece', 0)
                     quality_info = self._get_ece_quality(ece_value)
-                    print(f"{quality_info['icon']} Reliability (ECE): {ece_value:.4f} ({quality_info['quality'].title()})")
-                    print(f"   {quality_info['interpretation']}")
-            
-            print(f"{'─'*70}")
+                    parts.append(f"{quality_info['icon']} Reliability: {ece_value:.3f} ({quality_info['quality'].title()})")
+                if parts:
+                    print(f"\n🎯 Overall:")
+                    print(f"   {' | '.join(parts)}")
         
-        # Regime analysis
+        # Regime analysis - compact one line
         if result.get('regime_analysis'):
             regime_analysis = result['regime_analysis']
-            print(f"\n🔄 Regime Analysis:")
-            print(f"   Number of regimes: {regime_analysis.get('n_regimes', 'N/A')}")
-            print(f"   Posterior entropy: {regime_analysis.get('posterior_entropy', 'N/A'):.4f}")
-            
+            regime_strs = []
             regime_counts = regime_analysis.get('regime_counts', {})
             regime_weights = regime_analysis.get('regime_weights', {})
-            if regime_counts:
-                for regime in regime_counts:
-                    count = regime_counts[regime]
-                    weight = regime_weights.get(regime, 0)
-                    print(f"   {regime}: {count} samples ({weight:.3f} weight)")
-        
-        print(f"{'='*70}\n")
-        
-        return result
+            for regime in regime_counts:
+                count = regime_counts[regime]
+                weight = regime_weights.get(regime, 0)
+                regime_strs.append(f"{regime}: {count} ({weight:.2f})")
+            entropy = regime_analysis.get('posterior_entropy', 'N/A')
+            entropy_str = f"{entropy:.3f}" if entropy != 'N/A' and isinstance(entropy, (int, float)) else 'N/A'
+            print(f"\n🔄 Regimes ({regime_analysis.get('n_regimes', 'N/A')}, entropy: {entropy_str}): {', '.join(regime_strs)}")
     
     

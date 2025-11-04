@@ -52,8 +52,6 @@ class Portfolio:
         self.assets = portfolio_data.get('assets', [])
         self.weights = portfolio_data.get('weights', {})
         self.capital = portfolio_data.get('capital', 100000.0)  # Default $100k
-        self.constraint_type = portfolio_data.get('constraint_type', 'long_short')
-        self.custom_constraints = portfolio_data.get('custom_constraints')
         self.asset_configs = portfolio_data.get('asset_configs', {})
         self.created_at = portfolio_data.get('created_at')
         
@@ -77,23 +75,10 @@ class Portfolio:
         if extra_assets:
             raise ValueError(f"Extra weights for assets not in portfolio: {extra_assets}")
         
-        # Check for negative weights if not long_short
-        if self.constraint_type == 'long_only':
-            negative_weights = [asset for asset, weight in self.weights.items() if weight < 0]
-            if negative_weights:
-                raise ValueError(f"Long-only constraint violated for assets: {negative_weights}")
-        
-        # Check weight sum based on constraint type
-        if self.constraint_type == 'long_only':
-            # For long-only: raw weights must sum to 1.0
-            weight_sum = sum(self.weights.values())
-            if abs(weight_sum - 1.0) > 1e-6:
-                raise ValueError(f"Weights must sum to 1.0, got {weight_sum:.6f}")
-        else:
-            # For long-short: absolute weights must sum to 1.0
-            abs_weight_sum = sum(abs(w) for w in self.weights.values())
-            if abs(abs_weight_sum - 1.0) > 1e-6:
-                raise ValueError(f"Absolute weights must sum to 1.0, got {abs_weight_sum:.6f}")
+        # Check that absolute weights sum to 1.0 (long-short portfolios)
+        abs_weight_sum = sum(abs(w) for w in self.weights.values())
+        if abs(abs_weight_sum - 1.0) > 1e-6:
+            raise ValueError(f"Absolute weights must sum to 1.0, got {abs_weight_sum:.6f}")
     
     @property
     def is_optimized(self) -> bool:
@@ -272,7 +257,6 @@ class Portfolio:
             scenario=scenario,
             metric=metric,
             n_iterations=n_iterations,
-            constraint_type=self.constraint_type,
             **kwargs
         )
         
@@ -489,25 +473,15 @@ class Portfolio:
         return saved_files
     
     def _apply_constraints(self, weights: Dict[str, float]) -> Dict[str, float]:
-        """Apply portfolio constraints to weights"""
-        if self.constraint_type == "long_only":
-            # Ensure all weights are non-negative
-            weights = {asset: max(0, weight) for asset, weight in weights.items()}
-        elif self.constraint_type == "long_short":
-            # Allow negative weights (no change needed)
-            pass
-        elif self.constraint_type == "custom":
-            # Apply custom constraints if defined
-            if self.custom_constraints:
-                # Implementation depends on custom constraint format
-                pass
-        
-        # Normalize weights to sum to 1
-        total_weight = sum(weights.values())
-        if abs(total_weight) > 1e-6:  # Avoid division by zero
-            weights = {asset: weight / total_weight for asset, weight in weights.items()}
-        
-        return weights
+        """Normalize portfolio weights so sum of absolute values equals 1.0"""
+        # Normalize absolute weights to sum to 1.0
+        abs_total = sum(abs(w) for w in weights.values())
+        if abs_total < 1e-6:  # Avoid division by zero
+            # Equal weights if all weights are zero
+            n_assets = len(weights)
+            return {asset: 1.0 / n_assets for asset in weights.keys()}
+        else:
+            return {asset: weight / abs_total for asset, weight in weights.items()}
     
     def _extract_portfolio_returns(self, scenario) -> Dict[str, Any]:
         """Extract portfolio returns data from scenario"""
@@ -532,8 +506,8 @@ class Portfolio:
             conn.execute("""
                 INSERT OR REPLACE INTO portfolios 
                 (id, name, description, target_set_id, target_set_name, assets, 
-                 constraint_type, custom_constraints, weights, capital, asset_configs, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 weights, capital, asset_configs, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 self.id,
                 self.name,
@@ -541,8 +515,6 @@ class Portfolio:
                 self.target_set_id,
                 self.target_set_name,
                 json.dumps(self.assets),
-                self.constraint_type,
-                json.dumps(self.custom_constraints),
                 json.dumps(self.weights),
                 self.capital,
                 json.dumps(self.asset_configs),
@@ -880,16 +852,11 @@ class Portfolio:
     
     def _run_test_analysis(self, scenario) -> Dict[str, Any]:
         """Run the actual portfolio test analysis"""
-        print(f"🔍 DEBUG: Starting _run_test_analysis for scenario '{scenario.name}'")
-        
         # Extract scenario data
         price_matrix, future_dates = self._extract_scenario_data(scenario)
-        print(f"🔍 DEBUG: Extracted price matrix shape: {price_matrix.shape}")
         
         # Compute sample metrics
-        print(f"🔍 DEBUG: Computing sample metrics...")
         sample_results = self._compute_sample_metrics(price_matrix, future_dates)
-        print(f"🔍 DEBUG: Computed metrics for {len(sample_results)} samples")
         
         # Aggregate sample metrics
         aggregated_results = self._aggregate_sample_metrics(sample_results)
@@ -1499,7 +1466,6 @@ class Portfolio:
         print(f"ID: {self.id}")
         print(f"Description: {self.description}")
         print(f"Capital: ${self.capital:,.2f}")
-        print(f"Constraint Type: {self.constraint_type}")
         print(f"Target Set: {self.target_set_name} (ID: {self.target_set_id})")
         print(f"Created: {self.created_at}")
         print(f"Updated: {self.updated_at}")
@@ -1507,13 +1473,9 @@ class Portfolio:
         print(f"\n📈 ASSET ALLOCATION")
         print("-" * 30)
         if self.weights:
-            if self.constraint_type == 'long_only':
-                total_weight = sum(self.weights.values())
-                total_allocation = self.capital
-            else:
-                # For long-short: show absolute weights sum
-                total_weight = sum(abs(w) for w in self.weights.values())
-                total_allocation = self.capital
+            # For long-short: show absolute weights sum
+            total_weight = sum(abs(w) for w in self.weights.values())
+            total_allocation = self.capital
             
             for asset, weight in self.weights.items():
                 percentage = weight * 100
@@ -1525,11 +1487,8 @@ class Portfolio:
             
             # Debug info
             print(f"\n🔍 DEBUG INFO")
-            if self.constraint_type == 'long_only':
-                print(f"Weights sum: {total_weight:.6f}")
-            else:
-                print(f"Absolute weights sum: {total_weight:.6f}")
-                print(f"Raw weights sum: {sum(self.weights.values()):.6f}")
+            print(f"Absolute weights sum: {total_weight:.6f}")
+            print(f"Raw weights sum: {sum(self.weights.values()):.6f}")
             print(f"Capital: ${self.capital:,.2f}")
         else:
             print("No weights assigned")

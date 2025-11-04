@@ -37,6 +37,11 @@ class Test:
         self.time_series_metrics = json.loads(test_data['time_series_metrics']) if test_data.get('time_series_metrics') and isinstance(test_data['time_series_metrics'], str) else test_data.get('time_series_metrics', {})
         self.n_days = test_data.get('n_days', 0)
     
+    def __repr__(self) -> str:
+        """Return a concise string representation of the test"""
+        n_samples = self.aggregated_results.get('total_samples', len(self.sample_results) if self.sample_results else 0)
+        return f"Test(scenario='{self.scenario_name}', n_samples={n_samples})"
+    
     # ============================================
     # METRIC-FOCUSED REPORTING METHODS
     # ============================================

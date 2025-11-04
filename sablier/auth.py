@@ -26,10 +26,25 @@ class AuthHandler:
     def get_headers(self) -> dict:
         """Get authentication headers for API requests"""
         if not self.api_key:
-            raise AuthenticationError("No API key provided")
+            raise AuthenticationError(
+                "No API key provided. Please create the client with an API key: "
+                "SablierClient(api_url='...', api_key='sk_...')"
+            )
         
+        # Ensure API key is not just whitespace
+        api_key = self.api_key.strip() if isinstance(self.api_key, str) else self.api_key
+        if not api_key:
+            raise AuthenticationError(
+                "API key is empty. Please provide a valid API key: "
+                "SablierClient(api_url='...', api_key='sk_...')"
+            )
+        
+        # FastAPI's Header() dependency converts parameter names to header names
+        # When you use `authorization: str = Header(...)`, FastAPI looks for the header 'authorization' (lowercase)
+        # HTTP standard says headers are case-insensitive, but FastAPI's Header() does case-sensitive matching
+        # by default based on the parameter name. Using lowercase to match FastAPI's expectation.
         headers = {
-            'Authorization': f'Bearer {self.api_key}',
+            'authorization': f'Bearer {api_key}',  # FastAPI expects lowercase to match parameter name
             'Content-Type': 'application/json'
         }
         

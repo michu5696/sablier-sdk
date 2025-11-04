@@ -3,9 +3,12 @@ HTTP client for making requests to the Sablier API
 """
 
 import requests
+import logging
 from typing import Any, Optional
 from .auth import AuthHandler
 from .exceptions import APIError, AuthenticationError
+
+logger = logging.getLogger(__name__)
 
 
 class HTTPClient:
@@ -22,7 +25,10 @@ class HTTPClient:
         self.api_url = api_url.rstrip('/')
         self.auth_handler = auth_handler
         self.session = requests.Session()
-        self.session.headers.update({'Content-Type': 'application/json'})
+        # Don't set default headers on session - let each request set its own
+        # This ensures Authorization header is always included from auth_handler
+        # Clear any default headers that might interfere
+        self.session.headers.clear()
     
     def _get_url(self, endpoint: str, add_trailing_slash: bool = False) -> str:
         """Construct full URL for endpoint"""
@@ -103,7 +109,54 @@ class HTTPClient:
         
         for attempt in range(max_retries):
             try:
-                response = self.session.request(method, url, headers=headers, timeout=timeout, **kwargs)
+                # Use provided headers directly - they should already include Authorization from auth_handler
+                request_headers = dict(headers) if headers else {}
+                
+                # Validate that authorization header is present (FastAPI expects lowercase)
+                if 'authorization' not in request_headers and 'Authorization' not in request_headers:
+                    # Try to get headers from auth_handler if not provided or missing Authorization
+                    if self.auth_handler:
+                        request_headers = self.auth_handler.get_headers()
+                    else:
+                        raise AuthenticationError(
+                            "Authorization header missing. Please ensure the client was created with a valid API key."
+                        )
+                
+                # Ensure Content-Type is set if not already
+                if 'Content-Type' not in request_headers:
+                    request_headers['Content-Type'] = 'application/json'
+                
+                # Debug: Log what we're about to send
+                auth_header_value = request_headers.get('authorization') or request_headers.get('Authorization')
+                if auth_header_value:
+                    logger.debug(f"Sending {method} request to {url} with authorization header: {auth_header_value[:20]}...")
+                else:
+                    logger.error(f"⚠️ Authorization header missing in request_headers! Keys: {list(request_headers.keys())}")
+                    raise AuthenticationError(
+                        "Authorization header is missing from request headers. This is a bug - please report it."
+                    )
+                
+                # Extract params from kwargs (for GET requests)
+                request_params = kwargs.pop('params', None)
+                
+                # Make the request - explicitly pass headers to ensure they're sent
+                # Using session.request() with explicit headers parameter
+                response = self.session.request(
+                    method=method,
+                    url=url,
+                    headers=request_headers,  # Explicit headers parameter
+                    params=request_params,   # Explicit params for GET requests
+                    timeout=timeout,
+                    **kwargs  # Any other kwargs (like json= for POST)
+                )
+                
+                # Debug: Log response status
+                if response.status_code == 401:
+                    logger.warning(f"Got 401 Unauthorized for {url}")
+                    logger.warning(f"Request headers sent: {list(request_headers.keys())}")
+                    # Check if Authorization was actually sent
+                    logger.warning(f"Authorization header in request: {'Authorization' in request_headers or 'authorization' in request_headers}")
+                
                 return response
             except Timeout:
                 if attempt < max_retries - 1:
@@ -135,13 +188,14 @@ class HTTPClient:
             dict: Response data
         """
         # Add trailing slash for list endpoints (Cloud Run + FastAPI router requirement)
-        # Only add if endpoint doesn't have an ID (no long UUID-like segments)
+        # BUT: Account endpoints are registered without trailing slash, so don't add it for them
+        # Only add if endpoint doesn't have an ID (no long UUID-like segments) AND it's not an account endpoint
         has_id_in_path = any(part and len(part) > 20 for part in endpoint.split('/'))
-        add_slash = not has_id_in_path
+        is_account_endpoint = '/account/' in endpoint
+        add_slash = not has_id_in_path and not is_account_endpoint
         
         url = self._get_url(endpoint, add_trailing_slash=add_slash)
         headers = self.auth_handler.get_headers()
-        
         response = self._make_request_with_retry('GET', url, headers, params=params)
         return self._handle_response(response)
     
@@ -159,6 +213,7 @@ class HTTPClient:
         # Don't add trailing slash - Cloud Run handles the routing correctly without it
         # Exception: Only for endpoints with IDs and sub-actions (PATCH-style)
         url = self._get_url(endpoint, add_trailing_slash=False)
+        # Get auth headers directly - they already include Authorization and Content-Type
         headers = self.auth_handler.get_headers()
         
         response = self._make_request_with_retry('POST', url, headers, json=data, allow_redirects=False)

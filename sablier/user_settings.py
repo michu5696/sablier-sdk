@@ -127,7 +127,7 @@ class UserSettingsManager:
             # if version == 2:
             #     ...
     
-    def save_api_key(self, api_key: str, api_url: str, user_email: Optional[str] = None, 
+    def save_api_key(self, api_key: str, api_url: str, 
                      description: Optional[str] = None, is_default: bool = False) -> bool:
         """
         Save an API key to the database
@@ -135,7 +135,6 @@ class UserSettingsManager:
         Args:
             api_key: The API key to save
             api_url: The API URL associated with this key
-            user_email: Optional user email
             description: Optional name/description for the key (e.g., "default", "template", "production")
             is_default: Whether this should be the default key
             
@@ -159,8 +158,8 @@ class UserSettingsManager:
                     WHERE api_url = ? AND is_active = 1
                 """, (api_url,))
                 
-                # Set description to 'default' if is_default=True
-                final_description = 'default' if is_default else description
+                # Use the provided description (should already be set by client.py)
+                final_description = description
                 
                 # Insert new API key
                 conn.execute("""
@@ -170,7 +169,7 @@ class UserSettingsManager:
                 """, (
                     api_key,
                     api_url,
-                    user_email,
+                    None,  # user_email not used anymore
                     datetime.utcnow().isoformat() + 'Z',
                     datetime.utcnow().isoformat() + 'Z',
                     final_description
@@ -182,6 +181,31 @@ class UserSettingsManager:
                 
         except Exception as e:
             logger.error(f"Failed to save API key: {e}")
+            return False
+    
+    def update_api_key_description(self, api_key: str, description: str) -> bool:
+        """
+        Update the description of an existing API key
+        
+        Args:
+            api_key: The API key to update
+            description: New description/name
+            
+        Returns:
+            bool: True if updated successfully
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("""
+                    UPDATE api_keys 
+                    SET description = ?
+                    WHERE api_key = ?
+                """, (description, api_key))
+                
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Failed to update API key description: {e}")
             return False
     
     def get_active_api_key(self, api_url: str) -> Optional[str]:
@@ -269,13 +293,13 @@ class UserSettingsManager:
         List all API keys
         
         Returns:
-            List of API key dictionaries with keys: api_key, api_url, user_email, 
+            List of API key dictionaries with keys: api_key, api_url, 
             is_active, created_at, last_used_at, description
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.execute("""
-                    SELECT api_key, api_url, user_email, is_active, 
+                    SELECT api_key, api_url, is_active, 
                            created_at, last_used_at, description
                     FROM api_keys 
                     ORDER BY created_at DESC
@@ -286,11 +310,10 @@ class UserSettingsManager:
                     keys.append({
                         'api_key': row[0],
                         'api_url': row[1],
-                        'user_email': row[2],
-                        'is_active': bool(row[3]),
-                        'created_at': row[4],
-                        'last_used_at': row[5],
-                        'description': row[6]
+                        'is_active': bool(row[2]),
+                        'created_at': row[3],
+                        'last_used_at': row[4],
+                        'description': row[5]
                     })
                 
                 return keys

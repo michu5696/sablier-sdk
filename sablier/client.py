@@ -2,6 +2,7 @@
 Main Sablier SDK client
 """
 
+import logging
 from typing import Optional, List, Dict, Union, Any
 from .auth import AuthHandler
 from .http_client import HTTPClient
@@ -11,6 +12,8 @@ from .scenario.manager import ScenarioManager
 from .portfolio.manager import PortfolioManager
 from .user_settings import UserSettingsManager
 from .exceptions import AuthenticationError
+
+logger = logging.getLogger(__name__)
 
 
 class SablierClient:
@@ -71,35 +74,40 @@ class SablierClient:
         if not api_key:
             # Try to get default API key first
             saved_api_key = self.user_settings.get_default_api_key()
-            if saved_api_key:
+            if saved_api_key and saved_api_key.strip():
                 if interactive:
                     print(f"🔑 Using default API key")
-                api_key = saved_api_key
+                api_key = saved_api_key.strip()
             else:
                 # No default key, try to get saved API key for this URL
                 saved_api_key = self.user_settings.get_active_api_key(api_url)
-                if saved_api_key:
+                if saved_api_key and saved_api_key.strip():
                     if interactive:
                         print(f"🔑 Using saved API key for {api_url}")
-                    api_key = saved_api_key
+                    api_key = saved_api_key.strip()
                 else:
                     # No saved key - inform user they need to register
                     if interactive:
                         print("\n" + "=" * 80)
                         print("🔑 No API key found")
                         print("=" * 80)
-                        print("\nTo get started, please register and verify your email:")
-                        print("  1. Register: client.register_user(email='...', name='...', company='...', role='user')")
-                        print("  2. Verify email: client.verify_email(verification_token='...')")
-                        print("  3. Save API key: client.save_api_key(api_key='...', api_url='...')")
-                        print("\nOr provide an API key: SablierClient(api_url='...', api_key='sk_...')")
+                        print("\nTo get started, please register:")
+                        print("  1. Register: client.register_user(email='...', name='...', company='...', role='CTO')")
+                        print("  2. Check your email and click the verification link")
+                        print("  3. The verification link will provide your API key - save it securely")
+                        print("\nOr provide an API key directly: SablierClient(api_url='...', api_key='sk_...')")
                         print("=" * 80 + "\n")
                     # Set api_key to None - it will be validated below
                     api_key = None
         
         # Validate API key format (if provided)
-        if api_key and not api_key.startswith("sk_") and not api_key.startswith("dummy_"):
-            raise AuthenticationError("Invalid API key format. API keys should start with 'sk_'")
+        # Ensure it's not empty after stripping whitespace
+        if api_key:
+            api_key = api_key.strip()
+            if not api_key:
+                api_key = None
+            elif not api_key.startswith("sk_") and not api_key.startswith("dummy_"):
+                raise AuthenticationError("Invalid API key format. API keys should start with 'sk_'")
         
         # Initialize authentication (only if API key is provided)
         # Client can be created without API key for registration/verification
@@ -107,6 +115,45 @@ class SablierClient:
             self.auth = AuthHandler(api_url, api_key)
             # Initialize HTTP client
             self.http = HTTPClient(api_url, self.auth)
+            
+            # Automatically fetch and save user info when API key is used for the first time
+            # This ensures the email and other user info are stored locally
+            try:
+                saved_keys = self.user_settings.list_api_keys()
+                existing_key = next((k for k in saved_keys if k.get('api_key') == api_key), None)
+                
+                # If key not saved, or saved but missing email, fetch user info and save it
+                if not existing_key or not existing_key.get('user_email'):
+                    try:
+                        user_info = self.http.get('/api/v1/account/user')
+                        user_email = user_info.get('email')
+                        
+                        if user_email:
+                            # Save/update API key with user info
+                            is_default = existing_key.get('description') == 'default' if existing_key else False
+                            description = existing_key.get('description') if existing_key else None
+                            
+                            self.user_settings.save_api_key(
+                                api_key=api_key,
+                                api_url=api_url,
+                                user_email=user_email,
+                                description=description,
+                                is_default=is_default
+                            )
+                            
+                            if interactive and not existing_key:
+                                logger.info(f"💾 API key saved with user info: {user_email}")
+                    except Exception as e:
+                        # If we can't fetch user info (network error, invalid key, etc.), 
+                        # continue without saving - don't block client initialization
+                        if interactive:
+                            logger.debug(f"Could not fetch user info for API key: {e}")
+                        pass
+            except Exception as e:
+                # Don't block client initialization if there's an error
+                if interactive:
+                    logger.debug(f"Could not check/save API key info: {e}")
+                pass
         else:
             # No API key - client can still be used for registration/verification
             self.auth = None
@@ -114,6 +161,9 @@ class SablierClient:
         
         # Store FRED API key for passing to DataCollection instances
         self.fred_api_key = fred_api_key
+        
+        # Store interactive flag
+        self.interactive = interactive
         
         # Initialize managers
         self.projects = ProjectManager(self.http, interactive=interactive)
@@ -128,23 +178,73 @@ class SablierClient:
     # ============================================
     
     def save_api_key(self, api_key: str, api_url: Optional[str] = None, 
-                     description: Optional[str] = None, is_default: bool = False) -> bool:
+                     description: Optional[str] = None, is_default: bool = False) -> str:
         """
         Save an API key for future use
         
         Args:
             api_key: The API key to save
-            api_url: The API URL (defaults to current client URL)
+            api_url: The API URL (defaults to current client URL or saved default)
             description: Optional name/description (e.g., "default", "template", "production")
-            is_default: Whether this should be the default key
+                        If None and this is the first key, will default to "default"
+            is_default: Whether this should be the default key (defaults to True if first key)
             
         Returns:
-            bool: True if saved successfully
+            str: Success message
         """
+        # Get API URL - use provided, then current client, then saved default
         if api_url is None:
-            api_url = self.http.base_url
+            if hasattr(self, 'http') and self.http:
+                api_url = self.http.base_url
+            else:
+                api_url = self.user_settings.get_default_api_url()
+                if api_url is None:
+                    raise ValueError("api_url is required when client is not initialized with an API key")
         
-        return self.user_settings.save_api_key(api_key, api_url, description=description, is_default=is_default)
+        # Check if this key already exists
+        existing_keys = self.user_settings.list_api_keys()
+        existing_key = next((k for k in existing_keys if k.get('api_key') == api_key), None)
+        
+        # Check if this is the first key (excluding this key if it already exists)
+        keys_to_check = [k for k in existing_keys if k.get('api_key') != api_key]
+        is_first_key = len(keys_to_check) == 0
+        
+        # Set defaults: first key is default, and gets "default" description ONLY if none provided
+        if is_first_key:
+            is_default = True
+            if description is None:
+                description = "default"
+        elif description is None:
+            # Not first key, but no description provided - use a generic one
+            description = f"key_{len(keys_to_check) + 1}"
+        
+        saved = self.user_settings.save_api_key(
+            api_key=api_key, 
+            api_url=api_url, 
+            description=description, 
+            is_default=is_default
+        )
+        
+        if saved:
+            return f"Successfully saved API key locally (description: '{description}')"
+        else:
+            return "Failed to save API key"
+    
+    def update_api_key_description(self, api_key: str, description: str) -> bool:
+        """
+        Update the description/name of a saved API key
+        
+        Args:
+            api_key: The API key to update
+            description: New description/name for the key
+            
+        Returns:
+            bool: True if updated successfully
+            
+        Example:
+            >>> client.update_api_key_description("sk_...", "production")
+        """
+        return self.user_settings.update_api_key_description(api_key, description)
     
     def get_api_key(self, name: Optional[str] = None) -> Optional[str]:
         """
@@ -169,6 +269,175 @@ class SablierClient:
             List of API key dictionaries
         """
         return self.user_settings.list_api_keys()
+    
+    # ============================================
+    # ACCOUNT MANAGEMENT METHODS
+    # ============================================
+    
+    def _check_auth_status(self) -> Dict[str, Any]:
+        """
+        Check the current authentication status (for debugging)
+        
+        Returns:
+            Dict with authentication status information
+        """
+        status = {
+            'has_http': self.http is not None,
+            'has_auth': self.auth is not None,
+            'has_api_key': self.auth.api_key is not None if self.auth else False,
+            'api_key_length': len(self.auth.api_key) if (self.auth and self.auth.api_key) else 0,
+            'api_key_prefix': self.auth.api_key[:10] + '...' if (self.auth and self.auth.api_key and len(self.auth.api_key) > 10) else None
+        }
+        
+        # Try to get headers to see if it would work
+        try:
+            if self.auth:
+                headers = self.auth.get_headers()
+                status['can_get_headers'] = True
+                status['has_auth_header'] = 'Authorization' in headers
+            else:
+                status['can_get_headers'] = False
+                status['has_auth_header'] = False
+        except Exception as e:
+            status['can_get_headers'] = False
+            status['get_headers_error'] = str(e)
+        
+        return status
+    
+    def _ensure_authenticated(self):
+        """
+        Ensure the client is properly authenticated before making API calls
+        
+        Raises:
+            AuthenticationError: If authentication is not properly configured
+        """
+        if not self.http:
+            raise AuthenticationError(
+                "API key required. Create client with api_key parameter or save an API key first.\n"
+                "To fix: Recreate the client: client = SablierClient(api_url='...', api_key='sk_...')"
+            )
+        if not self.auth:
+            raise AuthenticationError(
+                "Authentication handler not initialized. Please recreate the client: "
+                "client = SablierClient(api_url='...', api_key='sk_...')"
+            )
+        if not self.auth.api_key:
+            raise AuthenticationError(
+                "API key is missing or invalid. Please recreate the client with a valid API key: "
+                "client = SablierClient(api_url='...', api_key='sk_...')\n"
+                "Or check your saved API keys: client.list_api_keys()"
+            )
+        
+        # Additional check: ensure API key is not empty string
+        api_key = self.auth.api_key.strip() if isinstance(self.auth.api_key, str) else self.auth.api_key
+        if not api_key:
+            raise AuthenticationError(
+                "API key is empty. Please recreate the client with a valid API key: "
+                "client = SablierClient(api_url='...', api_key='sk_...')\n"
+                "Or check your saved API keys: client.list_api_keys()"
+            )
+    
+    def get_limits_and_usage(self) -> None:
+        """
+        Display limits and current usage for the authenticated user in a formatted way
+        
+        Example:
+            >>> client = SablierClient(api_url="...", api_key="sk_...")
+            >>> client.get_limits_and_usage()
+            📊 LIMITS & USAGE:
+               Scenarios This Month: 1 out of 100
+               Simulation Paths This Month: 200 out of 100,000
+               Max Paths/Scenario: 1,000
+            ...
+        """
+        self._ensure_authenticated()
+        response = self.http.get('/api/v1/account/limits')
+        
+        limits = response.get('limits', {})
+        usage = response.get('usage', {})
+        remaining = usage.get('remaining', {})
+        
+        print("\n📊 LIMITS & USAGE:")
+        
+        # Scenarios: show "X out of Y" format
+        scenarios_used = usage.get('scenarios_this_month', 0)
+        scenarios_limit = limits.get('max_scenarios_per_month')
+        if scenarios_limit is not None:
+            print(f"   Scenarios This Month: {scenarios_used} out of {scenarios_limit}")
+        else:
+            print(f"   Scenarios This Month: {scenarios_used} (Unlimited)")
+        
+        # Simulation paths: show "X out of Y" format
+        paths_used = usage.get('simulation_paths_this_month', 0)
+        paths_limit = limits.get('max_simulation_paths')
+        if paths_limit is not None:
+            print(f"   Simulation Paths This Month: {paths_used:,} out of {paths_limit:,}")
+        else:
+            print(f"   Simulation Paths This Month: {paths_used:,} (Unlimited)")
+        
+        # Max paths per scenario
+        max_paths_per_scenario = limits.get('max_simulation_paths_per_scenario')
+        if max_paths_per_scenario is not None:
+            print(f"   Max Paths/Scenario: {max_paths_per_scenario:,}")
+        else:
+            print(f"   Max Paths/Scenario: Unlimited")
+        
+        print(f"\n📅 Period: {response.get('period_start', 'N/A')} to {response.get('period_end', 'N/A')}\n")
+    
+    def get_balance(self) -> Dict[str, Any]:
+        """
+        Get credit balance for the authenticated user
+        
+        Returns:
+            Dict containing:
+            - balance: Current credit balance (float)
+            - currency: Currency code (e.g., "USD")
+            - api_key_id: Optional API key ID if balance is key-specific
+            
+        Example:
+            >>> client = SablierClient(api_url="...", api_key="sk_...")
+            >>> balance_info = client.get_balance()
+            >>> print(f"Balance: {balance_info['balance']} {balance_info['currency']}")
+        """
+        self._ensure_authenticated()
+        response = self.http.get('/api/v1/account/balance')
+        return response
+    
+    def get_user_info(self) -> Dict[str, Any]:
+        """
+        Get user information for the authenticated user
+        
+        Returns:
+            Dict containing user_id, email, name, company, role, email_verified
+            
+        Example:
+            >>> client = SablierClient(api_url="...", api_key="sk_...")
+            >>> user = client.get_user_info()
+            >>> print(f"Email: {user['email']}")
+        """
+        self._ensure_authenticated()
+        response = self.http.get('/api/v1/account/user')
+        return response
+    
+    def get_api_key_usage(self, key_id: str, days: int = 7) -> Dict[str, Any]:
+        """
+        Get usage statistics for a specific API key
+        
+        Args:
+            key_id: The API key ID
+            days: Number of days to look back (default: 7)
+            
+        Returns:
+            Dict containing usage statistics for the specified period
+            
+        Example:
+            >>> client = SablierClient(api_url="...", api_key="sk_...")
+            >>> usage = client.get_api_key_usage(key_id="...", days=30)
+            >>> print(f"Total requests: {usage['usage']['total_requests']}")
+        """
+        self._ensure_authenticated()
+        response = self.http.get(f'/api/v1/api-keys/{key_id}/usage', params={'days': days})
+        return response
     
     def delete_api_key(self, api_key: str) -> bool:
         """
@@ -321,7 +590,7 @@ class SablierClient:
             raise ValueError("Identifier must be string (name) or int (index)")
     
     def create_portfolio(self, name: str, target_set, weights: Optional[Union[Dict[str, float], List[float]]] = None, 
-                        capital: float = 100000.0, description: str = "", constraint_type: str = "long_short",
+                        capital: float = 100000.0, description: str = "",
                         asset_configs: Optional[Dict[str, Dict[str, Any]]] = None):
         """
         Create a new portfolio
@@ -330,12 +599,11 @@ class SablierClient:
             name: Portfolio name
             target_set: TargetSet instance to create portfolio from
             weights: Either:
-                - Dict[str, float]: Dictionary of asset weights (must sum to 1.0)
-                - List[float]: List of weights assigned to assets in order (must sum to 1.0)
-                - None: Random weights will be generated (sum to 1.0)
+                - Dict[str, float]: Dictionary of asset weights (sum of absolute values must equal 1.0)
+                - List[float]: List of weights assigned to assets in order (sum of absolute values must equal 1.0)
+                - None: Random weights will be generated (sum of absolute values = 1.0)
             capital: Total capital allocation (default $100k)
             description: Optional description
-            constraint_type: Type of constraints ('long_short', 'long_only', 'custom')
             asset_configs: Optional dict mapping asset names to their return calculation config
                 Example: {
                     "10-Year Treasury": {
@@ -351,6 +619,10 @@ class SablierClient:
             
         Returns:
             Portfolio instance
+            
+        Note:
+            Portfolios support long-short positions (negative weights allowed).
+            The sum of absolute values of weights must equal 1.0.
         """
         return self.portfolios.create(
             name=name,
@@ -358,7 +630,6 @@ class SablierClient:
             weights=weights,
             capital=capital,
             description=description,
-            constraint_type=constraint_type,
             asset_configs=asset_configs
         )
     
@@ -388,7 +659,7 @@ class SablierClient:
         email: str,
         name: str,
         company: str,
-        role: str = "user",
+        role: str,
         api_key_name: str = "Default"
     ) -> dict:
         """
@@ -398,7 +669,8 @@ class SablierClient:
             email: User's email address
             name: User's full name
             company: Company name
-            role: User role (default: "user")
+            role: Optional - User's role at their company (e.g., 'CTO', 'Data Scientist', 'Portfolio Manager')
+                  This is informational only, not used for permissions
             api_key_name: Name for the API key (not used until email is verified)
             
         Returns:
@@ -408,7 +680,8 @@ class SablierClient:
             >>> response = client.register_user(
             ...     email="user@company.com",
             ...     name="John Doe",
-            ...     company="Acme Corp"
+            ...     company="Acme Corp",
+            ...     role="CTO"
             ... )
             >>> print(f"Message: {response['message']}")
             >>> # User must verify email before receiving API key
