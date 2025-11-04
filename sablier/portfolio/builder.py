@@ -575,35 +575,12 @@ class Portfolio:
         average_drawdowns = np.array([r['average_drawdown'] for r in sample_results])
         downside_deviations = np.array([r['downside_deviation'] for r in sample_results])
         
-        # Calculate period volatility: std of total_returns across all samples
-        # This measures variability of final outcomes over the simulated period, not daily volatility
-        period_volatility = np.std(total_returns) if len(total_returns) > 0 else 0.0
-        # Create array with same value for each sample for consistency with other distributions
-        period_volatilities = np.full(len(sample_results), period_volatility)
+        # Extract period volatility (already computed per path)
+        period_volatilities = np.array([r.get('period_volatility', 0.0) for r in sample_results])
         
-        # Compute period-based Sharpe and Sortino ratios
-        # Get number of days from first sample to compute period risk-free rate
-        n_days = len(sample_results[0]['daily_returns']) + 1 if sample_results and len(sample_results[0].get('daily_returns', [])) > 0 else 80
-        period_rf_rate = 0.02 * (n_days / 252)  # 2% annual, scaled to period
-        mean_period_return = np.mean(total_returns)
-        period_excess_return = mean_period_return - period_rf_rate
-        
-        # Period Sharpe: excess period return / period volatility
-        period_sharpe = period_excess_return / period_volatility if period_volatility > 0 else 0.0
-        
-        # Period Sortino: excess period return / downside volatility (std of negative total returns)
-        negative_total_returns = total_returns[total_returns < 0]
-        period_downside_volatility = np.std(negative_total_returns) if len(negative_total_returns) > 0 else 0.0
-        period_sortino = period_excess_return / period_downside_volatility if period_downside_volatility > 0 else 0.0
-        
-        # Update Sharpe and Sortino for each sample (use period values for consistency)
-        for r in sample_results:
-            r['sharpe_ratio'] = period_sharpe
-            r['sortino_ratio'] = period_sortino
-        
-        # Extract Sharpe and Sortino arrays after updating (all samples have same value now)
-        sharpe_ratios = np.full(len(sample_results), period_sharpe)
-        sortino_ratios = np.full(len(sample_results), period_sortino)
+        # Extract Sharpe and Sortino ratios (already computed per path)
+        sharpe_ratios = np.array([r['sharpe_ratio'] for r in sample_results])
+        sortino_ratios = np.array([r['sortino_ratio'] for r in sample_results])
         
         # Compute VaR
         var_95 = np.percentile(total_returns, 5)  # 95% VaR (5th percentile)
@@ -1162,22 +1139,31 @@ class Portfolio:
             pnl = final_value - initial_value
             total_return = pnl / initial_value  # This should equal cumulative_returns[-1]
             
-            # Compute risk metrics
-            # Period-based metrics: use total_return and period volatility (std across samples)
-            # These will be computed after aggregating across all samples
-            # For now, store daily metrics for potential future use
+            # Compute risk metrics per path
             if len(daily_returns) > 0:
-                # Store daily volatility for reference (not used in period-based Sharpe/Sortino)
+                n_days = len(daily_returns) + 1  # Number of days in simulation period
+                
+                # Period risk-free rate (scaled to simulation period)
+                period_rf_rate = 0.02 * (n_days / 252)  # 2% annual, scaled to period
+                
+                # Period excess return
+                period_excess_return = total_return - period_rf_rate
+                
+                # Period volatility: scale daily volatility to period using sqrt(n) for i.i.d. returns
                 daily_volatility = np.std(daily_returns)
+                period_volatility = daily_volatility * np.sqrt(n_days)
                 
-                # Downside deviation: std of negative daily returns (for Sortino period-based calculation)
+                # Sharpe ratio per path: (period excess return) / (period volatility)
+                sharpe_ratio = period_excess_return / period_volatility if period_volatility > 0 else 0.0
+                
+                # Sortino ratio per path: (period excess return) / (period downside volatility)
                 negative_returns = daily_returns[daily_returns < 0]
-                downside_deviation = np.std(negative_returns) if len(negative_returns) > 0 else 0
+                daily_downside_deviation = np.std(negative_returns) if len(negative_returns) > 0 else 0
+                period_downside_volatility = daily_downside_deviation * np.sqrt(n_days)
+                sortino_ratio = period_excess_return / period_downside_volatility if period_downside_volatility > 0 else 0.0
                 
-                # Sharpe and Sortino ratios will be computed period-based after aggregating samples
-                # Placeholder values - will be recalculated in aggregate step
-                sharpe_ratio = 0.0
-                sortino_ratio = 0.0
+                # Downside deviation (store daily version for consistency with other metrics)
+                downside_deviation = daily_downside_deviation
                 
                 # Max drawdown - CORRECTED VERSION
                 # Drawdown = (Current - Peak) / Peak (negative when below peak)
@@ -1194,6 +1180,7 @@ class Portfolio:
             else:
                 sharpe_ratio = sortino_ratio = 0
                 max_drawdown = average_drawdown = downside_deviation = 0.0
+                period_volatility = 0.0
             
             # Daily metrics for time-series analysis
             daily_metrics = []
@@ -1221,6 +1208,7 @@ class Portfolio:
                 'sortino_ratio': float(sortino_ratio),
                 'average_drawdown': float(average_drawdown),
                 'downside_deviation': float(downside_deviation),
+                'period_volatility': float(period_volatility) if len(daily_returns) > 0 else 0.0,
                 'daily_returns': daily_returns.tolist(),
                 'cumulative_returns': cumulative_returns.tolist(),
                 'is_profitable': bool(pnl > 0),
@@ -1321,12 +1309,8 @@ class Portfolio:
                     }
                 }
         
-        # Calculate period volatility: std of total_returns across all samples
-        # This measures variability of final outcomes over the simulated period, not daily volatility
-        total_returns = np.array([s['total_return'] for s in sample_results])
-        period_volatility = np.std(total_returns) if len(total_returns) > 0 else 0.0
-        # Create array with same value for each sample for consistency with other distributions
-        period_volatilities = np.full(len(sample_results), period_volatility)
+        # Extract period volatility (already computed per path)
+        period_volatilities = np.array([s.get('period_volatility', 0.0) for s in sample_results])
         
         return {
             'profitability_rate': profitable_samples / total_samples,
