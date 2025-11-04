@@ -57,13 +57,17 @@ class SablierClient:
                 print("   3. Or run migration: python migrate_api_key.py")
                 raise ValueError("No API URL provided and no default URL set. Please see setup instructions above.")
         
+        # Store the API URL for use in registration/verification methods
+        self.api_url = api_url
+        
         # Persist the resolved API URL as default for future runs
         try:
             self.user_settings.set_default_api_url(api_url)
         except Exception:
             pass
         
-        # If no API key provided, try to get saved one or register new user
+        # If no API key provided, try to get saved one
+        # Note: Automatic registration is no longer supported - email verification is required
         if not api_key:
             # Try to get default API key first
             saved_api_key = self.user_settings.get_default_api_key()
@@ -79,25 +83,34 @@ class SablierClient:
                         print(f"🔑 Using saved API key for {api_url}")
                     api_key = saved_api_key
                 else:
-                    # No saved key, register new user
+                    # No saved key - inform user they need to register
                     if interactive:
-                        print(f"🔑 No saved API key found for {api_url}")
-                        print(f"🔄 Registering new user...")
-                    api_key = self._register_and_get_api_key(api_url, interactive)
-                    # Save the new API key as default
-                    self.user_settings.save_api_key(api_key, api_url, description=None, is_default=True)
-                    if interactive:
-                        print(f"💾 API key saved as default")
+                        print("\n" + "=" * 80)
+                        print("🔑 No API key found")
+                        print("=" * 80)
+                        print("\nTo get started, please register and verify your email:")
+                        print("  1. Register: client.register_user(email='...', name='...', company='...', role='user')")
+                        print("  2. Verify email: client.verify_email(verification_token='...')")
+                        print("  3. Save API key: client.save_api_key(api_key='...', api_url='...')")
+                        print("\nOr provide an API key: SablierClient(api_url='...', api_key='sk_...')")
+                        print("=" * 80 + "\n")
+                    # Set api_key to None - it will be validated below
+                    api_key = None
         
-        # Validate API key format
-        if not api_key.startswith("sk_") and not api_key.startswith("dummy_"):
+        # Validate API key format (if provided)
+        if api_key and not api_key.startswith("sk_") and not api_key.startswith("dummy_"):
             raise AuthenticationError("Invalid API key format. API keys should start with 'sk_'")
         
-        # Initialize authentication
-        self.auth = AuthHandler(api_url, api_key)
-        
-        # Initialize HTTP client
-        self.http = HTTPClient(api_url, self.auth)
+        # Initialize authentication (only if API key is provided)
+        # Client can be created without API key for registration/verification
+        if api_key:
+            self.auth = AuthHandler(api_url, api_key)
+            # Initialize HTTP client
+            self.http = HTTPClient(api_url, self.auth)
+        else:
+            # No API key - client can still be used for registration/verification
+            self.auth = None
+            self.http = None
         
         # Store FRED API key for passing to DataCollection instances
         self.fred_api_key = fred_api_key
@@ -349,55 +362,9 @@ class SablierClient:
             asset_configs=asset_configs
         )
     
-    def _register_and_get_api_key(self, api_url: str, interactive: bool) -> str:
-        """
-        Register a new user and get an API key
-        
-        Args:
-            api_url: Base URL of the Sablier backend API
-            interactive: Whether to prompt for user input
-            
-        Returns:
-            str: Generated API key
-        """
-        import requests
-        import uuid
-        import time
-        
-        # Generate a unique email for this session
-        timestamp = int(time.time())
-        email = f"auto_user_{timestamp}@example.com"
-        
-        if interactive:
-            print(f"🔑 No API key provided. Registering new user: {email}")
-        
-        # Register the user
-        try:
-            response = requests.post(
-                f"{api_url}/api/v1/auth/register", 
-                json={
-                    "email": email,
-                    "password": str(uuid.uuid4()),  # Random password
-                    "name": f"Auto User {timestamp}",
-                    "company": "Test Company"
-                }
-            )
-            
-            if response.status_code != 200:
-                raise AuthenticationError(f"Failed to register user: {response.text}")
-            
-            user_data = response.json()
-            user_id = user_data.get("user_id")
-            api_key = user_data.get("api_key")
-            
-            if interactive:
-                print(f"✅ User registered successfully (ID: {user_id})")
-                print(f"🔑 API key generated: {api_key}")
-            
-            return api_key
-            
-        except requests.RequestException as e:
-            raise AuthenticationError(f"Failed to register user and get API key: {e}")
+    # Note: _register_and_get_api_key method removed
+    # Automatic registration is no longer supported due to email verification requirement
+    # Users must explicitly call register_user() and verify_email() methods
     
     def health_check(self) -> dict:
         """
@@ -416,39 +383,111 @@ class SablierClient:
                 "error": str(e)
             }
     
-    async def register_user(
+    def register_user(
         self,
         email: str,
         name: str,
         company: str,
-        api_key_name: str = "Default API Key"
+        role: str = "user",
+        api_key_name: str = "Default"
     ) -> dict:
         """
-        Register a new user and get an API key
+        Register a new user (email verification required before API key creation)
         
         Args:
             email: User's email address
             name: User's full name
             company: Company name
-            api_key_name: Name for the API key
+            role: User role (default: "user")
+            api_key_name: Name for the API key (not used until email is verified)
             
         Returns:
-            dict: Registration response with user details and API key
+            dict: Registration response with user details and message to verify email
             
         Example:
-            >>> response = await client.register_user(
+            >>> response = client.register_user(
             ...     email="user@company.com",
             ...     name="John Doe",
             ...     company="Acme Corp"
             ... )
-            >>> print(f"API Key: {response['api_key']}")
+            >>> print(f"Message: {response['message']}")
+            >>> # User must verify email before receiving API key
         """
         payload = {
             "email": email,
             "name": name,
             "company": company,
-            "api_key_name": api_key_name
+            "role": role
         }
         
-        response = self.http.post('/api/v1/auth/register', payload)
-        return response
+        # Registration doesn't require authentication, so we need to make a direct request
+        # Use the stored API URL from client initialization
+        base_url = getattr(self, 'api_url', None)
+        if not base_url:
+            # Fallback: try http client or user_settings
+            if hasattr(self, 'http') and self.http:
+                base_url = self.http.base_url
+            if not base_url:
+                base_url = self.user_settings.get_default_api_url()
+                if not base_url:
+                    raise ValueError("API URL required for registration. Please provide api_url when creating SablierClient.")
+        
+        import requests
+        try:
+            response = requests.post(
+                f"{base_url}/api/v1/auth/register",
+                json=payload
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            from .exceptions import APIError
+            raise APIError(
+                message=f"Failed to register user: {str(e)}",
+                status_code=getattr(e.response, 'status_code', 500),
+                response_data={}
+            )
+    
+    def verify_email(self, verification_token: str) -> dict:
+        """
+        Verify user's email address using a verification token
+        
+        Args:
+            verification_token: Email verification token (from email link or database)
+            
+        Returns:
+            dict: Verification response with user details and API key
+            
+        Example:
+            >>> response = client.verify_email(verification_token="abc123...")
+            >>> api_key = response['api_key']
+            >>> # Save the API key for future use
+            >>> client.save_api_key(api_key, api_url=client.http.base_url)
+        """
+        # Get the base URL (email verification doesn't require auth)
+        # Use the stored API URL from client initialization
+        base_url = getattr(self, 'api_url', None)
+        if not base_url:
+            # Fallback: try http client or user_settings
+            if hasattr(self, 'http') and self.http:
+                base_url = self.http.base_url
+            if not base_url:
+                base_url = self.user_settings.get_default_api_url()
+                if not base_url:
+                    raise ValueError("API URL required for email verification. Please provide api_url when creating SablierClient.")
+        
+        import requests
+        try:
+            response = requests.get(
+                f"{base_url}/api/v1/auth/verify-email",
+                params={"token": verification_token}
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            from .exceptions import APIError
+            raise APIError(
+                message=f"Failed to verify email: {str(e)}",
+                status_code=getattr(e.response, 'status_code', 500),
+                response_data={}
+            )
