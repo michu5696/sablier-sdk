@@ -11,7 +11,6 @@ from .validators import (
     auto_generate_splits,
     validate_training_period
 )
-from .utils import update_feature_types
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +23,6 @@ class Model:
     - Feature selection
     - Data fetching and processing
     - Sample generation
-    - Encoding model fitting
     - Model training
     - Forecasting
     """
@@ -295,11 +293,11 @@ class Model:
         """
         Delete this model and ALL associated data
         
-        This will permanently delete:
+        Deletes:
         - Model record
         - Training data
         - Generated samples
-        - Encoding models
+        - Preprocessing models
         - Trained model (from storage)
         - All scenarios using this model
         
@@ -369,12 +367,10 @@ class Model:
         splits: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Generate training samples and fit encoding models using model's feature sets
+        Generate training samples using model's feature sets
         
-        This method performs a complete pipeline:
-        1. Generate training samples with proper windowing
-        2. Fit encoding models on training split
-        3. Encode all samples using fitted models
+        This method generates samples with proper windowing and prepares them for training.
+        The backend automatically handles cleanup of existing samples and related data.
         
         Args:
             past_window: Past window size (days, default: 100)
@@ -384,8 +380,8 @@ class Model:
                 Can be percentages: {"training": 80, "validation": 20}
                 Or date ranges: {"training": {"start": "2020-01-01", "end": "2023-03-31"}, "validation": {"start": "2023-04-01", "end": "2023-12-31"}}
             
-        Returns:
-            dict: Generation and encoding statistics with keys: status, samples_generated, models_fitted, samples_encoded
+                    Returns:
+            dict: Generation statistics with keys: status, samples_generated, split_counts
             
         Example:
             >>> model.generate_samples()  # Uses defaults: 100 past, 80 future, stride 5, 80/20 split
@@ -450,77 +446,33 @@ class Model:
             "sample_config": sample_config
         }
         
-        # Call backend
+        # Call backend (handles sample generation and cleanup automatically)
         print("📡 Calling backend to generate samples...")
         response = self.http.post('/api/v1/ml/generate-samples', payload)
         
-        # Store sample config but don't update status yet (we'll update to "encoded" at the end)
+        # Store sample config
         self._data["sample_config"] = sample_config
         
         split_counts = response.get('split_counts', {})
         samples_generated = response.get('samples_generated', 0)
+        gen_metrics = response.get('generation_metrics', {})
+        
         print(f"✅ Generated {samples_generated} samples")
         print(f"   Training: {split_counts.get('training', 0)}")
         print(f"   Validation: {split_counts.get('validation', 0)}")
         
-        # Step 2: Fit encoding models and encode samples
-        print(f"\n🔧 Fitting encoding models and encoding samples...")
-        
-        # Fit encoding models
-        print(f"  Step 2/3: Fitting encoding models on 'training' split...")
+        # Backend automatically updates model status to 'encoded' after generation
+        # Refresh model data to get updated status
         try:
-            fit_response = self.http.post('/api/v1/ml/fit?split=training', {
-                "model_id": self.id,
-                "encoding_type": "pca-ica"
-            })
-            
-            models_fitted = fit_response.get('models_fitted', 0)
-            features_processed = fit_response.get('features_processed', 0)
-            samples_used = fit_response.get('samples_used', 0)
-            
-            print(f"  ✅ Fitted {models_fitted} encoding models")
-            print(f"     Features processed: {features_processed}")
-            print(f"     Samples used: {samples_used}")
-            
+            self.refresh()
         except Exception as e:
-            print(f"  ❌ Failed to fit encoding models: {e}")
-            raise
+            logger.debug(f"Could not refresh model data: {e}")
         
-        # Encode samples
-        print(f"  Step 3/3: Encoding all samples...")
-        try:
-            encode_response = self.http.post('/api/v1/ml/encode?source=database', {
-                "model_id": self.id,
-                "encoding_type": "pca-ica"
-            })
-            
-            samples_encoded = encode_response.get('samples_encoded', 0)
-            encoding_features_processed = encode_response.get('features_processed', 0)
-            
-            print(f"  ✅ Encoded {samples_encoded} samples")
-            print(f"     Features processed: {encoding_features_processed}")
-            
-        except Exception as e:
-            print(f"  ❌ Failed to encode samples: {e}")
-            raise
-        
-        # Update model status
-        self._data["status"] = "encoded"
-        
-        # Persist status change to database
-        try:
-            self.http.patch(f'/api/v1/models/{self.id}', {"status": "encoded"})
-        except Exception as e:
-            print(f"⚠️  Warning: Failed to persist status change: {e}")
-        
-        print(f"✅ Sample generation and encoding complete")
+        print(f"✅ Sample generation complete")
         
         return {
             "status": "success",
             "samples_generated": samples_generated,
-            "models_fitted": models_fitted,
-            "samples_encoded": samples_encoded,
-            "features_processed": features_processed,
             "split_counts": split_counts
         }
     
@@ -787,7 +739,7 @@ class Model:
                   n_regimes: int = 3,
                   compute_validation_ll: bool = False) -> Dict[str, Any]:
         """
-        Train statistical model on encoded samples
+        Train statistical model on generated samples
         
         Pipeline:
         - Empirical marginals with smoothed distributions
