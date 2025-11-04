@@ -162,7 +162,7 @@ class Scenario:
         save: bool = False,
         save_dir: Optional[str] = None,
         display: bool = True,
-        show_historical_path: bool = True
+        show_historical_path: bool = False
     ) -> List[str]:
         """
         Plot forecast paths with conditioning and ground truth
