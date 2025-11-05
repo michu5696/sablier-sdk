@@ -366,13 +366,20 @@ class Portfolio:
             s2_series = pd.Series(extract_metric_values(metrics_s2), name=s2.name)
             comp = pd.concat([s1_series, s2_series], axis=1).loc[order]
             
-            # Deltas
+            # Deltas (keep numeric for calculations)
             comp['Δ (S2−S1)'] = comp[s2.name] - comp[s1.name]
             use_abs_base = {'var 95','var 99','cvar 95','cvar 99','max drawdown'}
             def delta_pct(row):
                 base = row[s1.name]
+                if pd.isna(base):
+                    return pd.NA
                 denom = abs(base) if row.name in use_abs_base else base
-                return pd.NA if pd.isna(denom) or denom == 0 else row['Δ (S2−S1)'] / denom
+                if pd.isna(denom) or denom == 0:
+                    return pd.NA
+                delta = row['Δ (S2−S1)']
+                if pd.isna(delta):
+                    return pd.NA
+                return delta / denom
             comp['Δ%'] = comp.apply(delta_pct, axis=1)
             
             lower_better = {'volatility','downside dev'}
@@ -384,21 +391,31 @@ class Portfolio:
                 good = (d < 0) if name in lower_better else (d > 0)
                 color = '#e6ffe6' if good else '#ffe6e6'
                 return [f'background-color: {color}', f'background-color: {color}']
+            def fmt_val(v):
+                if pd.isna(v):
+                    return 'N/A'
+                return f'{v:.6f}'
+            def fmt_delta(v):
+                if pd.isna(v):
+                    return 'N/A'
+                return f'{v:+.6f}'
             def fmt_pct(v):
-                return '—' if pd.isna(v) else f'{v:+.2%}'
+                if pd.isna(v):
+                    return 'N/A'
+                return f'{v:+.2%}'
             styled = (
                 comp
                   .style
                   .set_caption(f"Scenario Comparison ({s1.name} vs {s2.name})")
                   .apply(color_delta, axis=1, subset=['Δ (S2−S1)', 'Δ%'])
                   .format({
-                      s1.name: '{:.6f}',
-                      s2.name: '{:.6f}',
-                      'Δ (S2−S1)': '{:+.6f}',
+                      s1.name: fmt_val,
+                      s2.name: fmt_val,
+                      'Δ (S2−S1)': fmt_delta,
                       'Δ%': fmt_pct
                   })
             )
-                display(styled)
+            display(styled)
             return None
         
         # Fallback: more than two scenarios -> return raw evaluations
