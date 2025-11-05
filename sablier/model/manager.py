@@ -144,9 +144,8 @@ class ModelManager:
         Deletes:
         - Model metadata
         - Training data
-        - Generated samples (normalized and encoded)
-        - Normalization parameters
-        - Encoding models (database metadata and Cloud Storage files)
+        - Generated samples
+        - Preprocessing models (database metadata and Cloud Storage files)
         - Trained model (Cloud Storage file)
         
         Args:

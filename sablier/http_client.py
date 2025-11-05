@@ -99,7 +99,7 @@ class HTTPClient:
             if '/validate' in url:
                 timeout = 1800  # 30 minutes for validation (can be very slow with reconstruction)
             # Other long operations
-            elif any(endpoint in url for endpoint in ['/train', '/fit', '/encode', '/fetch-data', '/generate-samples']):
+            elif any(endpoint in url for endpoint in ['/train', '/fetch-data', '/generate-samples']):
                 timeout = 600  # 10 minutes for ML operations and data fetching
             else:
                 timeout = 60   # 1 minute for regular operations

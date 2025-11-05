@@ -5,14 +5,12 @@ import numpy as np
 from typing import Optional, Any, List, Dict
 from ..http_client import HTTPClient
 from ..exceptions import APIError
-from ..workflow import WorkflowValidator, WorkflowConflict
 from .validators import (
     validate_sample_generation_inputs,
     validate_splits,
     auto_generate_splits,
     validate_training_period
 )
-from .utils import update_feature_types
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +23,6 @@ class Model:
     - Feature selection
     - Data fetching and processing
     - Sample generation
-    - Encoding model fitting
     - Model training
     - Forecasting
     """
@@ -296,11 +293,11 @@ class Model:
         """
         Delete this model and ALL associated data
         
-        This will permanently delete:
+        Deletes:
         - Model record
         - Training data
         - Generated samples
-        - Encoding models
+        - Preprocessing models
         - Trained model (from storage)
         - All scenarios using this model
         
@@ -357,93 +354,6 @@ class Model:
                 return {"status": "failed", "message": "Not authorized"}
             raise
     
-    # ============================================
-    # WORKFLOW VALIDATION
-    # ============================================
-    
-    def _check_and_handle_conflict(self, operation: str, confirm: Optional[bool] = None) -> bool:
-        """
-        Check for workflow conflict and handle it
-        
-        Args:
-            operation: Operation name
-            confirm: Explicit confirmation (None = prompt if interactive)
-            
-        Returns:
-            True if operation should proceed, False if cancelled
-        """
-        conflict = WorkflowValidator.check_conflict(operation, self.status)
-        
-        if not conflict:
-            # No conflict, proceed
-            return True
-        
-        # Conflict detected
-        print(conflict.format_warning())
-        
-        # Get confirmation
-        if confirm is None and self.interactive:
-            response = input("\nContinue? [y/N]: ")
-            confirm = response.lower() == 'y'
-        elif confirm is None:
-            # Non-interactive mode without explicit confirm, cancel
-            print("❌ Operation cancelled (interactive=False, no confirmation provided)")
-            return False
-        
-        if not confirm:
-            print("❌ Operation cancelled")
-            return False
-        
-        # User confirmed, proceed with cleanup
-        print("🗑️  Cleaning up dependent data...")
-        self._cleanup_dependent_data(conflict.items_to_delete)
-        
-        return True
-    
-    def _cleanup_dependent_data(self, items_to_delete: List[str]):
-        """
-        Clean up dependent data before operation
-        
-        Args:
-            items_to_delete: List of items to delete
-        """
-        client = self.http
-        
-        for item in items_to_delete:
-            try:
-                if item == "training_data":
-                    # Delete all training_data for this model
-                    # Note: We use the backend's Supabase client, not direct deletion
-                    print(f"  - Deleting training data...")
-                    # Will be handled by regenerating samples
-                    
-                elif item == "samples":
-                    # Delete all samples for this model
-                    print(f"  - Deleting samples...")
-                    # Cascade delete via database FKs
-                    
-                elif item == "encoding_models":
-                    # Delete all encoding models for this model
-                    print(f"  - Deleting encoding models...")
-                    # Cascade delete via database FKs
-                    
-                elif item == "trained_model":
-                    # Delete trained model from storage
-                    print(f"  - Deleting trained model from storage...")
-                    # Handled by model deletion if model_path exists
-                    
-                elif item == "feature_importance":
-                    # Feature importance is in model_metadata
-                    print(f"  - Clearing feature importance...")
-                    # Will be overwritten on next training
-                    
-            except Exception as e:
-                print(f"    ⚠️  Warning: Failed to delete {item}: {e}")
-        
-        print("✅ Cleanup complete (dependent data will be overwritten)")
-    
-   
-    
     
     # ============================================
     # SAMPLE GENERATION
@@ -457,12 +367,10 @@ class Model:
         splits: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Generate training samples and fit encoding models using model's feature sets
+        Generate training samples using model's feature sets
         
-        This method performs a complete pipeline:
-        1. Generate training samples with proper windowing
-        2. Fit encoding models on training split
-        3. Encode all samples using fitted models
+        This method generates samples with proper windowing and prepares them for training.
+        The backend automatically handles cleanup of existing samples and related data.
         
         Args:
             past_window: Past window size (days, default: 100)
@@ -472,17 +380,13 @@ class Model:
                 Can be percentages: {"training": 80, "validation": 20}
                 Or date ranges: {"training": {"start": "2020-01-01", "end": "2023-03-31"}, "validation": {"start": "2023-04-01", "end": "2023-12-31"}}
             
-        Returns:
-            dict: Generation and encoding statistics with keys: status, samples_generated, models_fitted, samples_encoded
+                    Returns:
+            dict: Generation statistics with keys: status, samples_generated, split_counts
             
         Example:
             >>> model.generate_samples()  # Uses defaults: 100 past, 80 future, stride 5, 80/20 split
             >>> model.generate_samples(past_window=50, future_window=30)  # Custom windows
         """
-        # Check for conflicts
-        if not self._check_and_handle_conflict("generate_samples", True):
-            return {"status": "cancelled"}
-        
         print(f"[Model {self.name}] Generating samples...")
         print(f"  Past window: {past_window} days")
         print(f"  Future window: {future_window} days")
@@ -542,77 +446,33 @@ class Model:
             "sample_config": sample_config
         }
         
-        # Call backend
+        # Call backend (handles sample generation and cleanup automatically)
         print("📡 Calling backend to generate samples...")
         response = self.http.post('/api/v1/ml/generate-samples', payload)
         
-        # Store sample config but don't update status yet (we'll update to "encoded" at the end)
+        # Store sample config
         self._data["sample_config"] = sample_config
         
         split_counts = response.get('split_counts', {})
         samples_generated = response.get('samples_generated', 0)
+        gen_metrics = response.get('generation_metrics', {})
+        
         print(f"✅ Generated {samples_generated} samples")
         print(f"   Training: {split_counts.get('training', 0)}")
         print(f"   Validation: {split_counts.get('validation', 0)}")
         
-        # Step 2: Fit encoding models and encode samples
-        print(f"\n🔧 Fitting encoding models and encoding samples...")
-        
-        # Fit encoding models
-        print(f"  Step 2/3: Fitting encoding models on 'training' split...")
+        # Backend automatically updates model status to 'encoded' after generation
+        # Refresh model data to get updated status
         try:
-            fit_response = self.http.post('/api/v1/ml/fit?split=training', {
-                "model_id": self.id,
-                "encoding_type": "pca-ica"
-            })
-            
-            models_fitted = fit_response.get('models_fitted', 0)
-            features_processed = fit_response.get('features_processed', 0)
-            samples_used = fit_response.get('samples_used', 0)
-            
-            print(f"  ✅ Fitted {models_fitted} encoding models")
-            print(f"     Features processed: {features_processed}")
-            print(f"     Samples used: {samples_used}")
-            
+            self.refresh()
         except Exception as e:
-            print(f"  ❌ Failed to fit encoding models: {e}")
-            raise
+            logger.debug(f"Could not refresh model data: {e}")
         
-        # Encode samples
-        print(f"  Step 3/3: Encoding all samples...")
-        try:
-            encode_response = self.http.post('/api/v1/ml/encode?source=database', {
-                "model_id": self.id,
-                "encoding_type": "pca-ica"
-            })
-            
-            samples_encoded = encode_response.get('samples_encoded', 0)
-            encoding_features_processed = encode_response.get('features_processed', 0)
-            
-            print(f"  ✅ Encoded {samples_encoded} samples")
-            print(f"     Features processed: {encoding_features_processed}")
-            
-        except Exception as e:
-            print(f"  ❌ Failed to encode samples: {e}")
-            raise
-        
-        # Update model status
-        self._data["status"] = "encoded"
-        
-        # Persist status change to database
-        try:
-            self.http.patch(f'/api/v1/models/{self.id}', {"status": "encoded"})
-        except Exception as e:
-            print(f"⚠️  Warning: Failed to persist status change: {e}")
-        
-        print(f"✅ Sample generation and encoding complete")
+        print(f"✅ Sample generation complete")
         
         return {
             "status": "success",
             "samples_generated": samples_generated,
-            "models_fitted": models_fitted,
-            "samples_encoded": samples_encoded,
-            "features_processed": features_processed,
             "split_counts": split_counts
         }
     
@@ -879,7 +739,7 @@ class Model:
                   n_regimes: int = 3,
                   compute_validation_ll: bool = False) -> Dict[str, Any]:
         """
-        Train statistical model on encoded samples
+        Train statistical model on generated samples
         
         Pipeline:
         - Empirical marginals with smoothed distributions

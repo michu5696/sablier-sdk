@@ -316,32 +316,35 @@ class Scenario:
                 future_t = np.arange(n_timesteps)
                 use_dates = False
             
-            # Plot ground truth past (black line with markers) - optional
-            if show_historical_path and past_values and len(past_t) > 0:
+            # Plot ground truth past (black line with markers) - always show if available
+            if past_values and len(past_t) > 0:
                 ax.plot(past_t, past_values, 'o-', color='black', linewidth=2, 
                        markersize=4, alpha=0.8, label='Recent Past', zorder=5)
-                
-                # Plot ground truth future (green line with markers) - optional
-                if future_gt_values and len(future_gt_values) > 0:
-                    # Handle case where ground truth might be longer than forecast
-                    if use_dates:
-                        # Use actual dates for ground truth
-                        future_t_gt = future_dates[:len(future_gt_values)]
-                    else:
-                        # Use numeric indices for ground truth
-                        future_t_gt = np.arange(len(past_values), len(past_values) + len(future_gt_values))
-                    
-                    # Get simulation_date from scenario for label
-                    simulation_date = self._data.get('simulation_date', '')
-                    hist_label = f'Historical Path ({simulation_date})' if simulation_date else 'Historical Path'
-                    
-                    ax.plot(future_t_gt, future_gt_values, 'o-', color='green', linewidth=2.5, 
-                           markersize=5, alpha=0.9, label=hist_label, zorder=6)
                 
                 # Vertical line at forecast start (red dotted)
                 if not use_dates:
                     ax.axvline(x=len(past_values), color='red', linestyle=':', 
                               linewidth=2, alpha=0.5, label='Forecast Start', zorder=4)
+            
+            # Plot ground truth future (green line with markers) - only if show_historical_path is True
+            if show_historical_path and future_gt_values and len(future_gt_values) > 0:
+                # Handle case where ground truth might be longer than forecast
+                if use_dates:
+                    # Use actual dates for ground truth
+                    future_t_gt = future_dates[:len(future_gt_values)]
+                else:
+                    # Use numeric indices for ground truth
+                    if past_values:
+                        future_t_gt = np.arange(len(past_values), len(past_values) + len(future_gt_values))
+                    else:
+                        future_t_gt = np.arange(len(future_gt_values))
+                
+                # Get simulation_date from scenario for label
+                simulation_date = self._data.get('simulation_date', '')
+                hist_label = f'Historical Path ({simulation_date})' if simulation_date else 'Historical Path'
+                
+                ax.plot(future_t_gt, future_gt_values, 'o-', color='green', linewidth=2.5, 
+                       markersize=5, alpha=0.9, label=hist_label, zorder=6)
             
             # Plot individual forecast paths (light blue, semi-transparent)
             n_to_plot = min(50, n_samples)  # Show up to 50 paths
