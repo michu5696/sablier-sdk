@@ -135,7 +135,7 @@ metrics = test.report_aggregated_metrics()
 
 print(f"Sharpe (mean): {metrics['sharpe_distribution']['mean']:.3f}")
 print(f"Total Return (mean): {metrics['return_distribution']['mean']:.2%}")
-print(f"Max Drawdown (mean): {metrics['drawdown_distribution']['mean']:.2%}")
+print(f"Max Drawdown (mean): {metrics['max_drawdown_distribution']['mean']:.2%}")
 
 # Plot
 test.plot_distribution('total_return')

@@ -569,10 +569,9 @@ class Portfolio:
         # Extract arrays for analysis
         total_returns = np.array([r['total_return'] for r in sample_results])
         pnls = np.array([r['pnl'] for r in sample_results])
-        max_drawdowns = np.array([r['max_drawdown'] for r in sample_results])
+        max_drawdowns = np.array([r['max_drawdown'] for r in sample_results])  # Already absolute values
         
         # Extract additional risk metrics
-        average_drawdowns = np.array([r['average_drawdown'] for r in sample_results])
         downside_deviations = np.array([r['downside_deviation'] for r in sample_results])
         
         # Extract period volatility (already computed per path)
@@ -668,17 +667,11 @@ class Portfolio:
                 'min': float(np.min(sharpe_ratios)),
                 'max': float(np.max(sharpe_ratios))
             },
-            'drawdown_distribution': {
+            'max_drawdown_distribution': {
                 'mean': float(np.mean(max_drawdowns)),
                 'std': float(np.std(max_drawdowns)),
+                'min': float(np.min(max_drawdowns)),
                 'max': float(np.max(max_drawdowns))
-            },
-            # NEW: Additional risk metric distributions
-            'average_drawdown_distribution': {
-                'mean': float(np.mean(average_drawdowns)),
-                'std': float(np.std(average_drawdowns)),
-                'min': float(np.min(average_drawdowns)),
-                'max': float(np.max(average_drawdowns))
             },
             'downside_deviation_distribution': {
                 'mean': float(np.mean(downside_deviations)),
@@ -1165,21 +1158,17 @@ class Portfolio:
                 # Downside deviation (store daily version for consistency with other metrics)
                 downside_deviation = daily_downside_deviation
                 
-                # Max drawdown - CORRECTED VERSION
+                # Max drawdown - store as absolute value (positive)
                 # Drawdown = (Current - Peak) / Peak (negative when below peak)
                 running_max = np.maximum.accumulate(portfolio_values)
                 drawdowns = (portfolio_values - running_max) / running_max
-                max_drawdown = np.min(drawdowns)  # Most negative drawdown (worst case)
-                
-                # Average drawdown - FIXED!
-                # Average of all drawdowns (including zeros)
-                average_drawdown = np.mean(drawdowns)
+                max_drawdown = abs(np.min(drawdowns))  # Most negative drawdown converted to absolute value
                 
                 # Note: downside_deviation already calculated above for Sortino ratio
                 
             else:
                 sharpe_ratio = sortino_ratio = 0
-                max_drawdown = average_drawdown = downside_deviation = 0.0
+                max_drawdown = downside_deviation = 0.0
                 period_volatility = 0.0
             
             # Daily metrics for time-series analysis
@@ -1195,7 +1184,7 @@ class Portfolio:
                     'pnl': float(daily_pnl),
                     'cumulative_return': float(daily_cumulative_return),
                     'daily_return': float(daily_return),
-                    'drawdown': float(drawdowns[t])
+                    'drawdown': float(abs(drawdowns[t]))  # Store as absolute value (positive)
                 }
                 daily_metrics.append(daily_metric)
             
@@ -1203,10 +1192,9 @@ class Portfolio:
                 'sample_idx': sample_idx,
                 'total_return': float(total_return),
                 'pnl': float(pnl),
-                'max_drawdown': float(max_drawdown),
+                'max_drawdown': float(max_drawdown),  # Already absolute value
                 'sharpe_ratio': float(sharpe_ratio),
                 'sortino_ratio': float(sortino_ratio),
-                'average_drawdown': float(average_drawdown),
                 'downside_deviation': float(downside_deviation),
                 'period_volatility': float(period_volatility) if len(daily_returns) > 0 else 0.0,
                 'daily_returns': daily_returns.tolist(),
@@ -1227,8 +1215,7 @@ class Portfolio:
         # Extract arrays for aggregation
         total_returns = np.array([s['total_return'] for s in sample_results])
         sharpe_ratios = np.array([s['sharpe_ratio'] for s in sample_results])
-        max_drawdowns = np.array([s['max_drawdown'] for s in sample_results])
-        average_drawdowns = np.array([s['average_drawdown'] for s in sample_results])
+        max_drawdowns = np.array([s['max_drawdown'] for s in sample_results])  # Already absolute values
         downside_deviations = np.array([s['downside_deviation'] for s in sample_results])
         
         # Count samples
@@ -1302,7 +1289,7 @@ class Portfolio:
                         'cvar_99': float(cvar_99_portfolio)
                     },
                     'drawdown': {
-                        'mean': float(np.mean(daily_drawdowns_array)),
+                        'mean': float(np.mean(daily_drawdowns_array)),  # Already absolute values from daily_metrics
                         'std': float(np.std(daily_drawdowns_array)),
                         'min': float(np.min(daily_drawdowns_array)),
                         'max': float(np.max(daily_drawdowns_array))
@@ -1333,17 +1320,11 @@ class Portfolio:
                 'min': float(np.min(sharpe_ratios)),
                 'max': float(np.max(sharpe_ratios))
             },
-            'drawdown_distribution': {
+            'max_drawdown_distribution': {
                 'mean': float(np.mean(max_drawdowns)),
                 'std': float(np.std(max_drawdowns)),
                 'min': float(np.min(max_drawdowns)),
                 'max': float(np.max(max_drawdowns))
-            },
-            'average_drawdown_distribution': {
-                'mean': float(np.mean(average_drawdowns)),
-                'std': float(np.std(average_drawdowns)),
-                'min': float(np.min(average_drawdowns)),
-                'max': float(np.max(average_drawdowns))
             },
             'downside_deviation_distribution': {
                 'mean': float(np.mean(downside_deviations)),
@@ -1368,8 +1349,7 @@ class Portfolio:
         
         total_returns = np.array([s['total_return'] for s in sample_results])
         sharpe_ratios = np.array([s['sharpe_ratio'] for s in sample_results])
-        max_drawdowns = np.array([s['max_drawdown'] for s in sample_results])
-        average_drawdowns = np.array([s['average_drawdown'] for s in sample_results])
+        max_drawdowns = np.array([s['max_drawdown'] for s in sample_results])  # Already absolute values
         downside_deviations = np.array([s['downside_deviation'] for s in sample_results])
         
         return {
@@ -1393,11 +1373,6 @@ class Portfolio:
                 'std': float(np.std(max_drawdowns)),
                 'p25': float(np.percentile(max_drawdowns, 25)),
                 'p75': float(np.percentile(max_drawdowns, 75))
-            },
-            'average_drawdown': {
-                'mean': float(np.mean(average_drawdowns)),
-                'median': float(np.median(average_drawdowns)),
-                'std': float(np.std(average_drawdowns))
             },
             'downside_deviation': {
                 'mean': float(np.mean(downside_deviations)),

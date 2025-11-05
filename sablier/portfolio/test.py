@@ -59,8 +59,7 @@ class Test:
             'total_samples': self.aggregated_results['total_samples'],
             'return_distribution': self.aggregated_results['return_distribution'],
             'sharpe_distribution': self.aggregated_results['sharpe_distribution'],
-            'drawdown_distribution': self.aggregated_results['drawdown_distribution'],
-            'average_drawdown_distribution': self.aggregated_results['average_drawdown_distribution'],
+            'max_drawdown_distribution': self.aggregated_results['max_drawdown_distribution'],
             'downside_deviation_distribution': self.aggregated_results['downside_deviation_distribution'],
             'volatility_distribution': self.aggregated_results['volatility_distribution']
         }
@@ -78,7 +77,6 @@ class Test:
             'sharpe_ratio': sample['sharpe_ratio'],
             'sortino_ratio': sample['sortino_ratio'],
             'max_drawdown': sample['max_drawdown'],
-            'average_drawdown': sample['average_drawdown'],
             'downside_deviation': sample['downside_deviation'],
             'is_profitable': sample['is_profitable'],
             'initial_value': sample['initial_value'],
@@ -94,7 +92,7 @@ class Test:
         
         Args:
             metric: Metric name ('total_return', 'sharpe_ratio', 'sortino_ratio', 
-                   'max_drawdown', 'average_drawdown', 'downside_deviation')
+                   'max_drawdown', 'downside_deviation')
             save: Whether to save the plot
             save_dir: Directory to save plots (default: './portfolio_plots/')
             display: Whether to display the plot
@@ -110,7 +108,7 @@ class Test:
         
         # Extract metric values from sample results (end-of-path metrics only)
         end_of_path_metrics = ['total_return', 'sharpe_ratio', 'sortino_ratio', 'max_drawdown', 
-                              'average_drawdown', 'downside_deviation']
+                              'downside_deviation']
         
         if metric not in end_of_path_metrics:
             raise ValueError(f"Unsupported end-of-path metric: {metric}. Available: {end_of_path_metrics}")
