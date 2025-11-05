@@ -97,40 +97,20 @@ scenario.plot_forecasts(feature="30-Year Treasury Constant Maturity Rate",save=T
 portfolio = client.create_portfolio(
     name="Test Portfolio",
     target_set=model.get_target_set(),
-    weights=[0.3,0.3,0.4],
-    asset_configs={
-        "10-Year Treasury Constant Maturity Rate": {
-            "type": "treasury_bond",
-            "params": {
-                "coupon_rate": 0.04,  # 4% coupon rate
-                "face_value": 1000,
-                "issue_date": "2018-08-15",
-                "payment_frequency": 2  # Semi-annual
-            }
-        },
-        "20-Year Treasury Constant Maturity Rate": {
-            "type": "treasury_bond",
-            "params": {
-                "coupon_rate": 0.042,  # 4.2% coupon rate
-                "face_value": 1000,
-                "issue_date": "2018-08-15",
-                "payment_frequency": 2
-            }
-        },
-        "30-Year Treasury Constant Maturity Rate": {
-            "type": "treasury_bond",
-            "params": {
-                "coupon_rate": 0.041,  # 4.1% coupon rate
-                "face_value": 1000,
-                "issue_date": "2018-08-15",
-                "payment_frequency": 2
-            }
-        }
-    }
+    weights={
+        "1-3 Year Treasury Bond ETF": 0.4,
+        "3-7 Year Treasury Bond ETF": 0.3,
+        "7-10 Year Treasury Bond ETF": 0.2,
+        "20+ Year Treasury Bond ETF": 0.1
+    },  
+     capital=200000.0,
+     description="US Treasury Portfolio"
 )
 
 # 8) Test the portfolio against the scenario
 test = portfolio.test(scenario)
+
+# 9) Review scenario results and summary outputs.
 metrics = test.report_aggregated_metrics()
 
 print(f"Sharpe (mean): {metrics['sharpe_distribution']['mean']:.3f}")
@@ -234,6 +214,7 @@ jupyter notebook "Template.ipynb"
 
 ## Notes & Tips
 
+- Metrics in this version are computed over a fixed 80-day simulation window, as the simulation period is currently set to 80 days from the execution date. Future releases will allow users to configure the simulation horizon dynamically.
 - Select scenarios by name/ID rather than index; list order can change.
 - For stable tails, use larger `n_samples` (e.g., ≥ 100) and avoid re‑simulation between comparisons.
 - Portfolio tests are stored locally in `~/.sablier/portfolios.db`.

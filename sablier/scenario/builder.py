@@ -662,6 +662,114 @@ class Scenario:
     def _get_future_conditioning_values(self, feature_name: str) -> Optional[List[float]]:
         """Get future conditioning values for a feature"""
         return self._get_ground_truth_values(feature_name)
+
+    def compare_portfolios(self, portfolio_a, portfolio_b):
+        """
+        Display a side-by-side comparison table of two portfolios under this scenario.
+        
+        Usage:
+            scenario.compare_portfolios(portfolio1, portfolio2)
+        
+        Ensures the scenario is simulated (refreshing if needed), then finds the
+        latest test for this scenario name in each portfolio's history; if none,
+        it runs a new test. Returns the underlying pandas DataFrame used for the
+        display table.
+        """
+        # Ensure scenario has simulation output (refresh if necessary)
+        if not self.is_simulated:
+            refreshed = self.http.get(f'/api/v1/scenarios/{self.id}')
+            self._data.update(refreshed)
+            self.output = refreshed.get('output')
+            self.status = refreshed.get('status', 'created')
+            if not self.is_simulated:
+                # Run a light simulation to initialize if user didn't simulate yet
+                self.simulate(n_samples=50, force=True)
+        
+        from ..portfolio.test import Test
+        import pandas as pd
+        from IPython.display import display
+        
+        def latest_test_for_portfolio(pf) -> Test:
+            # list_tests returns newest first; filter by this scenario name
+            for t in pf.list_tests():
+                if t.scenario_name == self.name:
+                    return t
+            # If none, run test now
+            return pf.test(self)
+        
+        t1 = latest_test_for_portfolio(portfolio_a)
+        t2 = latest_test_for_portfolio(portfolio_b)
+        m1 = t1.report_aggregated_metrics()
+        m2 = t2.report_aggregated_metrics()
+        
+        def extract_metric_values(m):
+            get_mean = lambda key: (m.get(key, {}) or {}).get('mean')
+            vol_mean = get_mean('annualized_volatility_distribution')
+            if vol_mean is None:
+                vol_mean = get_mean('volatility_distribution')
+            dd = m.get('drawdown_distribution', {}) or {}
+            avg_dd = get_mean('average_drawdown_distribution')
+            max_dd = dd.get('min')
+            return {
+                'tot samples': m.get('total_samples'),
+                'prof samples': m.get('profitable_samples'),
+                'prof rate': m.get('profitability_rate'),
+                'return': get_mean('return_distribution'),
+                'volatility': vol_mean,
+                'sharpe': get_mean('sharpe_distribution'),
+                'var 95': m.get('var_95'),
+                'var 99': m.get('var_99'),
+                'cvar 95': m.get('cvar_95'),
+                'cvar 99': m.get('cvar_99'),
+                'avg drawdown': avg_dd,
+                'max drawdown': max_dd,
+                'tail ratio': m.get('tail_ratio'),
+                'downside dev': get_mean('downside_deviation_distribution'),
+            }
+        
+        order = [
+            'tot samples','prof samples','prof rate','return','volatility','sharpe',
+            'var 95','var 99','cvar 95','cvar 99','avg drawdown','max drawdown',
+            'tail ratio','downside dev'
+        ]
+        s1 = pd.Series(extract_metric_values(m1), name=portfolio_a.name)
+        s2 = pd.Series(extract_metric_values(m2), name=portfolio_b.name)
+        comp = pd.concat([s1, s2], axis=1).loc[order]
+        
+        # Deltas (portfolio_b minus portfolio_a)
+        comp['Δ (P2−P1)'] = comp[portfolio_b.name] - comp[portfolio_a.name]
+        use_abs_base = {'var 95','var 99','cvar 95','cvar 99','avg drawdown','max drawdown','drawdown'}
+        def delta_pct(row):
+            base = row[portfolio_a.name]
+            denom = abs(base) if row.name in use_abs_base else base
+            return pd.NA if pd.isna(denom) or denom == 0 else row['Δ (P2−P1)'] / denom
+        comp['Δ%'] = comp.apply(delta_pct, axis=1)
+        
+        lower_better = {'volatility','downside dev'}
+        def color_delta(row):
+            name = row.name
+            d = row['Δ (P2−P1)']
+            if pd.isna(d):
+                return ['', '']
+            good = (d < 0) if name in lower_better else (d > 0)
+            color = '#e6ffe6' if good else '#ffe6e6'
+            return [f'background-color: {color}', f'background-color: {color}']
+        def fmt_pct(v):
+            return '—' if pd.isna(v) else f'{v:+.2%}'
+        styled = (
+            comp
+              .style
+              .set_caption(f"Portfolio Comparison under '{self.name}' ({portfolio_a.name} vs {portfolio_b.name})")
+              .apply(color_delta, axis=1, subset=['Δ (P2−P1)', 'Δ%'])
+              .format({
+                  portfolio_a.name: '{:.6f}',
+                  portfolio_b.name: '{:.6f}',
+                  'Δ (P2−P1)': '{:+.6f}',
+                  'Δ%': fmt_pct
+              })
+        )
+        display(styled)
+        return comp
     
     def _update_step(self, step: str):
         """Update scenario step both locally and in database"""
