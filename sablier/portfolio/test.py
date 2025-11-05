@@ -90,7 +90,6 @@ class Test:
             rows['return'] = m.get('return_distribution') or {}
             rows['volatility'] = get_volatility_dist(m) or {}
             rows['sharpe'] = m.get('sharpe_distribution') or {}
-            rows['avg drawdown'] = m.get('average_drawdown_distribution') or {}
             rows['downside dev'] = m.get('downside_deviation_distribution') or {}
 
             # scalar rows -> store under 'mean'
@@ -103,15 +102,15 @@ class Test:
             rows['cvar 99'] = {'mean': m.get('cvar_99')}
             rows['tail ratio'] = {'mean': m.get('tail_ratio')}
 
-            # max drawdown = most negative drawdown across samples
-            dd = m.get('drawdown_distribution') or {}
-            rows['max drawdown'] = {'mean': dd.get('min')}
+            # max drawdown from distribution (already absolute values)
+            dd = m.get('max_drawdown_distribution') or {}
+            rows['max drawdown'] = {'mean': dd.get('mean')}
 
             return rows
 
         desired_order = [
             'tot samples', 'prof samples', 'prof rate', 'return', 'volatility', 'sharpe',
-            'var 95', 'var 99', 'cvar 95', 'cvar 99', 'avg drawdown', 'max drawdown',
+            'var 95', 'var 99', 'cvar 95', 'cvar 99', 'max drawdown',
             'tail ratio', 'downside dev'
         ]
 
