@@ -770,7 +770,6 @@ class Scenario:
               })
         )
         display(styled)
-        return comp
     
     def _update_step(self, step: str):
         """Update scenario step both locally and in database"""
