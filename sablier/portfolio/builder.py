@@ -398,8 +398,8 @@ class Portfolio:
                       'Δ%': fmt_pct
                   })
             )
-            display(styled)
-            return comp
+                display(styled)
+            return None
         
         # Fallback: more than two scenarios -> return raw evaluations
         labels = [sc.name for sc in scenarios]
