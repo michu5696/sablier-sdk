@@ -117,9 +117,15 @@ class Test:
         rows = build_rows(metrics)
         df = pd.DataFrame.from_dict(rows, orient='index')[['mean', 'std', 'min', 'max']]
         df = df.reindex(desired_order)
+        
+        # Replace NaN with "N/A" for non-distribution metrics (metrics that don't have std/min/max)
+        non_distribution_metrics = {'tot samples', 'prof samples', 'prof rate', 'var 95', 'var 99', 'cvar 95', 'cvar 99', 'tail ratio'}
+        for metric in non_distribution_metrics:
+            if metric in df.index:
+                df.loc[metric, ['std', 'min', 'max']] = 'N/A'
 
         display(df.style.set_caption(caption))
-        return df
+        return None
     
     def report_sample_metrics(self, sample_idx: int) -> Dict[str, Any]:
         """Report all static metrics for a specific sample"""

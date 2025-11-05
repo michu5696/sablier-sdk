@@ -737,13 +737,20 @@ class Scenario:
         s2 = pd.Series(extract_metric_values(m2), name=portfolio_b.name)
         comp = pd.concat([s1, s2], axis=1).loc[order]
         
-        # Deltas (portfolio_b minus portfolio_a)
+        # Deltas (portfolio_b minus portfolio_a) - keep numeric for calculations
         comp['Δ (P2−P1)'] = comp[portfolio_b.name] - comp[portfolio_a.name]
         use_abs_base = {'var 95','var 99','cvar 95','cvar 99','max drawdown'}
         def delta_pct(row):
             base = row[portfolio_a.name]
+            if pd.isna(base):
+                return pd.NA
             denom = abs(base) if row.name in use_abs_base else base
-            return pd.NA if pd.isna(denom) or denom == 0 else row['Δ (P2−P1)'] / denom
+            if pd.isna(denom) or denom == 0:
+                return pd.NA
+            delta = row['Δ (P2−P1)']
+            if pd.isna(delta):
+                return pd.NA
+            return delta / denom
         comp['Δ%'] = comp.apply(delta_pct, axis=1)
         
         lower_better = {'volatility','downside dev'}
@@ -755,17 +762,27 @@ class Scenario:
             good = (d < 0) if name in lower_better else (d > 0)
             color = '#e6ffe6' if good else '#ffe6e6'
             return [f'background-color: {color}', f'background-color: {color}']
+        def fmt_val(v):
+            if pd.isna(v):
+                return 'N/A'
+            return f'{v:.6f}'
+        def fmt_delta(v):
+            if pd.isna(v):
+                return 'N/A'
+            return f'{v:+.6f}'
         def fmt_pct(v):
-            return '—' if pd.isna(v) else f'{v:+.2%}'
+            if pd.isna(v):
+                return 'N/A'
+            return f'{v:+.2%}'
         styled = (
             comp
               .style
               .set_caption(f"Portfolio Comparison under '{self.name}' ({portfolio_a.name} vs {portfolio_b.name})")
               .apply(color_delta, axis=1, subset=['Δ (P2−P1)', 'Δ%'])
               .format({
-                  portfolio_a.name: '{:.6f}',
-                  portfolio_b.name: '{:.6f}',
-                  'Δ (P2−P1)': '{:+.6f}',
+                  portfolio_a.name: fmt_val,
+                  portfolio_b.name: fmt_val,
+                  'Δ (P2−P1)': fmt_delta,
                   'Δ%': fmt_pct
               })
         )

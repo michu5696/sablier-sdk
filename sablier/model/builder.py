@@ -1276,10 +1276,8 @@ class Model:
             print(f"\n⏱️  Window Configuration:")
             past_window = sample_config.get('pastWindow', 'N/A')
             future_window = sample_config.get('futureWindow', 'N/A')
-            stride = sample_config.get('stride', 'N/A')
             print(f"   Past window: {past_window} days")
             print(f"   Future window: {future_window} days")
-            print(f"   Stride: {stride} days")
             
             # Training and validation splits
             splits = sample_config.get('splits', {})
@@ -1327,20 +1325,24 @@ class Model:
     
     def show_validation_metrics(self) -> None:
         """
-        Display stored validation metrics for this model.
+        Display stored validation metrics for this model in a formatted table.
         
         This method shows the validation metrics that were computed and saved
         to the database during the last validation run. It does not re-run validation.
         All users (including those using template models) can view these metrics.
         
         Returns:
-            None (only prints output)
+            None (only displays table)
             
         Example:
             >>> model.show_validation_metrics()
-            📊 Model Validation Metrics - My Model
-            ...
+            📊 Validation Metrics - My Model
+            [Formatted table displayed]
         """
+        # Local imports to avoid global dependency
+        import pandas as pd
+        from IPython.display import display
+        
         # Refresh model data to get latest validation_metrics
         self.refresh()
         
@@ -1359,201 +1361,270 @@ class Model:
             'calibration_metrics': validation_metrics.get('calibration_metrics')
         }
         
-        # Compact header
-        n_forecast_samples = validation_metrics.get('n_forecast_samples', 'N/A')
-        train_samples = result.get('training_metrics', {}).get('n_samples', 'N/A')
-        val_samples = result.get('validation_metrics', {}).get('n_samples', 'N/A')
-        print(f"\n📊 Validation Metrics - {self.name}")
-        print(f"Samples: {n_forecast_samples} | Training: {train_samples} | Validation: {val_samples}")
+        # Helper to format values (just numeric, no quality text)
+        def fmt_val(val, fmt='.3f'):
+            if val == 'N/A' or val is None:
+                return 'N/A'
+            if isinstance(val, (int, float)):
+                return f'{val:{fmt}}'
+            return str(val)
         
-        # Training/Validation - compact one line each
-        if result.get('training_metrics'):
-            train_metrics = result['training_metrics']
-            train_ll = train_metrics.get('log_likelihood', {})
-            train_ll_val = train_ll.get('per_sample_log_likelihood', 'N/A')
-            train_bic = train_ll.get('bic', 'N/A')
-            train_aic = train_ll.get('aic', 'N/A')
-            train_ll_str = f'{train_ll_val:.2f}' if train_ll_val != 'N/A' and isinstance(train_ll_val, (int, float)) else 'N/A'
-            train_bic_str = f'{train_bic:.0f}' if train_bic != 'N/A' and isinstance(train_bic, (int, float)) else 'N/A'
-            train_aic_str = f'{train_aic:.0f}' if train_aic != 'N/A' and isinstance(train_aic, (int, float)) else 'N/A'
-            print(f"Training:   LL: {train_ll_str} | BIC: {train_bic_str} | AIC: {train_aic_str}")
+        # Helper to get quality color
+        def get_quality_color(val, quality_func):
+            if val == 'N/A' or val is None:
+                return None
+            if isinstance(val, (int, float)):
+                quality_info = quality_func(val)
+                quality = quality_info['quality']
+                if quality in ['excellent', 'good']:
+                    return '#d4edda'  # Light green
+                elif quality == 'moderate':
+                    return '#fff3cd'  # Light yellow
+                elif quality == 'poor':
+                    return '#f8d7da'  # Light red
+            return None
         
-        # Validation metrics
-        if result.get('validation_metrics'):
-            val_metrics = result['validation_metrics']
-            val_ll = val_metrics.get('log_likelihood', {})
-            val_ll_per_sample = val_ll.get('per_sample_log_likelihood', 'N/A')
-            val_bic = val_ll.get('bic', 'N/A')
-            val_aic = val_ll.get('aic', 'N/A')
-            val_ll_str = f'{val_ll_per_sample:.2f}' if val_ll_per_sample != 'N/A' and isinstance(val_ll_per_sample, (int, float)) else 'N/A'
-            val_bic_str = f'{val_bic:.0f}' if val_bic != 'N/A' and isinstance(val_bic, (int, float)) else 'N/A'
-            val_aic_str = f'{val_aic:.0f}' if val_aic != 'N/A' and isinstance(val_aic, (int, float)) else 'N/A'
-            print(f"Validation: LL: {val_ll_str} | BIC: {val_bic_str} | AIC: {val_aic_str}")
-            
-            # Generalization gap inline
-            if result.get('training_metrics'):
-                train_ll_val = result['training_metrics'].get('log_likelihood', {}).get('per_sample_log_likelihood', 0)
-                val_ll_val = val_ll.get('per_sample_log_likelihood', 0)
-                if train_ll_val != 'N/A' and val_ll_val != 'N/A' and isinstance(train_ll_val, (int, float)) and isinstance(val_ll_val, (int, float)):
-                    gap = train_ll_val - val_ll_val
-                    print(f"Gap: {gap:.2f}")
+        # Helper to get tail value (returns tuple: (value, color))
+        def get_tail_value_with_color(tail_dict, metric_key, quality_func=None):
+            if not tail_dict or not tail_dict.get(metric_key):
+                return ('N/A', None)
+            metric_data = tail_dict[metric_key]
+            if metric_key == 'reliability':
+                val = metric_data.get('ece')
+            else:
+                val = metric_data.get('normalized_value')
+            if val is None:
+                return ('N/A', None)
+            color = get_quality_color(val, quality_func) if quality_func else None
+            return (fmt_val(val), color)
         
-        # Calibration metrics - condensed format
+        # ============================================
+        # Calibration Metrics (Per-Horizon)
+        # ============================================
         if result.get('calibration_metrics'):
             cal_metrics = result['calibration_metrics']
             
-            # Handle new reconstructed metrics structure
-            if 'overall' in cal_metrics:
-                overall_metrics = cal_metrics['overall']
+            if 'horizons' in cal_metrics:
+                horizons = cal_metrics['horizons']
+                horizon_data = []
+                color_map = {}  # Store colors for each cell
                 
-                # Overall quality - compact line starting on new line
-                parts = []
-                if 'crps' in overall_metrics:
-                    crps = overall_metrics['crps']
-                    if 'normalized_value' in crps:
-                        quality_info = self._get_crps_quality(crps['normalized_value'])
-                        parts.append(f"{quality_info['icon']} CRPS: {crps['normalized_value']:.3f} ({quality_info['quality'].title()})")
-                if 'sharpness' in overall_metrics:
-                    sharpness = overall_metrics['sharpness']
-                    sharpness_value = sharpness.get('normalized_value', 0)
-                    quality_info = self._get_sharpness_quality(sharpness_value)
-                    parts.append(f"{quality_info['icon']} Sharpness: {sharpness_value:.3f} ({quality_info['quality'].title()})")
-                if 'reliability' in overall_metrics:
-                    reliability = overall_metrics['reliability']
-                    ece_value = reliability.get('ece', 0)
-                    quality_info = self._get_ece_quality(ece_value)
-                    parts.append(f"{quality_info['icon']} Reliability: {ece_value:.3f} ({quality_info['quality'].title()})")
-                if 'median_forecast_bias' in overall_metrics:
-                    rmse_metrics = overall_metrics['median_forecast_bias']
-                    rmse_value = rmse_metrics.get('normalized_value', 0)
-                    quality_info = self._get_rmse_quality(rmse_value)
-                    parts.append(f"{quality_info['icon']} RMSE: {rmse_value:.3f} ({quality_info['quality'].title()})")
+                # Get future window size to calculate days per horizon
+                future_window = self._data.get('sample_config', {}).get('futureWindow', 0)
+                if not future_window:
+                    # Try to get from validation metrics
+                    future_window = cal_metrics.get('future_window', 0)
+                days_per_horizon = future_window // 3 if future_window > 0 else 0
                 
-                if parts:
-                    print(f"\n🎯 Overall:")
-                    print(f"   {' | '.join(parts)}")
+                # Map horizon names to display names
+                # Each horizon is 1/3 of the future window:
+                # Short = first 1/3, Medium = second 1/3, Long = third 1/3
+                horizon_order = ['short_term', 'medium_term', 'long_term']
+                horizon_labels = {
+                    'short_term': 'Short',  # First 1/3
+                    'medium_term': 'Medium',  # Second 1/3
+                    'long_term': 'Long',  # Third 1/3
+                }
                 
-                # Tail metrics - compact
-                if 'left_tail' in overall_metrics and overall_metrics['left_tail']:
-                    left_tail = overall_metrics['left_tail']
-                    parts = []
-                    if 'crps' in left_tail and 'normalized_value' in left_tail['crps']:
-                        quality_info = self._get_crps_quality(left_tail['crps']['normalized_value'])
-                        parts.append(f"{quality_info['icon']} CRPS: {left_tail['crps']['normalized_value']:.3f}")
-                    if 'sharpness' in left_tail and 'normalized_value' in left_tail['sharpness']:
-                        quality_info = self._get_sharpness_quality(left_tail['sharpness']['normalized_value'])
-                        parts.append(f"{quality_info['icon']} Sharpness: {left_tail['sharpness']['normalized_value']:.3f}")
-                    if 'reliability' in left_tail:
-                        quality_info = self._get_ece_quality(left_tail['reliability'].get('ece', 0))
-                        parts.append(f"{quality_info['icon']} Reliability: {left_tail['reliability'].get('ece', 0):.3f}")
-                    
-                    n_samples = left_tail.get('crps', {}).get('n_samples', 0) or left_tail.get('reliability', {}).get('n_samples', 0)
-                    if parts:
-                        print(f"Left Tail ({n_samples}s): {' | '.join(parts)}")
+                # Sort horizons by order
+                sorted_horizons = sorted(horizons.items(), key=lambda x: horizon_order.index(x[0]) if x[0] in horizon_order else 999)
                 
-                if 'right_tail' in overall_metrics and overall_metrics['right_tail']:
-                    right_tail = overall_metrics['right_tail']
-                    parts = []
-                    if 'crps' in right_tail and 'normalized_value' in right_tail['crps']:
-                        quality_info = self._get_crps_quality(right_tail['crps']['normalized_value'])
-                        parts.append(f"{quality_info['icon']} CRPS: {right_tail['crps']['normalized_value']:.3f}")
-                    if 'sharpness' in right_tail and 'normalized_value' in right_tail['sharpness']:
-                        quality_info = self._get_sharpness_quality(right_tail['sharpness']['normalized_value'])
-                        parts.append(f"{quality_info['icon']} Sharpness: {right_tail['sharpness']['normalized_value']:.3f}")
-                    if 'reliability' in right_tail:
-                        quality_info = self._get_ece_quality(right_tail['reliability'].get('ece', 0))
-                        parts.append(f"{quality_info['icon']} Reliability: {right_tail['reliability'].get('ece', 0):.3f}")
-                    
-                    n_samples = right_tail.get('crps', {}).get('n_samples', 0) or right_tail.get('reliability', {}).get('n_samples', 0)
-                    if parts:
-                        print(f"Right Tail ({n_samples}s): {' | '.join(parts)}")
-                
-                # Horizon-specific metrics - compact table
-                if 'horizons' in cal_metrics:
-                    horizons = cal_metrics['horizons']
-                    print(f"\n📈 Horizons:")
-                    print(f"{'Horizon':<12} {'CRPS':<18} {'Sharpness':<18} {'Reliability':<18}")
-                    print("-" * 68)
-                    
-                    for horizon_name, horizon_metrics in horizons.items():
+                for horizon_name, horizon_metrics in sorted_horizons:
+                    # Format horizon name
+                    if horizon_name in horizon_labels:
+                        horizon_display = horizon_labels[horizon_name]
+                    else:
+                        # Fallback for unknown horizon names
                         horizon_display = horizon_name.replace('_', ' ').title()
-                        crps_str = "-"
-                        sharp_str = "-"
-                        rel_str = "-"
-                        
-                        if 'crps' in horizon_metrics and 'normalized_value' in horizon_metrics['crps']:
-                            quality_info = self._get_crps_quality(horizon_metrics['crps']['normalized_value'])
-                            crps_str = f"{quality_info['icon']} {horizon_metrics['crps']['normalized_value']:.3f}"
-                        
-                        if 'sharpness' in horizon_metrics and 'normalized_value' in horizon_metrics['sharpness']:
-                            quality_info = self._get_sharpness_quality(horizon_metrics['sharpness']['normalized_value'])
-                            sharp_str = f"{quality_info['icon']} {horizon_metrics['sharpness']['normalized_value']:.3f}"
-                        
-                        if 'reliability' in horizon_metrics:
-                            quality_info = self._get_ece_quality(horizon_metrics['reliability'].get('ece', 0))
-                            rel_str = f"{quality_info['icon']} {horizon_metrics['reliability'].get('ece', 0):.3f}"
-                        
-                        print(f"{horizon_display:<12} {crps_str:<18} {sharp_str:<18} {rel_str:<18}")
-                        
-                        # Tail metrics for this horizon - compact inline
-                        tail_parts = []
-                        if 'left_tail' in horizon_metrics and horizon_metrics['left_tail']:
-                            left_tail = horizon_metrics['left_tail']
-                            if 'crps' in left_tail and 'normalized_value' in left_tail['crps']:
-                                quality_info = self._get_crps_quality(left_tail['crps']['normalized_value'])
-                                n_samples = left_tail['crps'].get('n_samples', 0)
-                                tail_parts.append(f"L:{quality_info['icon']}{left_tail['crps']['normalized_value']:.3f}({n_samples}s)")
-                            if 'reliability' in left_tail:
-                                quality_info = self._get_ece_quality(left_tail['reliability'].get('ece', 0))
-                                tail_parts.append(f"L-Rel:{quality_info['icon']}{left_tail['reliability'].get('ece', 0):.3f}")
-                        
-                        if 'right_tail' in horizon_metrics and horizon_metrics['right_tail']:
-                            right_tail = horizon_metrics['right_tail']
-                            if 'crps' in right_tail and 'normalized_value' in right_tail['crps']:
-                                quality_info = self._get_crps_quality(right_tail['crps']['normalized_value'])
-                                n_samples = right_tail['crps'].get('n_samples', 0)
-                                tail_parts.append(f"R:{quality_info['icon']}{right_tail['crps']['normalized_value']:.3f}({n_samples}s)")
-                            if 'reliability' in right_tail:
-                                quality_info = self._get_ece_quality(right_tail['reliability'].get('ece', 0))
-                                tail_parts.append(f"R-Rel:{quality_info['icon']}{right_tail['reliability'].get('ece', 0):.3f}")
-                        
-                        if tail_parts:
-                            print(f"  {' | '.join(tail_parts)}")
                     
+                    horizon_left_tail = horizon_metrics.get('left_tail', {})
+                    horizon_right_tail = horizon_metrics.get('right_tail', {})
+                    
+                    # Get main metrics
+                    h_crps = horizon_metrics.get('crps', {}).get('normalized_value', 'N/A') if horizon_metrics.get('crps') else 'N/A'
+                    h_sharpness = horizon_metrics.get('sharpness', {}).get('normalized_value', 'N/A') if horizon_metrics.get('sharpness') else 'N/A'
+                    h_reliability = horizon_metrics.get('reliability', {}).get('ece', 'N/A') if horizon_metrics.get('reliability') else 'N/A'
+                    
+                    # Get tail metrics with colors
+                    left_crps_val, left_crps_color = get_tail_value_with_color(horizon_left_tail, 'crps', self._get_crps_quality)
+                    left_rel_val, left_rel_color = get_tail_value_with_color(horizon_left_tail, 'reliability', self._get_ece_quality)
+                    left_sharp_val, left_sharp_color = get_tail_value_with_color(horizon_left_tail, 'sharpness', self._get_sharpness_quality)
+                    
+                    right_crps_val, right_crps_color = get_tail_value_with_color(horizon_right_tail, 'crps', self._get_crps_quality)
+                    right_rel_val, right_rel_color = get_tail_value_with_color(horizon_right_tail, 'reliability', self._get_ece_quality)
+                    right_sharp_val, right_sharp_color = get_tail_value_with_color(horizon_right_tail, 'sharpness', self._get_sharpness_quality)
+                    
+                    horizon_data.append({
+                        'Horizon': horizon_display,
+                        ('CRPS', 'Overall'): fmt_val(h_crps) if h_crps != 'N/A' else 'N/A',
+                        ('CRPS', 'Left Tail'): left_crps_val,
+                        ('CRPS', 'Right Tail'): right_crps_val,
+                        ('Sharpness', 'Overall'): fmt_val(h_sharpness) if h_sharpness != 'N/A' else 'N/A',
+                        ('Sharpness', 'Left Tail'): left_sharp_val,
+                        ('Sharpness', 'Right Tail'): right_sharp_val,
+                        ('Reliability', 'Overall'): fmt_val(h_reliability) if h_reliability != 'N/A' else 'N/A',
+                        ('Reliability', 'Left Tail'): left_rel_val,
+                        ('Reliability', 'Right Tail'): right_rel_val
+                    })
+                    
+                    # Store colors for this row using horizon name as key
+                    color_map[(horizon_display, ('CRPS', 'Overall'))] = get_quality_color(h_crps, self._get_crps_quality) if h_crps != 'N/A' else None
+                    color_map[(horizon_display, ('CRPS', 'Left Tail'))] = left_crps_color
+                    color_map[(horizon_display, ('CRPS', 'Right Tail'))] = right_crps_color
+                    color_map[(horizon_display, ('Sharpness', 'Overall'))] = get_quality_color(h_sharpness, self._get_sharpness_quality) if h_sharpness != 'N/A' else None
+                    color_map[(horizon_display, ('Sharpness', 'Left Tail'))] = left_sharp_color
+                    color_map[(horizon_display, ('Sharpness', 'Right Tail'))] = right_sharp_color
+                    color_map[(horizon_display, ('Reliability', 'Overall'))] = get_quality_color(h_reliability, self._get_ece_quality) if h_reliability != 'N/A' else None
+                    color_map[(horizon_display, ('Reliability', 'Left Tail'))] = left_rel_color
+                    color_map[(horizon_display, ('Reliability', 'Right Tail'))] = right_rel_color
+                
+                # Display Calibration Metrics with MultiIndex columns and colors
+                if horizon_data:
+                    # Build DataFrame data with MultiIndex column structure
+                    df_data = []
+                    for row in horizon_data:
+                        horizon_name = row.pop('Horizon')
+                        new_row = {('Time Horizon', ''): horizon_name}
+                        # Convert tuple keys to MultiIndex tuple format
+                        for key, value in row.items():
+                            new_row[key] = value
+                        df_data.append(new_row)
+                    
+                    # Create MultiIndex columns with Time Horizon first
+                    columns = pd.MultiIndex.from_tuples([
+                        ('Time Horizon', ''),
+                        ('CRPS', 'Overall'),
+                        ('CRPS', 'Left Tail'),
+                        ('CRPS', 'Right Tail'),
+                        ('Sharpness', 'Overall'),
+                        ('Sharpness', 'Left Tail'),
+                        ('Sharpness', 'Right Tail'),
+                        ('Reliability', 'Overall'),
+                        ('Reliability', 'Left Tail'),
+                        ('Reliability', 'Right Tail')
+                    ])
+                    
+                    df_horizons = pd.DataFrame(df_data, columns=columns)
+                    
+                    # Apply colors properly - need to update color_map keys since we're not using index
+                    def apply_colors(row):
+                        styles = []
+                        # Get Time Horizon value from the row
+                        time_horizon_col = ('Time Horizon', '')
+                        horizon_name = row[time_horizon_col] if time_horizon_col in row.index else None
+                        
+                        for col in df_horizons.columns:
+                            if col[0] == 'Time Horizon':
+                                styles.append('')  # No color for Time Horizon column
+                            else:
+                                if horizon_name:
+                                    color = color_map.get((horizon_name, col))
+                                    if color:
+                                        styles.append(f'background-color: {color}')
+                                    else:
+                                        styles.append('')
+                                else:
+                                    styles.append('')
+                        return styles
+                    
+                    # Create table styles with column separators
+                    table_styles = [
+                        {
+                            'selector': 'th.level0',
+                            'props': [('text-align', 'center'), ('font-weight', 'bold')]
+                        },
+                        {
+                            'selector': 'th.level1',
+                            'props': [('text-align', 'center')]
+                        },
+                        # Style for Time Horizon column
+                        {
+                            'selector': 'th.col_heading.level0.col0',
+                            'props': [('text-align', 'left'), ('font-weight', 'bold')]
+                        }
+                    ]
+                    
+                    # Add column separators - find column indices for Sharpness and Reliability
+                    # Note: Time Horizon is column 0, so indices are shifted
+                    col_names = list(df_horizons.columns)
+                    sharpness_idx = next((i for i, col in enumerate(col_names) if col[0] == 'Sharpness'), None)
+                    reliability_idx = next((i for i, col in enumerate(col_names) if col[0] == 'Reliability'), None)
+                    
+                    # Add separator after Time Horizon (before CRPS)
+                    table_styles.append({
+                        'selector': 'th.col_heading.level0.col1, td.col1',
+                        'props': [('border-left', '2px solid #000')]
+                    })
+                    
+                    if sharpness_idx is not None:
+                        # Add border before Sharpness
+                        table_styles.append({
+                            'selector': f'th.col_heading.level0.col{sharpness_idx}, td.col{sharpness_idx}',
+                            'props': [('border-left', '2px solid #000')]
+                        })
+                    
+                    if reliability_idx is not None:
+                        # Add border before Reliability
+                        table_styles.append({
+                            'selector': f'th.col_heading.level0.col{reliability_idx}, td.col{reliability_idx}',
+                            'props': [('border-left', '2px solid #000')]
+                        })
+                    
+                    styled_horizons = (
+                        df_horizons.style
+                        .set_caption(f"Calibration Metrics - {self.name}")
+                        .hide(axis='index')  # Remove row numbers
+                        .apply(apply_colors, axis=1)
+                        .set_table_styles(table_styles, overwrite=False)
+                    )
+                    display(styled_horizons)
+                    
+                    # Print metric definitions
+                    print("\n📖 Metric Definitions:")
+                    print("  • CRPS (Continuous Ranked Probability Score): Accuracy of probabilistic forecasts.")
+                    print("  • Sharpness: Concentration of forecast distributions.")
+                    print("  • Reliability (ECE - Expected Calibration Error): Calibration of predicted probabilities.")
+                    
+                    # Print quality scales
+                    print("\n📊 Quality Scales (color-coded in table):")
+                    print("  • CRPS: Excellent < 0.3 | Good 0.3-1.0 | Moderate 1.0-2.0 | Poor ≥ 2.0")
+                    print("  • Sharpness: Excellent < 0.05 | Good 0.05-0.10 | Moderate 0.10-0.20 | Poor ≥ 0.20")
+                    print("  • Reliability (ECE): Good < 0.1 | Moderate 0.1-0.25 | Poor ≥ 0.25")
             else:
-                # Fallback to old structure - compact
-                parts = []
-                if 'crps' in cal_metrics:
-                    crps = cal_metrics['crps']
-                    if 'normalized_value' in crps:
-                        quality_info = self._get_crps_quality(crps['normalized_value'])
-                        parts.append(f"{quality_info['icon']} CRPS: {crps['normalized_value']:.3f} ({quality_info['quality'].title()})")
-                if 'sharpness' in cal_metrics:
-                    sharpness = cal_metrics['sharpness']
-                    sharpness_value = sharpness.get('normalized_value', sharpness.get('value', 0))
-                    quality_info = self._get_sharpness_quality(sharpness_value)
-                    parts.append(f"{quality_info['icon']} Sharpness: {sharpness_value:.3f} ({quality_info['quality'].title()})")
-                if 'reliability' in cal_metrics:
-                    reliability = cal_metrics['reliability']
-                    ece_value = reliability.get('ece', 0)
-                    quality_info = self._get_ece_quality(ece_value)
-                    parts.append(f"{quality_info['icon']} Reliability: {ece_value:.3f} ({quality_info['quality'].title()})")
-                if parts:
-                    print(f"\n🎯 Overall:")
-                    print(f"   {' | '.join(parts)}")
+                # Fallback to old structure (simple table)
+                fallback_rows = []
+                if cal_metrics.get('crps') and 'normalized_value' in cal_metrics['crps']:
+                    crps_val = cal_metrics['crps']['normalized_value']
+                    fallback_rows.append({
+                        'Metric': 'CRPS',
+                        'Value': fmt_val_with_quality(crps_val, self._get_crps_quality)
+                    })
+                
+                if cal_metrics.get('sharpness'):
+                    sharpness_val = cal_metrics['sharpness'].get('normalized_value', cal_metrics['sharpness'].get('value', 'N/A'))
+                    if sharpness_val != 'N/A':
+                        fallback_rows.append({
+                            'Metric': 'Sharpness',
+                            'Value': fmt_val_with_quality(sharpness_val, self._get_sharpness_quality)
+                        })
+                
+                if cal_metrics.get('reliability') and 'ece' in cal_metrics['reliability']:
+                    reliability_val = cal_metrics['reliability']['ece']
+                    fallback_rows.append({
+                        'Metric': 'Reliability (ECE)',
+                        'Value': fmt_val_with_quality(reliability_val, self._get_ece_quality)
+                    })
+                
+                if fallback_rows:
+                    df_fallback = pd.DataFrame(fallback_rows)
+                    df_fallback = df_fallback.set_index('Metric')
+                    styled_fallback = (
+                        df_fallback.style
+                        .set_caption(f"🎯 Calibration Metrics")
+                        .hide(axis='index')
+                    )
+                    display(styled_fallback)
         
-        # Regime analysis - compact one line
-        if result.get('regime_analysis'):
-            regime_analysis = result['regime_analysis']
-            regime_strs = []
-            regime_counts = regime_analysis.get('regime_counts', {})
-            regime_weights = regime_analysis.get('regime_weights', {})
-            for regime in regime_counts:
-                count = regime_counts[regime]
-                weight = regime_weights.get(regime, 0)
-                regime_strs.append(f"{regime}: {count} ({weight:.2f})")
-            entropy = regime_analysis.get('posterior_entropy', 'N/A')
-            entropy_str = f"{entropy:.3f}" if entropy != 'N/A' and isinstance(entropy, (int, float)) else 'N/A'
-            print(f"\n🔄 Regimes ({regime_analysis.get('n_regimes', 'N/A')}, entropy: {entropy_str}): {', '.join(regime_strs)}")
+        return None
     
     
