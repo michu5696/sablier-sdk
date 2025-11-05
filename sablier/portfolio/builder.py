@@ -339,9 +339,8 @@ class Portfolio:
                 vol_mean = get_mean('annualized_volatility_distribution')
                 if vol_mean is None:
                     vol_mean = get_mean('volatility_distribution')
-                dd = m.get('drawdown_distribution', {}) or {}
-                avg_dd = get_mean('average_drawdown_distribution')
-                max_dd = dd.get('min')
+                dd = m.get('max_drawdown_distribution', {}) or {}
+                max_dd = dd.get('mean')  # Use mean from distribution (already absolute values)
                 return {
                     'tot samples': m.get('total_samples'),
                     'prof samples': m.get('profitable_samples'),
@@ -353,7 +352,6 @@ class Portfolio:
                     'var 99': m.get('var_99'),
                     'cvar 95': m.get('cvar_95'),
                     'cvar 99': m.get('cvar_99'),
-                    'avg drawdown': avg_dd,
                     'max drawdown': max_dd,
                     'tail ratio': m.get('tail_ratio'),
                     'downside dev': get_mean('downside_deviation_distribution'),
@@ -361,7 +359,7 @@ class Portfolio:
             
             order = [
                 'tot samples','prof samples','prof rate','return','volatility','sharpe',
-                'var 95','var 99','cvar 95','cvar 99','avg drawdown','max drawdown',
+                'var 95','var 99','cvar 95','cvar 99','max drawdown',
                 'tail ratio','downside dev'
             ]
             s1_series = pd.Series(extract_metric_values(metrics_s1), name=s1.name)
@@ -370,7 +368,7 @@ class Portfolio:
             
             # Deltas
             comp['Δ (S2−S1)'] = comp[s2.name] - comp[s1.name]
-            use_abs_base = {'var 95','var 99','cvar 95','cvar 99','avg drawdown','max drawdown','drawdown'}
+            use_abs_base = {'var 95','var 99','cvar 95','cvar 99','max drawdown'}
             def delta_pct(row):
                 base = row[s1.name]
                 denom = abs(base) if row.name in use_abs_base else base
