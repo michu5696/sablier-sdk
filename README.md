@@ -1,5 +1,7 @@
 # Sablier SDK
 
+![Sablier Logo](images/logo.png)
+
 Sablier SDK is a Python toolkit for scenario‑conditioned synthetic financial data generation, portfolio testing, and risk analysis. It lets you simulate market regimes (e.g., risk‑off, inflation shocks), generate realistic multi‑asset paths, and evaluate portfolios under those scenarios.
 
 ---
@@ -32,7 +34,7 @@ Sablier uses an interpretable blend of models to generate synthetic series you c
 
 ## Installation
 
-From PyPI (when available):
+From PyPI :
 ```bash
 pip install sablier-sdk
 ```
@@ -53,17 +55,41 @@ Recommended: use a virtual environment (e.g., venv).
 
 ## Quickstart
 
-At present, you can browse existing projects/models provided by the backend, then create scenarios and portfolios locally to test them. 
+At present, you can browse existing projects/models provided in our backend, then create scenarios and portfolios locally to test them. 
 Note: In our next version, you’ll be able to create your own projects and train custom models directly within the SDK.
 
 ```python
 from sablier import SablierClient
 
-# 1) Initialize client (auto-registers an API key if none exists)
-client = SablierClient(api_url="https://<your-api-url>")
+API_URL = "https://sablier-api-z4kedk7vaa-uc.a.run.app"
+ 
+# 1) Initialize client. First time: SDK will prompt for registration
+client = SablierClient(api_url=API_URL)
+
+# Register with your e-mail address and you will receive an e-mail with your API Key
+client.register_user(email="team@sablier.it", name="Alex Doherty", company="HSBC", role="Analyst")
+
+# Save an API key with a custom name
+client.save_api_key(
+    api_key="sk_...",
+    api_url=API_URL,
+    description="default"
+)
+
+# List all saved keys
+keys = client.list_api_keys()
+
+# Use a specific key by name
+client = SablierClient(api_url=API_URL) 
+# Will use the default key automatically
+# If you haven't saved the key, do:
+# client = SablierClient(api_url=API_URL, api_key=YOUR_API_KEY)
+
+# Check limits and usage
+client.get_limits_and_usage()
 
 # 2) List existing projects and pick one
-projects = client.list_projects(include_templates=True)
+projects = client.list_projects()
 
 # 3) List models in the project and pick template
 models = project.list_models()
@@ -77,25 +103,23 @@ target_set = model.get_target_set()
 
 # 5) Create a scenario on the selected model 
 scenario = model.create_scenario(
-    simulation_date="2022-06-15", # Default date for conditional features if nothing else specified
-    name="Inflation + Hikes",
-    feature_simulation_dates={
-        # Use exact conditioning feature names available on your model
-        "Consumer Price Index": "2022-06-01", # CPI YoY peak month
-        "Federal Funds Rate": "2022-06-15", # fast 75bp liftoff phase
-        "VIX Volatility Index": "2020-03-16", # modern vol shock
-    }
+    simulation_date="2024-08-05",  # anchor date 
+    name="S&P 500 drop",
+    description=(
+        "SP500 dropped by 160 points in a single day, 12th largest daily drop in history")
 )
 
 # 6) Simulate forecasts (number of paths)
-result = scenario.simulate(n_samples=100)
+scenario.simulate(n_samples=1000)
 
 # 7) Access and visualize the forecast data
-scenario.plot_forecasts(feature="30-Year Treasury Constant Maturity Rate",save=True, save_dir="./forecasts")
+scenario.plot_forecasts(feature="1-3 Year Treasury Bond ETF",save=True, save_dir="./forecasts")
 
-# 7) Create a portfolio from the model's target set (you CAN create portfolios)
+![Forecast Visualization](images/forecast.png)
+
+# 8) Create a portfolio from the model's target set (you CAN create portfolios)
 portfolio = client.create_portfolio(
-    name="Test Portfolio",
+    name="US Treasury Long Positions",
     target_set=model.get_target_set(),
     weights={
         "1-3 Year Treasury Bond ETF": 0.4,
@@ -107,90 +131,67 @@ portfolio = client.create_portfolio(
      description="US Treasury Portfolio"
 )
 
-# 8) Test the portfolio against the scenario
+# 9) Test the portfolio against the scenario
 test = portfolio.test(scenario)
 
 # 9) Review scenario results and summary outputs.
 metrics = test.report_aggregated_metrics()
 
-print(f"Sharpe (mean): {metrics['sharpe_distribution']['mean']:.3f}")
-print(f"Total Return (mean): {metrics['return_distribution']['mean']:.2%}")
-print(f"Max Drawdown (mean): {metrics['max_drawdown_distribution']['mean']:.2%}")
+# 10) Review scenario results and summary outputs.
+metrics = test.show_aggregated_metrics()
 
-# Plot
+# 10) Plot
 test.plot_distribution('total_return')
 test.plot_evolution('portfolio_value')
-```
 
----
+# 11) Compare multiple scenarios' effect on portfolio.
+portfolio.compare_scenarios(scenario_a, scenario_b)
 
-## API Key Management & Client
+![Scenario Comparison](images/scenario_comparison.png)
 
-The SDK automatically manages API keys and settings in a local SQLite database:
+# 12) Compare the same scenario on multiple portfolios.
+scenario.compare_portfolios(portfolio_a, portfolio_b)
 
-```python
-# First time: SDK will prompt for registration
-client = SablierClient(api_url="https://your-backend.run.app")
-
-# Save an API key with a custom name
-client.save_api_key(
-    api_key="sk_...",
-    api_url="https://your-backend.run.app",
-    description="production"
-)
-
-# List all saved keys
-keys = client.list_api_keys()
-
-# Use a specific key by name
-client = SablierClient(api_url="https://your-backend.run.app")
-# Will use the default key automatically
+![Portfolio Comparison](images/portfolio_comparison.png)
 ```
 
 ---
 
 ## Jupyter Template Notebook
 
-A prebuilt Jupyter notebook named `Example.ipynb` is provided in the `testing/` folder of this repo to:
+A prebuilt Jupyter notebook named `Example.ipynb` is provided in this repo to:
 - Initialize the client and list projects/models/scenarios
 - Create and simulate scenarios
 - Build portfolios and run tests
 - Plot distributions and time‑series (VaR/CVaR bands, drawdowns, etc.)
 
-Launch:
-```bash
-cd testing
-python -m venv venv
-source venv/bin/activate  # On Windows use: venv\Scripts\activate
-jupyter notebook "Template.ipynb"
-```
 
 ---
 
 ## Common API Surface (First‑use Functions)
 
 - Projects (browse existing)
-  - `client.list_projects(include_templates=True)`
-  - `client.get_project(name_or_index)`
+  - `client.list_projects()`
+  - `client.get_project(name_or_id)`
 
 - Models (read-only)
   - `project.list_models()`
   - `model.list_features()`
   - `model.get_target_set()`
-  - `model.list_scenarios(verbose=True)`
+  - `model.list_scenarios()`
 
 - Scenarios (create & simulate)
   - `model.create_scenario(simulation_date, name, feature_simulation_dates={...})`
-  - `scenario.simulate(n_samples=100)`
+  - `scenario.simulate(n_samples=1000)`
   - `scenario.plot_forecasts(feature=...)`
   - `scenario.plot_conditioning(feature=...)`
 
 - Portfolios & Tests
-  - `portfolio = client.create_portfolio(name, target_set, weights={...}, capital=..., constraint_type=...)`
+  - `portfolio = client.create_portfolio(name, target_set, weights=[...], capital=..., constraint_type=...)`
   - `test = portfolio.test(scenario)`
   - `test.report_aggregated_metrics()` / `test.report_sample_metrics(sample_idx)`
   - `test.plot_distribution('total_return' | 'sharpe_ratio' | ...)`
-  - `test.plot_evolution('pnl' | 'returns' | 'portfolio_value' | 'drawdown')`
+  - `test.plot_evolution('pnl' | 'returns' | 'portfolio_value' | 'max_drawdown')`
   - `portfolio.compare_scenarios([scenario_a, scenario_b], labels=[...])`
   - `portfolio.plot_scenario_comparison([scenario_a, scenario_b], labels=[...])`
 
@@ -207,7 +208,7 @@ jupyter notebook "Template.ipynb"
 - Using existing resources
   - `projects = client.list_projects()` → pick one
   - `model = projects[0].list_models()[0]`
-  - `scenarios = model.list_scenarios()` → pick one (avoid re‑simulating to keep results stable)
+  - `scenarios = model.list_scenarios()` → pick one (re-simulating scenarios uses fresh past data)
   - `portfolio = client.list_portfolios()[0]` → `portfolio.test(scenario)`
 
 ---
