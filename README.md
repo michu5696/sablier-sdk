@@ -121,7 +121,6 @@ scenario.plot_forecasts(feature="1-3 Year Treasury Bond ETF",save=True, save_dir
 portfolio = client.create_portfolio(
     name="US Treasury Long Positions",
     target_set=model.get_target_set(),
-    #weights=[0.4,0.3,0.2,0.1]
     weights={
         "1-3 Year Treasury Bond ETF": 0.4,
         "3-7 Year Treasury Bond ETF": 0.3,
@@ -129,11 +128,14 @@ portfolio = client.create_portfolio(
         "20+ Year Treasury Bond ETF": 0.1
     },  
      capital=200000.0,
-     description="US Treasury Portfolio, Heavy on Short Term"
+     description="US Treasury Portfolio"
 )
 
 # 9) Test the portfolio against the scenario
 test = portfolio.test(scenario)
+
+# 9) Review scenario results and summary outputs.
+metrics = test.report_aggregated_metrics()
 
 # 10) Review scenario results and summary outputs.
 metrics = test.show_aggregated_metrics()
@@ -213,6 +215,7 @@ A prebuilt Jupyter notebook named `Example.ipynb` is provided in this repo to:
 
 ## Notes & Tips
 
+- Metrics in this version are computed over a fixed 80-day simulation window, as the simulation period is currently set to 80 days from the execution date. Future releases will allow users to configure the simulation horizon dynamically.
 - Select scenarios by name/ID rather than index; list order can change.
 - For stable tails, use larger `n_samples` (e.g., ≥ 100) and avoid re‑simulation between comparisons.
 - Portfolio tests are stored locally in `~/.sablier/portfolios.db`.
