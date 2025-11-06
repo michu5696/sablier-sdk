@@ -291,33 +291,138 @@ class Portfolio:
         logger.info(f"Evaluation complete. Sharpe: {metrics['sharpe']:.3f}, Return: {metrics['mean_return']:.3f}")
         return metrics
     
-    def compare_scenarios(self, scenarios: List, labels: Optional[List[str]] = None) -> Dict[str, Any]:
+    def compare_scenarios(self, *scenarios) -> Any:
         """
-        Compare portfolio performance across multiple scenarios
+        Display a side-by-side comparison of two scenarios for this portfolio.
         
-        Args:
-            scenarios: List of scenario instances
-            labels: Optional labels for scenarios
+        Usage:
+            portfolio.compare_scenarios(scenario1, scenario2)
+        
+        The function fetches the latest test for each scenario name (if available)
+        and displays the ordered comparison table with direction-aware coloring.
+        It returns the underlying pandas DataFrame. If more than two scenarios
+        are provided, a dictionary of raw evaluation metrics is returned instead.
+        """
+        if len(scenarios) == 0:
+            raise ValueError("Provide at least one scenario")
+        
+        # If two scenarios provided, show styled table using latest tests
+        if len(scenarios) == 2:
+            from .test import Test
+            import pandas as pd
+            from IPython.display import display
             
-        Returns:
-            Dictionary with comparison metrics
-        """
-        if not scenarios:
-            raise ValueError("At least one scenario required")
+            s1, s2 = scenarios
+            
+            # Helper: latest test for given scenario name
+            def latest_test_for_name(scenario_name: str) -> Optional[Test]:
+                tests = self.list_tests()  # already ordered newest first
+                for t in tests:
+                    if t.scenario_name == scenario_name:
+                        return t
+                return None
+            
+            t1 = latest_test_for_name(s1.name)
+            t2 = latest_test_for_name(s2.name)
+            
+            # If no prior test, run a fresh one
+            if t1 is None:
+                t1 = self.test(s1)
+            if t2 is None:
+                t2 = self.test(s2)
+            
+            metrics_s1 = t1.report_aggregated_metrics()
+            metrics_s2 = t2.report_aggregated_metrics()
+            
+            def extract_metric_values(m):
+                get_mean = lambda key: (m.get(key, {}) or {}).get('mean')
+                vol_mean = get_mean('annualized_volatility_distribution')
+                if vol_mean is None:
+                    vol_mean = get_mean('volatility_distribution')
+                dd = m.get('max_drawdown_distribution', {}) or {}
+                max_dd = dd.get('mean')  # Use mean from distribution (already absolute values)
+                return {
+                    'tot samples': m.get('total_samples'),
+                    'prof samples': m.get('profitable_samples'),
+                    'prof rate': m.get('profitability_rate'),
+                    'return': get_mean('return_distribution'),
+                    'volatility': vol_mean,
+                    'sharpe': get_mean('sharpe_distribution'),
+                    'var 95': m.get('var_95'),
+                    'var 99': m.get('var_99'),
+                    'cvar 95': m.get('cvar_95'),
+                    'cvar 99': m.get('cvar_99'),
+                    'max drawdown': max_dd,
+                    'tail ratio': m.get('tail_ratio'),
+                    'downside dev': get_mean('downside_deviation_distribution'),
+                }
+            
+            order = [
+                'tot samples','prof samples','prof rate','return','volatility','sharpe',
+                'var 95','var 99','cvar 95','cvar 99','max drawdown',
+                'tail ratio','downside dev'
+            ]
+            s1_series = pd.Series(extract_metric_values(metrics_s1), name=s1.name)
+            s2_series = pd.Series(extract_metric_values(metrics_s2), name=s2.name)
+            comp = pd.concat([s1_series, s2_series], axis=1).loc[order]
+            
+            # Deltas (keep numeric for calculations)
+            comp['Δ (S2−S1)'] = comp[s2.name] - comp[s1.name]
+            use_abs_base = {'var 95','var 99','cvar 95','cvar 99','max drawdown'}
+            def delta_pct(row):
+                base = row[s1.name]
+                if pd.isna(base):
+                    return pd.NA
+                denom = abs(base) if row.name in use_abs_base else base
+                if pd.isna(denom) or denom == 0:
+                    return pd.NA
+                delta = row['Δ (S2−S1)']
+                if pd.isna(delta):
+                    return pd.NA
+                return delta / denom
+            comp['Δ%'] = comp.apply(delta_pct, axis=1)
+            
+            lower_better = {'volatility','downside dev'}
+            def color_delta(row):
+                name = row.name
+                d = row['Δ (S2−S1)']
+                if pd.isna(d):
+                    return ['', '']
+                good = (d < 0) if name in lower_better else (d > 0)
+                color = '#e6ffe6' if good else '#ffe6e6'
+                return [f'background-color: {color}', f'background-color: {color}']
+            def fmt_val(v):
+                if pd.isna(v):
+                    return 'N/A'
+                return f'{v:.6f}'
+            def fmt_delta(v):
+                if pd.isna(v):
+                    return 'N/A'
+                return f'{v:+.6f}'
+            def fmt_pct(v):
+                if pd.isna(v):
+                    return 'N/A'
+                return f'{v:+.2%}'
+            styled = (
+                comp
+                  .style
+                  .set_caption(f"Scenario Comparison ({s1.name} vs {s2.name})")
+                  .apply(color_delta, axis=1, subset=['Δ (S2−S1)', 'Δ%'])
+                  .format({
+                      s1.name: fmt_val,
+                      s2.name: fmt_val,
+                      'Δ (S2−S1)': fmt_delta,
+                      'Δ%': fmt_pct
+                  })
+            )
+            display(styled)
+            return None
         
-        if labels and len(labels) != len(scenarios):
-            raise ValueError("Number of labels must match number of scenarios")
-        
-        if not labels:
-            labels = [f"Scenario {i+1}" for i in range(len(scenarios))]
-        
-        logger.info(f"Comparing portfolio '{self.name}' across {len(scenarios)} scenarios")
-        
+        # Fallback: more than two scenarios -> return raw evaluations
+        labels = [sc.name for sc in scenarios]
         comparison = {}
         for scenario, label in zip(scenarios, labels):
-            metrics = self.evaluate(scenario)
-            comparison[label] = metrics
-        
+            comparison[label] = self.evaluate(scenario)
         return comparison
     
     def plot_performance(self, scenario, save: bool = False, save_dir: str = "./portfolio_plots/") -> List[str]:

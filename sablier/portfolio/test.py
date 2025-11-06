@@ -119,12 +119,7 @@ class Test:
         df = df.reindex(desired_order)
         
         # Replace NaN with "N/A" for non-distribution metrics (metrics that don't have std/min/max)
-        # Convert columns to object dtype first to avoid FutureWarning when setting string values
         non_distribution_metrics = {'tot samples', 'prof samples', 'prof rate', 'var 95', 'var 99', 'cvar 95', 'cvar 99', 'tail ratio'}
-        # Convert std, min, max columns to object dtype to allow string values
-        for col in ['std', 'min', 'max']:
-            df[col] = df[col].astype(object)
-        
         for metric in non_distribution_metrics:
             if metric in df.index:
                 df.loc[metric, ['std', 'min', 'max']] = 'N/A'
