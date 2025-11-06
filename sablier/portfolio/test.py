@@ -63,6 +63,74 @@ class Test:
             'downside_deviation_distribution': self.aggregated_results['downside_deviation_distribution'],
             'volatility_distribution': self.aggregated_results['volatility_distribution']
         }
+
+    def show_aggregated_metrics(self, caption: str = "Metrics over 80-days simulation window"):
+        """Build and display an ordered metrics table for notebooks.
+
+        Returns a pandas DataFrame with index as metric names and
+        columns [mean, std, min, max]. This method performs a local
+        import of pandas/IPython to avoid introducing a hard SDK dependency
+        at import time.
+        """
+        # Local imports to avoid global dependency at SDK import time
+        import pandas as pd
+        from IPython.display import display
+
+        metrics = self.report_aggregated_metrics()
+
+        def get_volatility_dist(m):
+            v = m.get('volatility_distribution')
+            if not isinstance(v, dict):
+                v = m.get('annualized_volatility_distribution')
+            return v if isinstance(v, dict) else None
+
+        def build_rows(m):
+            rows = {}
+            # distributions (full mean/std/min/max)
+            rows['return'] = m.get('return_distribution') or {}
+            rows['volatility'] = get_volatility_dist(m) or {}
+            rows['sharpe'] = m.get('sharpe_distribution') or {}
+            rows['downside dev'] = m.get('downside_deviation_distribution') or {}
+
+            # scalar rows -> store under 'mean'
+            rows['tot samples'] = {'mean': m.get('total_samples')}
+            rows['prof samples'] = {'mean': m.get('profitable_samples')}
+            rows['prof rate'] = {'mean': m.get('profitability_rate')}
+            rows['var 95'] = {'mean': m.get('var_95')}
+            rows['var 99'] = {'mean': m.get('var_99')}
+            rows['cvar 95'] = {'mean': m.get('cvar_95')}
+            rows['cvar 99'] = {'mean': m.get('cvar_99')}
+            rows['tail ratio'] = {'mean': m.get('tail_ratio')}
+
+            # max drawdown from distribution (already absolute values)
+            dd = m.get('max_drawdown_distribution') or {}
+            rows['max drawdown'] = {'mean': dd.get('mean')}
+
+            return rows
+
+        desired_order = [
+            'tot samples', 'prof samples', 'prof rate', 'return', 'volatility', 'sharpe',
+            'var 95', 'var 99', 'cvar 95', 'cvar 99', 'max drawdown',
+            'tail ratio', 'downside dev'
+        ]
+
+        rows = build_rows(metrics)
+        df = pd.DataFrame.from_dict(rows, orient='index')[['mean', 'std', 'min', 'max']]
+        df = df.reindex(desired_order)
+        
+        # Replace NaN with "N/A" for non-distribution metrics (metrics that don't have std/min/max)
+        # Convert columns to object dtype first to avoid FutureWarning when setting string values
+        non_distribution_metrics = {'tot samples', 'prof samples', 'prof rate', 'var 95', 'var 99', 'cvar 95', 'cvar 99', 'tail ratio'}
+        # Convert std, min, max columns to object dtype to allow string values
+        for col in ['std', 'min', 'max']:
+            df[col] = df[col].astype(object)
+        
+        for metric in non_distribution_metrics:
+            if metric in df.index:
+                df.loc[metric, ['std', 'min', 'max']] = 'N/A'
+
+        display(df.style.set_caption(caption))
+        return None
     
     def report_sample_metrics(self, sample_idx: int) -> Dict[str, Any]:
         """Report all static metrics for a specific sample"""
