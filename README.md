@@ -1,6 +1,22 @@
-# Sablier SDK
-
-![Sablier Logo](images/logo.png)
+<div align="center">
+  <img src="images/logo.png" alt="Sablier logo" width="320" />
+  <h1>Sablier SDK</h1>
+  <p>Open-source Python SDK for scenario-conditioned synthetic markets, portfolio testing, and risk analytics.</p>
+  <p>
+    <a href="https://pypi.org/project/sablier-sdk/">
+      <img src="https://img.shields.io/pypi/v/sablier-sdk.svg?color=2274A5" alt="PyPI version" />
+    </a>
+    <a href="https://pypi.org/project/sablier-sdk/">
+      <img src="https://img.shields.io/pypi/pyversions/sablier-sdk.svg" alt="Python versions" />
+    </a>
+    <a href="https://github.com/michu5696/sablier-sdk/stargazers">
+      <img src="https://img.shields.io/github/stars/michu5696/sablier-sdk?style=social" alt="GitHub stars" />
+    </a>
+    <a href="LICENSE">
+      <img src="https://img.shields.io/badge/license-MIT-brightgreen.svg" alt="License: MIT" />
+    </a>
+  </p>
+</div>
 
 Sablier SDK is a Python toolkit for scenario‑conditioned synthetic financial data generation, portfolio testing, and risk analysis. It lets you simulate market regimes (e.g., risk‑off, inflation shocks), generate realistic multi‑asset paths, and evaluate portfolios under those scenarios.
 
@@ -116,7 +132,9 @@ scenario.simulate(n_samples=1000)
 scenario.plot_forecasts(feature="1-3 Year Treasury Bond ETF",save=True, save_dir="./forecasts")
 ```
 
-![Forecast Visualization](images/forecast.png)
+<div align="center">
+  <img src="images/forecast.png" alt="Forecast visualization" style="max-width: 900px; width: 100%;" />
+</div>
 
 ```python
 # 8) Create a portfolio from the model's target set (you CAN create portfolios)
@@ -150,14 +168,18 @@ test.plot_evolution('portfolio_value')
 portfolio.compare_scenarios(scenario_a, scenario_b)
 ```
 
-![Scenario Comparison](images/scenario_comparison.png)
+<div align="center">
+  <img src="images/scenario_comparison.png" alt="Scenario comparison table" width="520" />
+</div>
 
 ```python
 # 12) Compare the same scenario on multiple portfolios.
 scenario.compare_portfolios(portfolio_a, portfolio_b)
 ```
 
-![Portfolio Comparison](images/portfolio_comparison.png)
+<div align="center">
+  <img src="images/portfolio_comparison.png" alt="Portfolio comparison table" width="520" />
+</div>
 
 ---
 

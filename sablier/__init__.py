@@ -4,7 +4,7 @@ Sablier SDK - Python SDK for Market Scenario Generation
 Create scenario-conditioned synthetic financial data for portfolio testing and risk analysis.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"
 
 from .client import SablierClient
 from .portfolio import Portfolio, PortfolioManager, Test
