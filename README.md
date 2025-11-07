@@ -132,7 +132,9 @@ scenario.simulate(n_samples=1000)
 scenario.plot_forecasts(feature="1-3 Year Treasury Bond ETF",save=True, save_dir="./forecasts")
 ```
 
-![Forecast Visualization](images/forecast.png)
+<div align="center">
+  <img src="images/forecast.png" alt="Forecast visualization" width="520" />
+</div>
 
 ```python
 # 8) Create a portfolio from the model's target set (you CAN create portfolios)
@@ -166,14 +168,18 @@ test.plot_evolution('portfolio_value')
 portfolio.compare_scenarios(scenario_a, scenario_b)
 ```
 
-![Scenario Comparison](images/scenario_comparison.png)
+<div align="center">
+  <img src="images/scenario_comparison.png" alt="Scenario comparison table" width="520" />
+</div>
 
 ```python
 # 12) Compare the same scenario on multiple portfolios.
 scenario.compare_portfolios(portfolio_a, portfolio_b)
 ```
 
-![Portfolio Comparison](images/portfolio_comparison.png)
+<div align="center">
+  <img src="images/portfolio_comparison.png" alt="Portfolio comparison table" width="520" />
+</div>
 
 ---
 
