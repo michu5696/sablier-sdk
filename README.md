@@ -133,7 +133,7 @@ scenario.plot_forecasts(feature="1-3 Year Treasury Bond ETF",save=True, save_dir
 ```
 
 <div align="center">
-  <img src="images/forecast.png" alt="Forecast visualization" width="520" />
+  <img src="images/forecast.png" alt="Forecast visualization" style="max-width: 900px; width: 100%;" />
 </div>
 
 ```python
