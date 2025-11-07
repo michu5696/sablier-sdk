@@ -1,6 +1,7 @@
 include README.md
 include LICENSE
 recursive-include sablier *.py
+recursive-include images *.png
 exclude sablier/__pycache__
 exclude sablier/**/__pycache__
 global-exclude *.pyc *.pyo
