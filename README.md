@@ -1,6 +1,22 @@
-# Sablier SDK
-
-![Sablier Logo](images/logo.png)
+<div align="center">
+  <img src="images/logo.png" alt="Sablier logo" width="320" />
+  <h1>Sablier SDK</h1>
+  <p>Open-source Python SDK for scenario-conditioned synthetic markets, portfolio testing, and risk analytics.</p>
+  <p>
+    <a href="https://pypi.org/project/sablier-sdk/">
+      <img src="https://img.shields.io/pypi/v/sablier-sdk.svg?color=2274A5" alt="PyPI version" />
+    </a>
+    <a href="https://pypi.org/project/sablier-sdk/">
+      <img src="https://img.shields.io/pypi/pyversions/sablier-sdk.svg" alt="Python versions" />
+    </a>
+    <a href="https://github.com/michu5696/sablier-sdk/stargazers">
+      <img src="https://img.shields.io/github/stars/michu5696/sablier-sdk?style=social" alt="GitHub stars" />
+    </a>
+    <a href="LICENSE">
+      <img src="https://img.shields.io/badge/license-MIT-brightgreen.svg" alt="License: MIT" />
+    </a>
+  </p>
+</div>
 
 Sablier SDK is a Python toolkit for scenario‑conditioned synthetic financial data generation, portfolio testing, and risk analysis. It lets you simulate market regimes (e.g., risk‑off, inflation shocks), generate realistic multi‑asset paths, and evaluate portfolios under those scenarios.
 
@@ -114,14 +130,17 @@ scenario.simulate(n_samples=1000)
 
 # 7) Access and visualize the forecast data
 scenario.plot_forecasts(feature="1-3 Year Treasury Bond ETF",save=True, save_dir="./forecasts")
+```
 
-![Forecast Visualization](images/forecast.png)
+<div align="center">
+  <img src="images/forecast.png" alt="Forecast visualization" style="max-width: 900px; width: 100%;" />
+</div>
 
+```python
 # 8) Create a portfolio from the model's target set (you CAN create portfolios)
 portfolio = client.create_portfolio(
     name="US Treasury Long Positions",
     target_set=model.get_target_set(),
-    #weights=[0.4,0.3,0.2,0.1]
     weights={
         "1-3 Year Treasury Bond ETF": 0.4,
         "3-7 Year Treasury Bond ETF": 0.3,
@@ -129,11 +148,14 @@ portfolio = client.create_portfolio(
         "20+ Year Treasury Bond ETF": 0.1
     },  
      capital=200000.0,
-     description="US Treasury Portfolio, Heavy on Short Term"
+     description="US Treasury Portfolio"
 )
 
 # 9) Test the portfolio against the scenario
 test = portfolio.test(scenario)
+
+# 9) Review scenario results and summary outputs.
+metrics = test.report_aggregated_metrics()
 
 # 10) Review scenario results and summary outputs.
 metrics = test.show_aggregated_metrics()
@@ -144,14 +166,20 @@ test.plot_evolution('portfolio_value')
 
 # 11) Compare multiple scenarios' effect on portfolio.
 portfolio.compare_scenarios(scenario_a, scenario_b)
+```
 
-![Scenario Comparison](images/scenario_comparison.png)
+<div align="center">
+  <img src="images/scenario_comparison.png" alt="Scenario comparison table" width="520" />
+</div>
 
+```python
 # 12) Compare the same scenario on multiple portfolios.
 scenario.compare_portfolios(portfolio_a, portfolio_b)
-
-![Portfolio Comparison](images/portfolio_comparison.png)
 ```
+
+<div align="center">
+  <img src="images/portfolio_comparison.png" alt="Portfolio comparison table" width="520" />
+</div>
 
 ---
 
